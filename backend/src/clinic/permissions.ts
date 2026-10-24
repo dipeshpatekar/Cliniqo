@@ -10,6 +10,10 @@ export enum ClinicPermission {
   MEMBER_INVITE = 'member:invite',
   MEMBER_REVOKE = 'member:revoke',
   MEMBER_LIST = 'member:list',
+  PATIENT_READ = 'patient:read',
+  PATIENT_CREATE = 'patient:create',
+  PATIENT_UPDATE = 'patient:update',
+  PATIENT_ARCHIVE = 'patient:archive',
 }
 
 export const ROLE_PERMISSIONS_MAP: Record<
@@ -26,10 +30,22 @@ export const ROLE_PERMISSIONS_MAP: Record<
     ClinicPermission.MEMBER_INVITE,
     ClinicPermission.MEMBER_REVOKE,
     ClinicPermission.MEMBER_LIST,
+    ClinicPermission.PATIENT_READ,
+    ClinicPermission.PATIENT_CREATE,
+    ClinicPermission.PATIENT_UPDATE,
+    ClinicPermission.PATIENT_ARCHIVE,
   ]),
   [ClinicRole.DOCTOR]: new Set([
     ClinicPermission.CLINIC_READ,
     ClinicPermission.MEMBER_LIST,
+    ClinicPermission.PATIENT_READ,
+    ClinicPermission.PATIENT_CREATE,
+    ClinicPermission.PATIENT_UPDATE,
   ]),
-  [ClinicRole.STAFF]: new Set([ClinicPermission.CLINIC_READ]),
+  [ClinicRole.STAFF]: new Set([
+    ClinicPermission.CLINIC_READ,
+    ClinicPermission.PATIENT_READ,
+    ClinicPermission.PATIENT_CREATE,
+    ClinicPermission.PATIENT_UPDATE,
+  ]),
 };

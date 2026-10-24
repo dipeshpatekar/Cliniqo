@@ -13,6 +13,7 @@ export interface TransactionOptions {
   baseDelayMs?: number;
   maxDelayMs?: number;
   maxCommitRetries?: number;
+  isRetryableError?: (err: any) => boolean;
 }
 
 const logger = new Logger('DatabaseTransaction');
@@ -91,7 +92,10 @@ export async function executeInTransaction<T>(
         }
 
         // 2. Retry transient database errors
-        const isTransient = err?.hasErrorLabel?.('TransientTransactionError') || err?.code === 112;
+        const isTransient =
+          err?.hasErrorLabel?.('TransientTransactionError') ||
+          err?.code === 112 ||
+          (typeof options.isRetryableError === 'function' && options.isRetryableError(err));
         if (isTransient) {
           if (attempt < maxRetries) {
             const jitter = Math.floor(Math.random() * 25);

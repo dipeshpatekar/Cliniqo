@@ -25,10 +25,8 @@ export type DoctorDocument = HydratedDocument<Doctor>;
 export class Doctor {
   @Prop({
     required: true,
-    unique: true,
     trim: true,
     lowercase: true,
-    index: true,
     maxlength: 254,
   })
   email!: string;
@@ -62,7 +60,6 @@ export class Doctor {
     type: String,
     enum: Object.values(DoctorStatus),
     default: DoctorStatus.PENDING_VERIFICATION,
-    index: true,
   })
   status!: DoctorStatus;
 

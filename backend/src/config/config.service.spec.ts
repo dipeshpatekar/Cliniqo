@@ -121,9 +121,37 @@ describe('ConfigService', () => {
       expect(authConfig.jwtRefreshSecret).toBe(validRefreshSecret);
       expect(authConfig.jwtAccessExpiresIn).toBe('15m');
       expect(authConfig.jwtRefreshExpiresIn).toBe('7d');
+      expect(authConfig.jwtIssuer).toBe('cliniqo-backend');
+      expect(authConfig.jwtAudience).toBe('cliniqo-client');
       expect(authConfig.argon2MemoryCost).toBe(65536);
       expect(authConfig.argon2TimeCost).toBe(3);
       expect(authConfig.argon2Parallelism).toBe(4);
+    });
+
+    it('should provide default and custom SMTP and rate limit configuration', () => {
+      const defaultService = new ConfigService({});
+      expect(defaultService.isSmtpConfigured).toBe(false);
+      expect(defaultService.smtpConfig.port).toBe(587);
+      expect(defaultService.smtpConfig.from).toBe('noreply@cliniqo.app');
+      expect(defaultService.rateLimitConfig.loginMax).toBe(5);
+      expect(defaultService.rateLimitConfig.loginWindowSec).toBe(60);
+
+      const customService = new ConfigService({
+        SMTP_HOST: 'smtp.mailtrap.io',
+        SMTP_PORT: '2525',
+        SMTP_USER: 'user',
+        SMTP_PASS: 'pass',
+        SMTP_FROM: 'clinic@cliniqo.app',
+        SMTP_SECURE: 'true',
+        RATE_LIMIT_LOGIN_MAX: '10',
+        RATE_LIMIT_LOGIN_WINDOW_SEC: '120',
+      });
+      expect(customService.isSmtpConfigured).toBe(true);
+      expect(customService.smtpConfig.host).toBe('smtp.mailtrap.io');
+      expect(customService.smtpConfig.port).toBe(2525);
+      expect(customService.smtpConfig.secure).toBe(true);
+      expect(customService.rateLimitConfig.loginMax).toBe(10);
+      expect(customService.rateLimitConfig.loginWindowSec).toBe(120);
     });
 
     it('should throw when JWT_ACCESS_SECRET is missing or empty', () => {

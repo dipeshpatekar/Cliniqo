@@ -1,4 +1,5 @@
 import { NestFactory } from '@nestjs/core';
+import { ValidationPipe } from '@nestjs/common';
 import { AppModule } from './app.module.js';
 import { ConfigService } from './config/config.service.js';
 import { HttpExceptionFilter } from './common/filters/http-exception.filter.js';
@@ -24,6 +25,15 @@ async function bootstrap() {
 
   // Centralized safe exception handling
   app.useGlobalFilters(new HttpExceptionFilter());
+
+  // Enforce runtime DTO validation, transformation, and rejection of unexpected fields
+  app.useGlobalPipes(
+    new ValidationPipe({
+      whitelist: true,
+      forbidNonWhitelisted: true,
+      transform: true,
+    }),
+  );
 
   // Restrictive CORS using validated environment origin
   app.enableCors({

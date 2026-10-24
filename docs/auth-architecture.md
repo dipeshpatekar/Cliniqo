@@ -113,3 +113,31 @@ All active sessions for a doctor are instantly invalidated upon:
   - Every clinical operation will resolve the doctor's authorized `clinicId` server-side from their verified account record.
   - Database queries and mutations will explicitly bind `{ clinicId }` at the service repository boundary.
   - Inter-clinic access attempts will fail closed with HTTP 403 `ForbiddenException` and security event logging.
+
+---
+
+## 8. Phase 3B Secure Authentication API Specifications
+
+### Endpoints Implemented
+
+| Method | Endpoint | Request Body | Response (Success) | Security Controls |
+| :--- | :--- | :--- | :--- | :--- |
+| `POST` | `/auth/login` | `LoginDto` (`email`, `password`) | HTTP 200 `{ accessToken, refreshToken, tokenType, expiresIn, doctor }` | IP rate limited; timing attack mitigation (dummy Argon2 verification on non-existent accounts); generic 401 on bad credentials; 5-attempt / 15m account lockout; active status validation. |
+| `POST` | `/auth/refresh` | `RefreshTokenDto` (`refreshToken`) | HTTP 200 `{ accessToken, refreshToken, tokenType, expiresIn }` | Strict 64-char hex format validation; lookup by SHA-256 hash; rotation to new token; reuse detection invalidates entire session family; expires after 7 days; doctor active status check. |
+| `POST` | `/auth/logout` | `RefreshTokenDto` (`refreshToken`) | HTTP 200 `{ message: "Successfully logged out." }` | Revokes the refresh session in MongoDB immediately. |
+| `POST` | `/auth/forgot-password` | `ForgotPasswordDto` (`email`) | HTTP 200 `{ message: "If an account exists..." }` | Rate limited (3 req / 5 min); constant generic 200 response (prevents account enumeration); generates single-use 256-bit token expiring in 15 min; sends email via Nodemailer; SMTP errors handled gracefully without leaking account existence. |
+| `POST` | `/auth/reset-password` | `ResetPasswordDto` (`token`, `newPassword`) | HTTP 200 `{ message: "Password reset successfully..." }` | Token lookup by SHA-256 hash; single-use validation; enforces strong password policy (12+ chars, uppercase, lowercase, digit, symbol); hashes new password with Argon2id; invalidates all active sessions for the doctor. |
+
+### Distributed Atomic Rate Limiter
+- **Storage**: MongoDB collection `rate_limits`.
+- **Atomic Concurrency**: Uses atomic `findOneAndUpdate` with `$inc: { points: 1 }` on active windows (`expiresAt > now`). Fresh windows are upserted atomically with `$set: { points: 1, expiresAt }`.
+- **Cross-Instance Coordination**: Protects horizontally scaled backend instances without relying on shared in-memory state or sticky sessions.
+- **Auto-Cleanup**: MongoDB TTL index (`{ expiresAt: 1 }, { expireAfterSeconds: 0 }`) guarantees automatic background garbage collection of expired counters.
+
+### Production MongoDB Index Plan
+- In production, development auto-indexing (`autoIndex: true`) must be disabled in Mongoose (`autoIndex: false`).
+- Required safe production indexes:
+  1. `doctors`: `{ email: 1 }` (unique)
+  2. `refresh_sessions`: `{ tokenHash: 1 }` (unique), `{ doctorId: 1, isRevoked: 1 }`, `{ familyId: 1 }`, `{ expiresAt: 1 }` (TTL, expireAfterSeconds: 0)
+  3. `password_resets`: `{ tokenHash: 1 }` (unique), `{ doctorId: 1, used: 1 }`, `{ expiresAt: 1 }` (TTL, expireAfterSeconds: 0)
+  4. `rate_limits`: `{ key: 1 }` (unique), `{ expiresAt: 1 }` (TTL, expireAfterSeconds: 0)

@@ -6,6 +6,9 @@ import type { App } from 'supertest/types.js';
 import { AppModule } from './../src/app.module.js';
 import { DatabaseModule } from './../src/database/database.module.js';
 import { Doctor } from './../src/auth/schemas/doctor.schema.js';
+import { RefreshSession } from './../src/auth/schemas/refresh-session.schema.js';
+import { PasswordResetToken } from './../src/auth/schemas/password-reset.schema.js';
+import { RateLimit } from './../src/auth/schemas/rate-limit.schema.js';
 
 describe('Health Endpoints (e2e)', () => {
   let app: INestApplication<App>;
@@ -29,6 +32,7 @@ describe('Health Endpoints (e2e)', () => {
         },
       }),
     },
+    models: {} as Record<string, any>,
     model: () => ({}),
     on: () => {},
     close: async () => {},
@@ -45,8 +49,26 @@ describe('Health Endpoints (e2e)', () => {
         provide: getModelToken(Doctor.name),
         useValue: {},
       },
+      {
+        provide: getModelToken(RefreshSession.name),
+        useValue: {},
+      },
+      {
+        provide: getModelToken(PasswordResetToken.name),
+        useValue: {},
+      },
+      {
+        provide: getModelToken(RateLimit.name),
+        useValue: {},
+      },
     ],
-    exports: [getConnectionToken(), getModelToken(Doctor.name)],
+    exports: [
+      getConnectionToken(),
+      getModelToken(Doctor.name),
+      getModelToken(RefreshSession.name),
+      getModelToken(PasswordResetToken.name),
+      getModelToken(RateLimit.name),
+    ],
   })
   class MockDatabaseModule {}
 
@@ -61,8 +83,6 @@ describe('Health Endpoints (e2e)', () => {
     })
       .overrideModule(DatabaseModule)
       .useModule(MockDatabaseModule)
-      .overrideProvider(getModelToken(Doctor.name))
-      .useValue({})
       .compile();
 
     app = moduleFixture.createNestApplication();

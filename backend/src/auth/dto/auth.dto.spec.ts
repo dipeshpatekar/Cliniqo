@@ -1,0 +1,111 @@
+import { describe, it, expect } from 'vitest';
+import { validate } from 'class-validator';
+import { plainToInstance } from 'class-transformer';
+import {
+  LoginDto,
+  RefreshTokenDto,
+  ForgotPasswordDto,
+  ResetPasswordDto,
+} from './auth.dto.js';
+
+describe('Auth DTOs Runtime Validation', () => {
+  describe('LoginDto', () => {
+    it('should validate valid login payload', async () => {
+      const dto = plainToInstance(LoginDto, {
+        email: 'dr.smith@clinic.com',
+        password: 'Password123!',
+      });
+      const errors = await validate(dto);
+      expect(errors).toHaveLength(0);
+    });
+
+    it('should reject malformed email address', async () => {
+      const dto = plainToInstance(LoginDto, {
+        email: 'not-an-email',
+        password: 'Password123!',
+      });
+      const errors = await validate(dto);
+      expect(errors.length).toBeGreaterThan(0);
+      expect(errors[0].constraints?.isEmail).toBeDefined();
+    });
+
+    it('should reject empty or missing password', async () => {
+      const dto = plainToInstance(LoginDto, {
+        email: 'dr.smith@clinic.com',
+        password: '',
+      });
+      const errors = await validate(dto);
+      expect(errors.length).toBeGreaterThan(0);
+      expect(errors[0].constraints?.isNotEmpty).toBeDefined();
+    });
+  });
+
+  describe('RefreshTokenDto', () => {
+    it('should validate 64-character hex refresh token', async () => {
+      const dto = plainToInstance(RefreshTokenDto, {
+        refreshToken: 'a'.repeat(64),
+      });
+      const errors = await validate(dto);
+      expect(errors).toHaveLength(0);
+    });
+
+    it('should reject refresh tokens with invalid length', async () => {
+      const dto = plainToInstance(RefreshTokenDto, {
+        refreshToken: 'short-token',
+      });
+      const errors = await validate(dto);
+      expect(errors.length).toBeGreaterThan(0);
+      expect(errors[0].constraints?.isLength).toBeDefined();
+    });
+  });
+
+  describe('ForgotPasswordDto', () => {
+    it('should validate valid email address', async () => {
+      const dto = plainToInstance(ForgotPasswordDto, {
+        email: 'doctor@example.com',
+      });
+      const errors = await validate(dto);
+      expect(errors).toHaveLength(0);
+    });
+
+    it('should reject missing or invalid email', async () => {
+      const dto = plainToInstance(ForgotPasswordDto, {
+        email: 'invalid-email',
+      });
+      const errors = await validate(dto);
+      expect(errors.length).toBeGreaterThan(0);
+      expect(errors[0].constraints?.isEmail).toBeDefined();
+    });
+  });
+
+  describe('ResetPasswordDto', () => {
+    it('should validate compliant 64-char token and strong password', async () => {
+      const dto = plainToInstance(ResetPasswordDto, {
+        token: 'b'.repeat(64),
+        newPassword: 'StrongNewP@ssw0rd2026!',
+      });
+      const errors = await validate(dto);
+      expect(errors).toHaveLength(0);
+    });
+
+    it('should reject weak new password failing complexity requirements', async () => {
+      const dto = plainToInstance(ResetPasswordDto, {
+        token: 'b'.repeat(64),
+        newPassword: 'weak',
+      });
+      const errors = await validate(dto);
+      expect(errors.length).toBeGreaterThan(0);
+      expect(errors[0].constraints?.isStrongPassword).toBeDefined();
+    });
+
+    it('should reject token that is not 64 characters', async () => {
+      const dto = plainToInstance(ResetPasswordDto, {
+        token: 'invalid-token-length',
+        newPassword: 'StrongNewP@ssw0rd2026!',
+      });
+      const errors = await validate(dto);
+      expect(errors.length).toBeGreaterThan(0);
+      expect(errors[0].constraints?.isLength).toBeDefined();
+    });
+  });
+});

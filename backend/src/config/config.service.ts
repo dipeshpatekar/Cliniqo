@@ -8,9 +8,21 @@ export interface AppConfig {
   jwtRefreshSecret?: string;
   jwtAccessExpiresIn?: string;
   jwtRefreshExpiresIn?: string;
+  jwtIssuer?: string;
+  jwtAudience?: string;
   argon2MemoryCost?: number;
   argon2TimeCost?: number;
   argon2Parallelism?: number;
+  smtpHost?: string;
+  smtpPort?: number;
+  smtpUser?: string;
+  smtpPass?: string;
+  smtpFrom?: string;
+  smtpSecure?: boolean;
+  rateLimitLoginMax?: number;
+  rateLimitLoginWindowSec?: number;
+  rateLimitRecoveryMax?: number;
+  rateLimitRecoveryWindowSec?: number;
 }
 
 export interface AuthConfig {
@@ -18,9 +30,27 @@ export interface AuthConfig {
   jwtRefreshSecret: string;
   jwtAccessExpiresIn: string;
   jwtRefreshExpiresIn: string;
+  jwtIssuer: string;
+  jwtAudience: string;
   argon2MemoryCost: number;
   argon2TimeCost: number;
   argon2Parallelism: number;
+}
+
+export interface SmtpConfig {
+  host?: string;
+  port: number;
+  user?: string;
+  pass?: string;
+  from: string;
+  secure: boolean;
+}
+
+export interface RateLimitConfig {
+  loginMax: number;
+  loginWindowSec: number;
+  recoveryMax: number;
+  recoveryWindowSec: number;
 }
 
 const VALID_DB_NAME_REGEX = /^[a-zA-Z0-9_-]{1,63}$/;
@@ -61,6 +91,8 @@ export class ConfigService {
       jwtRefreshSecret: env.JWT_REFRESH_SECRET,
       jwtAccessExpiresIn: env.JWT_ACCESS_EXPIRES_IN || '15m',
       jwtRefreshExpiresIn: env.JWT_REFRESH_EXPIRES_IN || '7d',
+      jwtIssuer: env.JWT_ISSUER || 'cliniqo-backend',
+      jwtAudience: env.JWT_AUDIENCE || 'cliniqo-client',
       argon2MemoryCost: env.ARGON2_MEMORY_COST
         ? parseInt(env.ARGON2_MEMORY_COST, 10)
         : 65536,
@@ -70,6 +102,24 @@ export class ConfigService {
       argon2Parallelism: env.ARGON2_PARALLELISM
         ? parseInt(env.ARGON2_PARALLELISM, 10)
         : 4,
+      smtpHost: env.SMTP_HOST,
+      smtpPort: env.SMTP_PORT ? parseInt(env.SMTP_PORT, 10) : 587,
+      smtpUser: env.SMTP_USER,
+      smtpPass: env.SMTP_PASS,
+      smtpFrom: env.SMTP_FROM || 'noreply@cliniqo.app',
+      smtpSecure: env.SMTP_SECURE === 'true',
+      rateLimitLoginMax: env.RATE_LIMIT_LOGIN_MAX
+        ? parseInt(env.RATE_LIMIT_LOGIN_MAX, 10)
+        : 5,
+      rateLimitLoginWindowSec: env.RATE_LIMIT_LOGIN_WINDOW_SEC
+        ? parseInt(env.RATE_LIMIT_LOGIN_WINDOW_SEC, 10)
+        : 60,
+      rateLimitRecoveryMax: env.RATE_LIMIT_RECOVERY_MAX
+        ? parseInt(env.RATE_LIMIT_RECOVERY_MAX, 10)
+        : 3,
+      rateLimitRecoveryWindowSec: env.RATE_LIMIT_RECOVERY_WINDOW_SEC
+        ? parseInt(env.RATE_LIMIT_RECOVERY_WINDOW_SEC, 10)
+        : 300,
     };
   }
 
@@ -113,6 +163,14 @@ export class ConfigService {
     return this.config.jwtRefreshExpiresIn || '7d';
   }
 
+  get jwtIssuer(): string {
+    return this.config.jwtIssuer || 'cliniqo-backend';
+  }
+
+  get jwtAudience(): string {
+    return this.config.jwtAudience || 'cliniqo-client';
+  }
+
   get argon2MemoryCost(): number {
     return this.config.argon2MemoryCost ?? 65536;
   }
@@ -123,6 +181,30 @@ export class ConfigService {
 
   get argon2Parallelism(): number {
     return this.config.argon2Parallelism ?? 4;
+  }
+
+  get smtpConfig(): SmtpConfig {
+    return {
+      host: this.config.smtpHost,
+      port: this.config.smtpPort ?? 587,
+      user: this.config.smtpUser,
+      pass: this.config.smtpPass,
+      from: this.config.smtpFrom || 'noreply@cliniqo.app',
+      secure: Boolean(this.config.smtpSecure),
+    };
+  }
+
+  get isSmtpConfigured(): boolean {
+    return Boolean(this.config.smtpHost && this.config.smtpHost.trim() !== '');
+  }
+
+  get rateLimitConfig(): RateLimitConfig {
+    return {
+      loginMax: this.config.rateLimitLoginMax ?? 5,
+      loginWindowSec: this.config.rateLimitLoginWindowSec ?? 60,
+      recoveryMax: this.config.rateLimitRecoveryMax ?? 3,
+      recoveryWindowSec: this.config.rateLimitRecoveryWindowSec ?? 300,
+    };
   }
 
   /**
@@ -249,6 +331,8 @@ export class ConfigService {
       jwtRefreshSecret: refreshSecret.trim(),
       jwtAccessExpiresIn: accessExpiresIn,
       jwtRefreshExpiresIn: refreshExpiresIn,
+      jwtIssuer: this.jwtIssuer,
+      jwtAudience: this.jwtAudience,
       argon2MemoryCost: memoryCost,
       argon2TimeCost: timeCost,
       argon2Parallelism: parallelism,

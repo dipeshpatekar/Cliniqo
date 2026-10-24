@@ -1,0 +1,274 @@
+import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { UnauthorizedException } from '@nestjs/common';
+import { JwtService } from '@nestjs/jwt';
+import { Types } from 'mongoose';
+import {
+  TokenService,
+  hashOpaqueToken,
+  parseDurationMs,
+} from './token.service.js';
+import { ConfigService } from '../config/config.service.js';
+import { DoctorStatus } from './auth.constants.js';
+
+describe('TokenService', () => {
+  let tokenService: TokenService;
+  let jwtService: JwtService;
+  let configService: ConfigService;
+  let mockSessionModel: any;
+  let mockDoctorModel: any;
+
+  const validAccessSecret = 'a'.repeat(32);
+  const validRefreshSecret = 'b'.repeat(32);
+
+  beforeEach(() => {
+    configService = new ConfigService({
+      NODE_ENV: 'test',
+      JWT_ACCESS_SECRET: validAccessSecret,
+      JWT_REFRESH_SECRET: validRefreshSecret,
+      JWT_ACCESS_EXPIRES_IN: '15m',
+      JWT_REFRESH_EXPIRES_IN: '7d',
+      JWT_ISSUER: 'cliniqo-backend',
+      JWT_AUDIENCE: 'cliniqo-client',
+    });
+
+    jwtService = new JwtService();
+
+    mockSessionModel = {
+      create: vi.fn(),
+      findOne: vi.fn(),
+      updateMany: vi.fn(),
+      updateOne: vi.fn(),
+    };
+
+    mockDoctorModel = {
+      findById: vi.fn(),
+    };
+
+    tokenService = new TokenService(
+      jwtService,
+      configService,
+      mockSessionModel,
+      mockDoctorModel,
+    );
+  });
+
+  describe('parseDurationMs & hashOpaqueToken', () => {
+    it('should parse duration strings accurately', () => {
+      expect(parseDurationMs('10s')).toBe(10000);
+      expect(parseDurationMs('15m')).toBe(15 * 60 * 1000);
+      expect(parseDurationMs('2h')).toBe(2 * 60 * 60 * 1000);
+      expect(parseDurationMs('7d')).toBe(7 * 24 * 60 * 60 * 1000);
+      expect(parseDurationMs('unknown')).toBe(15 * 60 * 1000);
+    });
+
+    it('should compute deterministic SHA-256 hash of tokens', () => {
+      const hash1 = hashOpaqueToken('test-token');
+      const hash2 = hashOpaqueToken('test-token');
+      expect(hash1).toBe(hash2);
+      expect(hash1).toHaveLength(64);
+    });
+  });
+
+  describe('AccessToken Generation & Verification', () => {
+    const mockDoctor = {
+      _id: new Types.ObjectId(),
+      email: 'dr.smith@clinic.com',
+      fullName: 'Dr. Jane Smith',
+      status: DoctorStatus.ACTIVE,
+    };
+
+    it('should generate a valid JWT access token with correct claims', async () => {
+      const token = await tokenService.generateAccessToken(mockDoctor);
+      expect(token).toBeDefined();
+
+      const payload = await tokenService.verifyAccessToken(token);
+      expect(payload.sub).toBe(mockDoctor._id.toString());
+      expect(payload.email).toBe(mockDoctor.email);
+      expect(payload.fullName).toBe(mockDoctor.fullName);
+      expect(payload.status).toBe(DoctorStatus.ACTIVE);
+      expect(payload.type).toBe('access');
+      expect(payload.iss).toBe('cliniqo-backend');
+      expect(payload.aud).toBe('cliniqo-client');
+    });
+
+    it('should fail verification if token is signed with wrong secret (secret separation)', async () => {
+      // Sign with refresh secret instead of access secret
+      const rogueToken = await jwtService.signAsync(
+        { sub: '123', type: 'access' },
+        {
+          secret: validRefreshSecret,
+          issuer: 'cliniqo-backend',
+          audience: 'cliniqo-client',
+        },
+      );
+
+      await expect(tokenService.verifyAccessToken(rogueToken)).rejects.toThrow(
+        UnauthorizedException,
+      );
+    });
+
+    it('should fail verification if token is tampered with', async () => {
+      const token = await tokenService.generateAccessToken(mockDoctor);
+      const tampered = token.slice(0, -5) + 'abcde';
+
+      await expect(tokenService.verifyAccessToken(tampered)).rejects.toThrow(
+        UnauthorizedException,
+      );
+    });
+
+    it('should fail verification if token type is not access', async () => {
+      const rogueToken = await jwtService.signAsync(
+        { sub: '123', type: 'refresh' },
+        {
+          secret: validAccessSecret,
+          issuer: 'cliniqo-backend',
+          audience: 'cliniqo-client',
+        },
+      );
+
+      await expect(tokenService.verifyAccessToken(rogueToken)).rejects.toThrow(
+        'Invalid or expired access token.',
+      );
+    });
+  });
+
+  describe('Refresh Session Lifecycle & Rotation', () => {
+    const doctorId = new Types.ObjectId();
+
+    it('should create an opaque refresh session and store only its SHA-256 hash', async () => {
+      mockSessionModel.create.mockImplementation(async (data: any) => ({
+        ...data,
+        _id: new Types.ObjectId(),
+      }));
+
+      const { refreshToken, session } =
+        await tokenService.createRefreshSession(doctorId);
+
+      expect(refreshToken).toHaveLength(64);
+      expect(session.tokenHash).toBe(hashOpaqueToken(refreshToken));
+      expect(session.tokenHash).not.toBe(refreshToken);
+      expect(session.isRevoked).toBe(false);
+      expect(session.expiresAt.getTime()).toBeGreaterThan(Date.now());
+    });
+
+    it('should rotate a valid refresh session and issue new access & refresh tokens', async () => {
+      const rawOldToken = 'c'.repeat(64);
+      const oldHash = hashOpaqueToken(rawOldToken);
+      const familyId = 'family-123';
+
+      const mockOldSession = {
+        _id: new Types.ObjectId(),
+        doctorId,
+        tokenHash: oldHash,
+        familyId,
+        isRevoked: false,
+        expiresAt: new Date(Date.now() + 100000),
+        save: vi.fn(),
+      };
+
+      mockSessionModel.findOne.mockResolvedValue(mockOldSession);
+      mockDoctorModel.findById.mockResolvedValue({
+        _id: doctorId,
+        email: 'dr@clinic.com',
+        fullName: 'Dr. Who',
+        status: DoctorStatus.ACTIVE,
+      });
+
+      mockSessionModel.create.mockImplementation(async (data: any) => ({
+        ...data,
+        _id: new Types.ObjectId(),
+      }));
+
+      const result = await tokenService.rotateRefreshSession(rawOldToken);
+
+      expect(result.accessToken).toBeDefined();
+      expect(result.refreshToken).toBeDefined();
+      expect(result.refreshToken).not.toBe(rawOldToken);
+      expect(result.tokenType).toBe('Bearer');
+
+      // Old session must be marked revoked
+      expect(mockOldSession.isRevoked).toBe(true);
+      expect(mockOldSession.save).toHaveBeenCalled();
+    });
+
+    it('should detect token replay/reuse and revoke entire session family', async () => {
+      const rawReplayedToken = 'd'.repeat(64);
+      const tokenHash = hashOpaqueToken(rawReplayedToken);
+      const familyId = 'family-compromised';
+
+      const mockReplayedSession = {
+        _id: new Types.ObjectId(),
+        doctorId,
+        tokenHash,
+        familyId,
+        isRevoked: true, // Already revoked/used!
+        expiresAt: new Date(Date.now() + 100000),
+      };
+
+      mockSessionModel.findOne.mockResolvedValue(mockReplayedSession);
+      mockSessionModel.updateMany.mockResolvedValue({ modifiedCount: 3 });
+
+      await expect(
+        tokenService.rotateRefreshSession(rawReplayedToken),
+      ).rejects.toThrow(
+        'Invalid refresh session. Potential token reuse detected. Please log in again.',
+      );
+
+      // Verify all sessions in that family were revoked
+      expect(mockSessionModel.updateMany).toHaveBeenCalledWith(
+        { familyId, isRevoked: false },
+        expect.objectContaining({
+          $set: expect.objectContaining({ isRevoked: true }),
+        }),
+      );
+    });
+
+    it('should reject rotation if refresh token is expired', async () => {
+      const rawExpiredToken = 'e'.repeat(64);
+      const tokenHash = hashOpaqueToken(rawExpiredToken);
+
+      const mockExpiredSession = {
+        _id: new Types.ObjectId(),
+        doctorId,
+        tokenHash,
+        familyId: 'family-expired',
+        isRevoked: false,
+        expiresAt: new Date(Date.now() - 10000), // Expired!
+        save: vi.fn(),
+      };
+
+      mockSessionModel.findOne.mockResolvedValue(mockExpiredSession);
+
+      await expect(
+        tokenService.rotateRefreshSession(rawExpiredToken),
+      ).rejects.toThrow('Refresh token has expired. Please log in again.');
+      expect(mockExpiredSession.isRevoked).toBe(true);
+    });
+
+    it('should revoke a session explicitly on logout', async () => {
+      mockSessionModel.updateOne.mockResolvedValue({ modifiedCount: 1 });
+
+      const success = await tokenService.revokeSession('f'.repeat(64));
+      expect(success).toBe(true);
+      expect(mockSessionModel.updateOne).toHaveBeenCalledWith(
+        { tokenHash: hashOpaqueToken('f'.repeat(64)), isRevoked: false },
+        expect.objectContaining({
+          $set: expect.objectContaining({ isRevoked: true }),
+        }),
+      );
+    });
+
+    it('should revoke all active sessions for a doctor', async () => {
+      mockSessionModel.updateMany.mockResolvedValue({ modifiedCount: 5 });
+
+      const count = await tokenService.revokeAllDoctorSessions(doctorId);
+      expect(count).toBe(5);
+      expect(mockSessionModel.updateMany).toHaveBeenCalledWith(
+        { doctorId, isRevoked: false },
+        expect.objectContaining({
+          $set: expect.objectContaining({ isRevoked: true }),
+        }),
+      );
+    });
+  });
+});

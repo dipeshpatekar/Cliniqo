@@ -14,7 +14,10 @@ describe('HttpExceptionFilter', () => {
       }),
     } as any;
 
-    const exception = new HttpException('Resource not found', HttpStatus.NOT_FOUND);
+    const exception = new HttpException(
+      'Resource not found',
+      HttpStatus.NOT_FOUND,
+    );
     filter.catch(exception, mockHost);
 
     expect(mockStatus).toHaveBeenCalledWith(404);

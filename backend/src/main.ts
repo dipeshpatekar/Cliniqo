@@ -5,8 +5,20 @@ import { HttpExceptionFilter } from './common/filters/http-exception.filter.js';
 import { AppLogger } from './common/logging/app-logger.service.js';
 
 async function bootstrap() {
+  // Automatically load local .env file in Node 20+ environments if present
+  if (typeof process.loadEnvFile === 'function') {
+    try {
+      process.loadEnvFile('.env');
+    } catch {
+      // Gracefully ignore if .env file does not exist
+    }
+  }
+
   const logger = new AppLogger();
   const app = await NestFactory.create(AppModule, { logger });
+
+  // Enable shutdown hooks for graceful database disconnection
+  app.enableShutdownHooks();
 
   const configService = app.get(ConfigService);
 
@@ -21,7 +33,9 @@ async function bootstrap() {
 
   const port = configService.port;
   await app.listen(port);
-  logger.log(`Cliniqo Backend listening on port ${port} in ${configService.nodeEnv} mode`);
+  logger.log(
+    `Cliniqo Backend listening on port ${port} in ${configService.nodeEnv} mode`,
+  );
 }
 
 await bootstrap();

@@ -9,11 +9,42 @@ const SENSITIVE_KEYS = new Set([
   'secret',
   'otp',
   'mongodb_uri',
+  'mongodburi',
+  'uri',
+  'connectionstring',
+  'connection_string',
+  'db_uri',
+  'mongouri',
+  'database_url',
+  'databaseurl',
 ]);
 
+const MONGODB_URI_REGEX = /mongodb(\+srv)?:\/\/[^\s"',;)]+/gi;
+const PASSWORD_PARAM_REGEX = /(password|pwd|secret)=([^&\s]+)/gi;
+
+export function redactString(str: string): string {
+  return str
+    .replace(MONGODB_URI_REGEX, '[REDACTED_MONGODB_URI]')
+    .replace(PASSWORD_PARAM_REGEX, '$1=[REDACTED]');
+}
+
 export function redactSensitiveData(data: unknown): unknown {
+  if (typeof data === 'string') {
+    return redactString(data);
+  }
+
   if (typeof data !== 'object' || data === null) {
     return data;
+  }
+
+  if (data instanceof Error) {
+    const sanitizedMsg = redactString(data.message);
+    const sanitizedStack = data.stack ? redactString(data.stack) : undefined;
+    return {
+      name: data.name,
+      message: sanitizedMsg,
+      ...(sanitizedStack ? { stack: sanitizedStack } : {}),
+    };
   }
 
   if (Array.isArray(data)) {
@@ -26,6 +57,8 @@ export function redactSensitiveData(data: unknown): unknown {
       sanitized[key] = '[REDACTED]';
     } else if (typeof value === 'object' && value !== null) {
       sanitized[key] = redactSensitiveData(value);
+    } else if (typeof value === 'string') {
+      sanitized[key] = redactString(value);
     } else {
       sanitized[key] = value;
     }
@@ -52,10 +85,21 @@ export class AppLogger implements LoggerService {
   }
 
   private format(message: any, optionalParams: any[]): string {
-    const sanitizedMsg = typeof message === 'object' ? JSON.stringify(redactSensitiveData(message)) : message;
-    const sanitizedParams = optionalParams.map((p) =>
-      typeof p === 'object' ? JSON.stringify(redactSensitiveData(p)) : p,
-    );
+    const formatItem = (item: any): string => {
+      if (typeof item === 'string') {
+        return redactString(item);
+      }
+      if (item instanceof Error) {
+        return redactString(item.stack || `${item.name}: ${item.message}`);
+      }
+      if (typeof item === 'object' && item !== null) {
+        return JSON.stringify(redactSensitiveData(item));
+      }
+      return String(item);
+    };
+
+    const sanitizedMsg = formatItem(message);
+    const sanitizedParams = optionalParams.map(formatItem);
     return [sanitizedMsg, ...sanitizedParams].filter(Boolean).join(' ');
   }
 }

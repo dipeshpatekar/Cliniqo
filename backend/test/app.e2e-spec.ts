@@ -1,10 +1,11 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { INestApplication, Module } from '@nestjs/common';
-import { getConnectionToken } from '@nestjs/mongoose';
+import { INestApplication, Module, Global } from '@nestjs/common';
+import { getConnectionToken, getModelToken } from '@nestjs/mongoose';
 import request from 'supertest';
 import type { App } from 'supertest/types.js';
 import { AppModule } from './../src/app.module.js';
 import { DatabaseModule } from './../src/database/database.module.js';
+import { Doctor } from './../src/auth/schemas/doctor.schema.js';
 
 describe('Health Endpoints (e2e)', () => {
   let app: INestApplication<App>;
@@ -28,18 +29,24 @@ describe('Health Endpoints (e2e)', () => {
         },
       }),
     },
+    model: () => ({}),
     on: () => {},
     close: async () => {},
   });
 
+  @Global()
   @Module({
     providers: [
       {
         provide: getConnectionToken(),
         useFactory: () => createMockConnection(),
       },
+      {
+        provide: getModelToken(Doctor.name),
+        useValue: {},
+      },
     ],
-    exports: [getConnectionToken()],
+    exports: [getConnectionToken(), getModelToken(Doctor.name)],
   })
   class MockDatabaseModule {}
 
@@ -54,6 +61,8 @@ describe('Health Endpoints (e2e)', () => {
     })
       .overrideModule(DatabaseModule)
       .useModule(MockDatabaseModule)
+      .overrideProvider(getModelToken(Doctor.name))
+      .useValue({})
       .compile();
 
     app = moduleFixture.createNestApplication();

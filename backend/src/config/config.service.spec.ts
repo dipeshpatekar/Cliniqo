@@ -99,4 +99,117 @@ describe('ConfigService', () => {
       );
     });
   });
+
+  describe('validateAuthConfig', () => {
+    const validAccessSecret = 'a'.repeat(32);
+    const validRefreshSecret = 'b'.repeat(32);
+
+    it('should validate and return auth configuration when valid secrets are provided', () => {
+      const service = new ConfigService({
+        NODE_ENV: 'production',
+        JWT_ACCESS_SECRET: validAccessSecret,
+        JWT_REFRESH_SECRET: validRefreshSecret,
+        JWT_ACCESS_EXPIRES_IN: '15m',
+        JWT_REFRESH_EXPIRES_IN: '7d',
+        ARGON2_MEMORY_COST: '65536',
+        ARGON2_TIME_COST: '3',
+        ARGON2_PARALLELISM: '4',
+      });
+
+      const authConfig = service.validateAuthConfig();
+      expect(authConfig.jwtAccessSecret).toBe(validAccessSecret);
+      expect(authConfig.jwtRefreshSecret).toBe(validRefreshSecret);
+      expect(authConfig.jwtAccessExpiresIn).toBe('15m');
+      expect(authConfig.jwtRefreshExpiresIn).toBe('7d');
+      expect(authConfig.argon2MemoryCost).toBe(65536);
+      expect(authConfig.argon2TimeCost).toBe(3);
+      expect(authConfig.argon2Parallelism).toBe(4);
+    });
+
+    it('should throw when JWT_ACCESS_SECRET is missing or empty', () => {
+      const service = new ConfigService({
+        JWT_REFRESH_SECRET: validRefreshSecret,
+      });
+
+      expect(() => service.validateAuthConfig()).toThrow(
+        'Authentication configuration error: JWT_ACCESS_SECRET is required',
+      );
+    });
+
+    it('should enforce 32-character minimum secret length in production', () => {
+      const service = new ConfigService({
+        NODE_ENV: 'production',
+        JWT_ACCESS_SECRET: 'short-secret-under-32-chars!',
+        JWT_REFRESH_SECRET: validRefreshSecret,
+      });
+
+      expect(() => service.validateAuthConfig()).toThrow(
+        'Authentication configuration error: JWT_ACCESS_SECRET is required and must be at least 32 characters.',
+      );
+    });
+
+    it('should throw when a known weak or placeholder secret is supplied', () => {
+      const service = new ConfigService({
+        NODE_ENV: 'development',
+        JWT_ACCESS_SECRET: 'changeme',
+        JWT_REFRESH_SECRET: validRefreshSecret,
+      });
+
+      expect(() => service.validateAuthConfig()).toThrow(
+        'Authentication configuration error: JWT_ACCESS_SECRET cannot use an insecure or default placeholder value.',
+      );
+    });
+
+    it('should throw when JWT_ACCESS_SECRET and JWT_REFRESH_SECRET are identical', () => {
+      const service = new ConfigService({
+        NODE_ENV: 'production',
+        JWT_ACCESS_SECRET: validAccessSecret,
+        JWT_REFRESH_SECRET: validAccessSecret,
+      });
+
+      expect(() => service.validateAuthConfig()).toThrow(
+        'Authentication configuration error: JWT_ACCESS_SECRET and JWT_REFRESH_SECRET must be distinct keys.',
+      );
+    });
+
+    it('should validate Argon2 parameter bounds', () => {
+      const lowMemService = new ConfigService({
+        JWT_ACCESS_SECRET: validAccessSecret,
+        JWT_REFRESH_SECRET: validRefreshSecret,
+        ARGON2_MEMORY_COST: '1024', // under 16MB
+      });
+      expect(() => lowMemService.validateAuthConfig()).toThrow(
+        'Authentication configuration error: ARGON2_MEMORY_COST must be between 16384 (16MB) and 1048576 (1GB).',
+      );
+
+      const invalidTimeService = new ConfigService({
+        JWT_ACCESS_SECRET: validAccessSecret,
+        JWT_REFRESH_SECRET: validRefreshSecret,
+        ARGON2_TIME_COST: '0',
+      });
+      expect(() => invalidTimeService.validateAuthConfig()).toThrow(
+        'Authentication configuration error: ARGON2_TIME_COST must be between 1 and 100.',
+      );
+    });
+
+    it('should throw when expiry format is invalid', () => {
+      const invalidAccessExpiryService = new ConfigService({
+        JWT_ACCESS_SECRET: validAccessSecret,
+        JWT_REFRESH_SECRET: validRefreshSecret,
+        JWT_ACCESS_EXPIRES_IN: 'invalid-expiry',
+      });
+      expect(() => invalidAccessExpiryService.validateAuthConfig()).toThrow(
+        'Authentication configuration error: JWT_ACCESS_EXPIRES_IN must be a valid time span',
+      );
+
+      const invalidRefreshExpiryService = new ConfigService({
+        JWT_ACCESS_SECRET: validAccessSecret,
+        JWT_REFRESH_SECRET: validRefreshSecret,
+        JWT_REFRESH_EXPIRES_IN: '10years',
+      });
+      expect(() => invalidRefreshExpiryService.validateAuthConfig()).toThrow(
+        'Authentication configuration error: JWT_REFRESH_EXPIRES_IN must be a valid time span',
+      );
+    });
+  });
 });

@@ -62,3 +62,4 @@ recovery.vault.json
 # OS & System
 crash_dumps/
 .mise.local.toml
+*.tsbuildinfo

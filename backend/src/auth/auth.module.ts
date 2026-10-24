@@ -18,6 +18,8 @@ import { RateLimiterService } from './rate-limiter.service.js';
 import { AuthService } from './auth.service.js';
 import { AuthController } from './auth.controller.js';
 
+import { JwtAuthGuard } from './guards/jwt-auth.guard.js';
+
 @Module({
   imports: [
     MongooseModule.forFeature([
@@ -35,7 +37,15 @@ import { AuthController } from './auth.controller.js';
     MailService,
     RateLimiterService,
     AuthService,
+    JwtAuthGuard,
   ],
-  exports: [PasswordService, TokenService, AuthService, MongooseModule],
+  exports: [
+    PasswordService,
+    TokenService,
+    MailService,
+    AuthService,
+    JwtAuthGuard,
+    MongooseModule,
+  ],
 })
 export class AuthModule {}

@@ -51,6 +51,10 @@ export class DatabaseModule implements OnApplicationShutdown {
   private registerConnectionEventListeners(conn: Connection) {
     conn.on('connected', () => {
       this.logger.log('MongoDB connection established successfully');
+      const topologyType = (conn.getClient() as any)?.topology?.description?.type;
+      if (topologyType) {
+        this.logger.log(`MongoDB topology verified: ${topologyType}`);
+      }
     });
 
     conn.on('reconnected', () => {

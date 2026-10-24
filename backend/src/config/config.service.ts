@@ -23,6 +23,7 @@ export interface AppConfig {
   rateLimitLoginWindowSec?: number;
   rateLimitRecoveryMax?: number;
   rateLimitRecoveryWindowSec?: number;
+  outboxEncryptionKey?: string;
 }
 
 export interface AuthConfig {
@@ -53,6 +54,7 @@ export interface RateLimitConfig {
   recoveryWindowSec: number;
 }
 
+const HEX_64_REGEX = /^[0-9a-fA-F]{64}$/;
 const VALID_DB_NAME_REGEX = /^[a-zA-Z0-9_-]{1,63}$/;
 const VALID_EXPIRY_REGEX = /^\d+[smhd]$/;
 const WEAK_SECRETS = new Set([
@@ -120,6 +122,7 @@ export class ConfigService {
       rateLimitRecoveryWindowSec: env.RATE_LIMIT_RECOVERY_WINDOW_SEC
         ? parseInt(env.RATE_LIMIT_RECOVERY_WINDOW_SEC, 10)
         : 300,
+      outboxEncryptionKey: env.OUTBOX_ENCRYPTION_KEY,
     };
   }
 
@@ -337,5 +340,23 @@ export class ConfigService {
       argon2TimeCost: timeCost,
       argon2Parallelism: parallelism,
     };
+  }
+
+  get outboxEncryptionKey(): string | undefined {
+    return this.config.outboxEncryptionKey;
+  }
+
+  /**
+   * Validates OUTBOX_ENCRYPTION_KEY fail-closed.
+   * Requires a 256-bit cryptographic key formatted as exactly 64 hexadecimal characters.
+   */
+  validateOutboxConfig(): Buffer {
+    const key = this.config.outboxEncryptionKey;
+    if (!key || typeof key !== 'string' || !HEX_64_REGEX.test(key.trim())) {
+      throw new Error(
+        'Configuration error: OUTBOX_ENCRYPTION_KEY is required and must be a 256-bit key represented as exactly 64 hexadecimal characters. Generate one with: openssl rand -hex 32',
+      );
+    }
+    return Buffer.from(key.trim(), 'hex');
   }
 }

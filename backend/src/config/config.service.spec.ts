@@ -240,4 +240,46 @@ describe('ConfigService', () => {
       );
     });
   });
+
+  describe('validateOutboxConfig', () => {
+    it('returns a 32-byte Buffer when OUTBOX_ENCRYPTION_KEY is a valid 64-hex string', () => {
+      const validHexKey =
+        '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
+      const service = new ConfigService({
+        OUTBOX_ENCRYPTION_KEY: validHexKey,
+      });
+      const buffer = service.validateOutboxConfig();
+      expect(buffer).toBeInstanceOf(Buffer);
+      expect(buffer.length).toBe(32);
+      expect(buffer.toString('hex')).toBe(validHexKey);
+    });
+
+    it('throws when OUTBOX_ENCRYPTION_KEY is missing or empty', () => {
+      const service = new ConfigService({});
+      expect(() => service.validateOutboxConfig()).toThrow(
+        'Configuration error: OUTBOX_ENCRYPTION_KEY is required and must be a 256-bit key represented as exactly 64 hexadecimal characters',
+      );
+    });
+
+    it('throws when OUTBOX_ENCRYPTION_KEY contains non-hex characters', () => {
+      const invalidHexKey =
+        'replace_with_64_character_hex_key_generated_by_openssl_rand_hex_32';
+      const service = new ConfigService({
+        OUTBOX_ENCRYPTION_KEY: invalidHexKey,
+      });
+      expect(() => service.validateOutboxConfig()).toThrow(
+        'Configuration error: OUTBOX_ENCRYPTION_KEY is required and must be a 256-bit key represented as exactly 64 hexadecimal characters',
+      );
+    });
+
+    it('throws when OUTBOX_ENCRYPTION_KEY is shorter than 64 characters', () => {
+      const shortKey = '0123456789abcdef';
+      const service = new ConfigService({
+        OUTBOX_ENCRYPTION_KEY: shortKey,
+      });
+      expect(() => service.validateOutboxConfig()).toThrow(
+        'Configuration error: OUTBOX_ENCRYPTION_KEY is required and must be a 256-bit key represented as exactly 64 hexadecimal characters',
+      );
+    });
+  });
 });

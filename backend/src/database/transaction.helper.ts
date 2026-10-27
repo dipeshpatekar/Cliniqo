@@ -113,7 +113,14 @@ export async function executeInTransaction<T>(
 
         // 3. Map duplicate unique index violations (E11000)
         if (err?.code === 11000) {
-          throw new ConflictException('A resource with these unique attributes already exists');
+          const conflictEx = new ConflictException('A resource with these unique attributes already exists', {
+            cause: err,
+          });
+          (conflictEx as any).code = 11000;
+          (conflictEx as any).keyPattern = err.keyPattern;
+          (conflictEx as any).keyValue = err.keyValue;
+          (conflictEx as any).driverMessage = err.message;
+          throw conflictEx;
         }
 
         // 4. Sanitize and log unexpected database/infrastructure errors

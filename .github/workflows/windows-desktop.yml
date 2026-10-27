@@ -17,10 +17,10 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: 22
 
@@ -45,7 +45,7 @@ jobs:
           echo "STORE_PATH=$STORE_PATH" >> $GITHUB_ENV
 
       - name: Setup pnpm cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ${{ steps.pnpm-cache.outputs.STORE_PATH }}
           key: ${{ runner.os }}-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
@@ -53,7 +53,7 @@ jobs:
             ${{ runner.os }}-pnpm-store-
 
       - name: Setup Cargo Cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/bin/
@@ -65,8 +65,11 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
-      - name: Install workspace dependencies
-        run: pnpm install --no-frozen-lockfile
+      - name: Install root dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install backend dependencies
+        run: pnpm --prefix backend install --frozen-lockfile
 
       - name: Run Rust Security & DPAPI Tests (Native Windows Kernel)
         # Note: Runs native Windows DPAPI CryptProtectData, CryptUnprotectData,
@@ -78,14 +81,14 @@ jobs:
 
       - name: Run Backend Tests & Lint
         run: |
-          pnpm --filter backend run lint
-          pnpm --filter backend test
+          pnpm --prefix backend run lint
+          pnpm --prefix backend test
 
       - name: Build Web Application
         run: pnpm build
 
       - name: Build Backend Application
-        run: pnpm --filter backend build
+        run: pnpm --prefix backend build
 
       - name: Build Tauri Windows Desktop Shell & NSIS Installer
         # Generates production NSIS setup installer (.exe) for Windows distribution.

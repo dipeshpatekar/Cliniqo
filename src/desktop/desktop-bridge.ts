@@ -327,3 +327,45 @@ export async function getSyncState(
     clinicId,
   })
 }
+
+export interface SyncConflictRecord {
+  id: string
+  outbox_id: string
+  entity_type: "PATIENT" | "CONSULTATION" | "PRESCRIPTION" | string
+  entity_id: string
+  server_version: number
+  client_version: number
+  server_payload: string
+  client_payload: string
+  conflict_reason: string
+  resolution_payload: string | null
+  status: "OPEN" | "RESOLVED" | "DISMISSED" | string
+  resolved_at: string | null
+  resolution_strategy: "USE_SERVER" | "USE_LOCAL" | "MERGE_MANUAL" | "PRESERVE_BOTH" | string | null
+  created_at: string
+}
+
+export async function getSyncConflicts(
+  clinicId: string,
+  statusFilter?: "OPEN" | "RESOLVED" | "DISMISSED" | null,
+): Promise<SyncConflictRecord[]> {
+  const result = await invokeTauri<SyncConflictRecord[]>("get_sync_conflicts", {
+    clinicId,
+    statusFilter: statusFilter ?? null,
+  })
+  return result ?? []
+}
+
+export async function resolveSyncConflict(
+  clinicId: string,
+  conflictId: string,
+  strategy: "USE_SERVER" | "USE_LOCAL" | "MERGE_MANUAL" | "PRESERVE_BOTH",
+  resolutionPayload?: string | null,
+): Promise<SyncConflictRecord | null> {
+  return invokeTauri<SyncConflictRecord>("resolve_sync_conflict", {
+    clinicId,
+    conflictId,
+    strategy,
+    resolutionPayload: resolutionPayload ?? null,
+  })
+}

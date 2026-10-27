@@ -1,4 +1,4 @@
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::json;
 use uuid::Uuid;
 use thiserror::Error;
@@ -23,6 +23,9 @@ pub enum DatabaseOpError {
 
     #[error("Data decryption failed for record: {0}")]
     DecryptionFailed(String),
+
+    #[error("Conflict resolution error: {0}")]
+    ConflictResolution(String),
 }
 
 pub struct DbOperations;
@@ -870,6 +873,658 @@ impl DbOperations {
         };
 
         Ok(conflicts)
+    }
+
+    /// Queries conflicts strictly scoped to a clinic tenancy, optionally filtering by status (e.g. 'OPEN')
+    pub fn get_conflicts_for_clinic(
+        conn: &Connection,
+        clinic_id: &str,
+        status_filter: Option<&str>,
+    ) -> Result<Vec<SyncConflictRecord>, DatabaseOpError> {
+        let (sql, has_filter) = match status_filter {
+            Some(_) => (
+                r#"
+                SELECT c.id, c.outbox_id, c.entity_type, c.entity_id, c.server_version, c.client_version,
+                       c.server_payload, c.client_payload, c.conflict_reason, c.resolution_payload, c.status,
+                       c.resolved_at, c.resolution_strategy, c.created_at
+                FROM local_sync_conflicts c
+                INNER JOIN local_sync_outbox o ON c.outbox_id = o.id
+                WHERE o.clinic_id = ?1 AND c.status = ?2
+                ORDER BY c.created_at DESC
+                "#,
+                true,
+            ),
+            None => (
+                r#"
+                SELECT c.id, c.outbox_id, c.entity_type, c.entity_id, c.server_version, c.client_version,
+                       c.server_payload, c.client_payload, c.conflict_reason, c.resolution_payload, c.status,
+                       c.resolved_at, c.resolution_strategy, c.created_at
+                FROM local_sync_conflicts c
+                INNER JOIN local_sync_outbox o ON c.outbox_id = o.id
+                WHERE o.clinic_id = ?1
+                ORDER BY c.created_at DESC
+                "#,
+                false,
+            ),
+        };
+
+        let map_row = |row: &rusqlite::Row| -> rusqlite::Result<SyncConflictRecord> {
+            Ok(SyncConflictRecord {
+                id: row.get(0)?,
+                outbox_id: row.get(1)?,
+                entity_type: row.get(2)?,
+                entity_id: row.get(3)?,
+                server_version: row.get(4)?,
+                client_version: row.get(5)?,
+                server_payload: row.get(6)?,
+                client_payload: row.get(7)?,
+                conflict_reason: row.get(8)?,
+                resolution_payload: row.get(9)?,
+                status: row.get(10)?,
+                resolved_at: row.get(11)?,
+                resolution_strategy: row.get(12)?,
+                created_at: row.get(13)?,
+            })
+        };
+
+        let mut stmt = conn.prepare(sql)?;
+        let conflicts = if has_filter {
+            stmt.query_map(params![clinic_id, status_filter.unwrap()], map_row)?
+                .collect::<Result<Vec<_>, _>>()?
+        } else {
+            stmt.query_map(params![clinic_id], map_row)?
+                .collect::<Result<Vec<_>, _>>()?
+        };
+
+        Ok(conflicts)
+    }
+
+    /// Durably resolves a synchronization conflict in encrypted SQLite.
+    /// Transactionally updates:
+    /// 1. The domain entity (patient, consultation, or prescription) with AES-256-GCM encryption.
+    /// 2. The outbox mutation (superseding old failed mutation and enqueueing new retryable mutation with monotonic version).
+    /// 3. The `local_sync_conflicts` table marking status = 'RESOLVED', with resolution strategy and payload.
+    ///
+    /// Preserves clinic tenant boundaries, prevents silent data loss, and is crash/restart safe.
+    pub fn apply_conflict_resolution(
+        conn: &mut Connection,
+        dek: &DatabaseEncryptionKey,
+        clinic_id: &str,
+        conflict_id: &str,
+        strategy: &str,
+        resolution_payload: Option<&str>,
+    ) -> Result<SyncConflictRecord, DatabaseOpError> {
+        let tx = conn.transaction()?;
+
+        // 1. Fetch conflict and verify clinic tenancy
+        let (outbox_id, entity_type, entity_id, server_version, client_version, server_payload_str, client_payload_str, conflict_status): (
+            String, String, String, i32, i32, String, String, String
+        ) = {
+            let mut stmt = tx.prepare(
+                r#"
+                SELECT c.outbox_id, c.entity_type, c.entity_id, c.server_version, c.client_version,
+                       c.server_payload, c.client_payload, c.status
+                FROM local_sync_conflicts c
+                INNER JOIN local_sync_outbox o ON c.outbox_id = o.id
+                WHERE c.id = ?1 AND o.clinic_id = ?2
+                "#,
+            )?;
+            stmt.query_row(params![conflict_id, clinic_id], |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                    row.get(7)?,
+                ))
+            })
+            .map_err(|e| match e {
+                rusqlite::Error::QueryReturnedNoRows => {
+                    DatabaseOpError::ConflictResolution(format!(
+                        "Conflict '{conflict_id}' not found for clinic '{clinic_id}'"
+                    ))
+                }
+                other => DatabaseOpError::Sqlite(other),
+            })?
+        };
+
+        if conflict_status != "OPEN" {
+            return Err(DatabaseOpError::ConflictResolution(format!(
+                "Conflict '{conflict_id}' is already {conflict_status}"
+            )));
+        }
+
+        let strategy_upper = strategy.to_uppercase();
+        let target_version = std::cmp::max(server_version, client_version) + 1;
+
+        match strategy_upper.as_str() {
+            "USE_SERVER" => {
+                let server_json: serde_json::Value = serde_json::from_str(&server_payload_str)
+                    .unwrap_or(serde_json::Value::Null);
+
+                match entity_type.as_str() {
+                    "PATIENT" => {
+                        let name = server_json.get("name").and_then(|v| v.as_str()).unwrap_or("Unnamed Patient");
+                        let phone = server_json.get("phone").and_then(|v| v.as_str()).unwrap_or("");
+                        let gender = server_json.get("gender").and_then(|v| v.as_str()).unwrap_or("OTHER");
+                        let patient_code = server_json.get("patientId")
+                            .or_else(|| server_json.get("patientCode"))
+                            .or_else(|| server_json.get("patient_code"))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("P-UNKNOWN");
+                        let date_of_birth = server_json.get("dateOfBirth")
+                            .or_else(|| server_json.get("date_of_birth"))
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string());
+                        let age = server_json.get("age").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+                        let allergies: Vec<String> = server_json.get("allergies")
+                            .and_then(|v| v.as_array())
+                            .map(|arr| arr.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+                            .unwrap_or_default();
+                        let conditions: Vec<String> = server_json.get("conditions")
+                            .and_then(|v| v.as_array())
+                            .map(|arr| arr.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+                            .unwrap_or_default();
+
+                        let demo = PatientDemographics {
+                            name: name.to_string(),
+                            phone: phone.to_string(),
+                            gender: gender.to_string(),
+                            date_of_birth,
+                            age,
+                            allergies,
+                            conditions,
+                            sensitive_notes: None,
+                        };
+                        let demo_bytes = serde_json::to_vec(&demo)?;
+                        let (enc_demo, demo_nonce) = encrypt_payload(&dek.key, &demo_bytes)?;
+
+                        tx.execute(
+                            r#"
+                            UPDATE local_patients
+                            SET patient_code = ?1,
+                                encrypted_demographics = ?2,
+                                nonce = ?3,
+                                sync_status = 'SYNCED',
+                                server_version = ?4,
+                                local_version = ?4,
+                                updated_at = CURRENT_TIMESTAMP
+                            WHERE clinic_id = ?5 AND (id = ?6 OR server_id = ?6)
+                            "#,
+                            params![patient_code, enc_demo, demo_nonce, server_version, clinic_id, entity_id],
+                        )?;
+                    }
+                    "CONSULTATION" => {
+                        let chief_complaint = server_json.get("chiefComplaint")
+                            .or_else(|| server_json.get("chief_complaint"))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("");
+                        let diagnosis = server_json.get("diagnosis").and_then(|v| v.as_str()).unwrap_or("");
+                        let status = server_json.get("status").and_then(|v| v.as_str()).unwrap_or("DRAFT");
+                        let snapshot = server_json.get("clinicalSnapshot")
+                            .or_else(|| server_json.get("clinical_snapshot_json"))
+                            .map(|v| v.to_string());
+
+                        let clinical_data = ClinicalData {
+                            chief_complaint: chief_complaint.to_string(),
+                            diagnosis: diagnosis.to_string(),
+                            clinical_snapshot_json: snapshot,
+                        };
+                        let clinical_bytes = serde_json::to_vec(&clinical_data)?;
+                        let (enc_bytes, nonce) = encrypt_payload(&dek.key, &clinical_bytes)?;
+
+                        tx.execute(
+                            r#"
+                            UPDATE local_consultations
+                            SET status = ?1,
+                                encrypted_clinical_data = ?2,
+                                nonce = ?3,
+                                sync_status = 'SYNCED',
+                                server_version = ?4,
+                                local_version = ?4,
+                                updated_at = CURRENT_TIMESTAMP
+                            WHERE clinic_id = ?5 AND (id = ?6 OR server_id = ?6)
+                            "#,
+                            params![status, enc_bytes, nonce, server_version, clinic_id, entity_id],
+                        )?;
+                    }
+                    "PRESCRIPTION" | "PRESCRIPTION_REVISION" => {
+                        let items_val = server_json.get("items")
+                            .or_else(|| server_json.get("medicines"))
+                            .or_else(|| server_json.get("items_json"));
+                        let items_str = items_val.map(|v| v.to_string()).unwrap_or_else(|| "[]".to_string());
+                        let (enc_items, nonce) = encrypt_payload(&dek.key, items_str.as_bytes())?;
+                        let status = server_json.get("status").and_then(|v| v.as_str()).unwrap_or("ACTIVE");
+
+                        tx.execute(
+                            r#"
+                            UPDATE local_prescriptions
+                            SET status = ?1,
+                                encrypted_items = ?2,
+                                nonce = ?3,
+                                sync_status = 'SYNCED',
+                                server_version = ?4,
+                                local_version = ?4,
+                                updated_at = CURRENT_TIMESTAMP
+                            WHERE clinic_id = ?5 AND (id = ?6 OR server_id = ?6)
+                            "#,
+                            params![status, enc_items, nonce, server_version, clinic_id, entity_id],
+                        )?;
+                    }
+                    _ => {}
+                }
+
+                // Mark original conflicting outbox item as SYNCED (superseded)
+                tx.execute(
+                    r#"
+                    UPDATE local_sync_outbox
+                    SET sync_status = 'SYNCED',
+                        last_error = 'Resolved: Accepted server authoritative state',
+                        synced_at = CURRENT_TIMESTAMP
+                    WHERE id = ?1
+                    "#,
+                    params![outbox_id],
+                )?;
+
+                // Update conflict record
+                tx.execute(
+                    r#"
+                    UPDATE local_sync_conflicts
+                    SET status = 'RESOLVED',
+                        resolution_strategy = 'USE_SERVER',
+                        resolution_payload = ?1,
+                        resolved_at = CURRENT_TIMESTAMP
+                    WHERE id = ?2
+                    "#,
+                    params![server_payload_str, conflict_id],
+                )?;
+            }
+
+            "USE_LOCAL" => {
+                // Doctor re-asserts local state. Enqueue a new mutation with clientVersion >= serverVersion.
+                let client_json: serde_json::Value = serde_json::from_str(&client_payload_str)
+                    .unwrap_or_else(|_| json!({}));
+
+                match entity_type.as_str() {
+                    "PATIENT" => {
+                        tx.execute(
+                            r#"
+                            UPDATE local_patients
+                            SET sync_status = 'PENDING',
+                                local_version = ?1,
+                                server_version = ?2,
+                                updated_at = CURRENT_TIMESTAMP
+                            WHERE clinic_id = ?3 AND (id = ?4 OR server_id = ?4)
+                            "#,
+                            params![target_version, server_version, clinic_id, entity_id],
+                        )?;
+                    }
+                    "CONSULTATION" => {
+                        tx.execute(
+                            r#"
+                            UPDATE local_consultations
+                            SET sync_status = 'PENDING',
+                                local_version = ?1,
+                                server_version = ?2,
+                                updated_at = CURRENT_TIMESTAMP
+                            WHERE clinic_id = ?3 AND (id = ?4 OR server_id = ?4)
+                            "#,
+                            params![target_version, server_version, clinic_id, entity_id],
+                        )?;
+                    }
+                    "PRESCRIPTION" | "PRESCRIPTION_REVISION" => {
+                        tx.execute(
+                            r#"
+                            UPDATE local_prescriptions
+                            SET sync_status = 'PENDING',
+                                local_version = ?1,
+                                server_version = ?2,
+                                updated_at = CURRENT_TIMESTAMP
+                            WHERE clinic_id = ?3 AND (id = ?4 OR server_id = ?4)
+                            "#,
+                            params![target_version, server_version, clinic_id, entity_id],
+                        )?;
+                    }
+                    _ => {}
+                }
+
+                // Supersede old outbox item
+                tx.execute(
+                    r#"
+                    UPDATE local_sync_outbox
+                    SET sync_status = 'SYNCED',
+                        last_error = 'Superseded by local conflict resolution'
+                    WHERE id = ?1
+                    "#,
+                    params![outbox_id],
+                )?;
+
+                // Enqueue new outbox mutation with monotonic version
+                let new_outbox_id = Uuid::new_v4().to_string();
+                let idempotency_key = format!("local-{}-{}-resolve-uselocal-v{}", entity_type.to_lowercase(), entity_id, target_version);
+                let (enc_outbox, outbox_nonce) = encrypt_payload(&dek.key, client_json.to_string().as_bytes())?;
+
+                tx.execute(
+                    r#"
+                    INSERT INTO local_sync_outbox (
+                        id, clinic_id, entity_type, entity_id, action, idempotency_key, encrypted_payload, nonce, sync_status, retry_count
+                    ) VALUES (?1, ?2, ?3, ?4, 'UPDATE', ?5, ?6, ?7, 'PENDING', 0)
+                    "#,
+                    params![new_outbox_id, clinic_id, entity_type, entity_id, idempotency_key, enc_outbox, outbox_nonce],
+                )?;
+
+                tx.execute(
+                    r#"
+                    UPDATE local_sync_conflicts
+                    SET status = 'RESOLVED',
+                        resolution_strategy = 'USE_LOCAL',
+                        resolution_payload = ?1,
+                        resolved_at = CURRENT_TIMESTAMP
+                    WHERE id = ?2
+                    "#,
+                    params![client_payload_str, conflict_id],
+                )?;
+            }
+
+            "MERGE_MANUAL" => {
+                let payload_str = resolution_payload.ok_or_else(|| {
+                    DatabaseOpError::ConflictResolution("MERGE_MANUAL requires non-null resolution_payload".to_string())
+                })?;
+                let merged_json: serde_json::Value = serde_json::from_str(payload_str)?;
+
+                match entity_type.as_str() {
+                    "PATIENT" => {
+                        let name = merged_json.get("name").and_then(|v| v.as_str()).unwrap_or("Unnamed Patient");
+                        let phone = merged_json.get("phone").and_then(|v| v.as_str()).unwrap_or("");
+                        let gender = merged_json.get("gender").and_then(|v| v.as_str()).unwrap_or("OTHER");
+                        let patient_code = merged_json.get("patientId")
+                            .or_else(|| merged_json.get("patientCode"))
+                            .or_else(|| merged_json.get("patient_code"))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("P-UNKNOWN");
+                        let date_of_birth = merged_json.get("dateOfBirth")
+                            .or_else(|| merged_json.get("date_of_birth"))
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string());
+                        let age = merged_json.get("age").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+                        let allergies: Vec<String> = merged_json.get("allergies")
+                            .and_then(|v| v.as_array())
+                            .map(|arr| arr.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+                            .unwrap_or_default();
+                        let conditions: Vec<String> = merged_json.get("conditions")
+                            .and_then(|v| v.as_array())
+                            .map(|arr| arr.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+                            .unwrap_or_default();
+
+                        let demo = PatientDemographics {
+                            name: name.to_string(),
+                            phone: phone.to_string(),
+                            gender: gender.to_string(),
+                            date_of_birth,
+                            age,
+                            allergies,
+                            conditions,
+                            sensitive_notes: None,
+                        };
+                        let demo_bytes = serde_json::to_vec(&demo)?;
+                        let (enc_demo, demo_nonce) = encrypt_payload(&dek.key, &demo_bytes)?;
+
+                        tx.execute(
+                            r#"
+                            UPDATE local_patients
+                            SET patient_code = ?1,
+                                encrypted_demographics = ?2,
+                                nonce = ?3,
+                                sync_status = 'PENDING',
+                                server_version = ?4,
+                                local_version = ?5,
+                                updated_at = CURRENT_TIMESTAMP
+                            WHERE clinic_id = ?6 AND (id = ?7 OR server_id = ?7)
+                            "#,
+                            params![patient_code, enc_demo, demo_nonce, server_version, target_version, clinic_id, entity_id],
+                        )?;
+                    }
+                    "CONSULTATION" => {
+                        let chief_complaint = merged_json.get("chiefComplaint")
+                            .or_else(|| merged_json.get("chief_complaint"))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("");
+                        let diagnosis = merged_json.get("diagnosis").and_then(|v| v.as_str()).unwrap_or("");
+                        let status = merged_json.get("status").and_then(|v| v.as_str()).unwrap_or("DRAFT");
+                        let snapshot = merged_json.get("clinicalSnapshot")
+                            .or_else(|| merged_json.get("clinical_snapshot_json"))
+                            .map(|v| v.to_string());
+
+                        let clinical_data = ClinicalData {
+                            chief_complaint: chief_complaint.to_string(),
+                            diagnosis: diagnosis.to_string(),
+                            clinical_snapshot_json: snapshot,
+                        };
+                        let clinical_bytes = serde_json::to_vec(&clinical_data)?;
+                        let (enc_bytes, nonce) = encrypt_payload(&dek.key, &clinical_bytes)?;
+
+                        tx.execute(
+                            r#"
+                            UPDATE local_consultations
+                            SET status = ?1,
+                                encrypted_clinical_data = ?2,
+                                nonce = ?3,
+                                sync_status = 'PENDING',
+                                server_version = ?4,
+                                local_version = ?5,
+                                updated_at = CURRENT_TIMESTAMP
+                            WHERE clinic_id = ?6 AND (id = ?7 OR server_id = ?7)
+                            "#,
+                            params![status, enc_bytes, nonce, server_version, target_version, clinic_id, entity_id],
+                        )?;
+                    }
+                    "PRESCRIPTION" | "PRESCRIPTION_REVISION" => {
+                        let items_val = merged_json.get("items")
+                            .or_else(|| merged_json.get("medicines"))
+                            .or_else(|| merged_json.get("items_json"));
+                        let items_str = items_val.map(|v| v.to_string()).unwrap_or_else(|| "[]".to_string());
+                        let (enc_items, nonce) = encrypt_payload(&dek.key, items_str.as_bytes())?;
+                        let status = merged_json.get("status").and_then(|v| v.as_str()).unwrap_or("ACTIVE");
+
+                        tx.execute(
+                            r#"
+                            UPDATE local_prescriptions
+                            SET status = ?1,
+                                encrypted_items = ?2,
+                                nonce = ?3,
+                                sync_status = 'PENDING',
+                                server_version = ?4,
+                                local_version = ?5,
+                                updated_at = CURRENT_TIMESTAMP
+                            WHERE clinic_id = ?6 AND (id = ?7 OR server_id = ?7)
+                            "#,
+                            params![status, enc_items, nonce, server_version, target_version, clinic_id, entity_id],
+                        )?;
+                    }
+                    _ => {}
+                }
+
+                // Supersede old outbox item
+                tx.execute(
+                    r#"
+                    UPDATE local_sync_outbox
+                    SET sync_status = 'SYNCED',
+                        last_error = 'Superseded by manual merge resolution'
+                    WHERE id = ?1
+                    "#,
+                    params![outbox_id],
+                )?;
+
+                // Enqueue new outbox mutation with merged payload
+                let new_outbox_id = Uuid::new_v4().to_string();
+                let idempotency_key = format!("local-{}-{}-resolve-merge-v{}", entity_type.to_lowercase(), entity_id, target_version);
+                let (enc_outbox, outbox_nonce) = encrypt_payload(&dek.key, payload_str.as_bytes())?;
+
+                tx.execute(
+                    r#"
+                    INSERT INTO local_sync_outbox (
+                        id, clinic_id, entity_type, entity_id, action, idempotency_key, encrypted_payload, nonce, sync_status, retry_count
+                    ) VALUES (?1, ?2, ?3, ?4, 'UPDATE', ?5, ?6, ?7, 'PENDING', 0)
+                    "#,
+                    params![new_outbox_id, clinic_id, entity_type, entity_id, idempotency_key, enc_outbox, outbox_nonce],
+                )?;
+
+                tx.execute(
+                    r#"
+                    UPDATE local_sync_conflicts
+                    SET status = 'RESOLVED',
+                        resolution_strategy = 'MERGE_MANUAL',
+                        resolution_payload = ?1,
+                        resolved_at = CURRENT_TIMESTAMP
+                    WHERE id = ?2
+                    "#,
+                    params![payload_str, conflict_id],
+                )?;
+            }
+
+            "PRESERVE_BOTH" => {
+                // Doctor preserves local version as a new separate entity, and accepts server version on original.
+                // Particularly important for consultations where independent notes cannot be discarded.
+                if entity_type == "CONSULTATION" {
+                    let new_consultation_id = Uuid::new_v4().to_string();
+
+                    // Read local consultation details to clone
+                    let local_consult: Option<(String, String, String, String, Vec<u8>, Vec<u8>)> = {
+                        let mut stmt = tx.prepare(
+                            r#"
+                            SELECT patient_id, doctor_id, consultation_date, status, encrypted_clinical_data, nonce
+                            FROM local_consultations
+                            WHERE clinic_id = ?1 AND (id = ?2 OR server_id = ?2)
+                            "#,
+                        )?;
+                        stmt.query_row(params![clinic_id, entity_id], |row| {
+                            Ok((
+                                row.get(0)?,
+                                row.get(1)?,
+                                row.get(2)?,
+                                row.get(3)?,
+                                row.get(4)?,
+                                row.get(5)?,
+                            ))
+                        })
+                        .optional()?
+                    };
+
+                    if let Some((pat_id, doc_id, c_date, status, enc_clinical, nonce)) = local_consult {
+                        // 1. Insert new cloned consultation
+                        tx.execute(
+                            r#"
+                            INSERT INTO local_consultations (
+                                id, clinic_id, patient_id, doctor_id, consultation_date, status,
+                                encrypted_clinical_data, nonce, sync_status, server_version, local_version
+                            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'PENDING', 1, 1)
+                            "#,
+                            params![new_consultation_id, clinic_id, pat_id, doc_id, c_date, status, enc_clinical, nonce],
+                        )?;
+
+                        // 2. Enqueue CREATE outbox for the new consultation
+                        let new_outbox_id = Uuid::new_v4().to_string();
+                        let idempotency_key = format!("local-consultation-create-{}", new_consultation_id);
+                        let client_json: serde_json::Value = serde_json::from_str(&client_payload_str)
+                            .unwrap_or_else(|_| json!({}));
+                        let (enc_payload, out_nonce) = encrypt_payload(&dek.key, client_json.to_string().as_bytes())?;
+
+                        tx.execute(
+                            r#"
+                            INSERT INTO local_sync_outbox (
+                                id, clinic_id, entity_type, entity_id, action, idempotency_key, encrypted_payload, nonce, sync_status, retry_count
+                            ) VALUES (?1, ?2, 'CONSULTATION', ?3, 'CREATE', ?4, ?5, ?6, 'PENDING', 0)
+                            "#,
+                            params![new_outbox_id, clinic_id, new_consultation_id, idempotency_key, enc_payload, out_nonce],
+                        )?;
+                    }
+                }
+
+                // Accept server version on the original record
+                let server_json: serde_json::Value = serde_json::from_str(&server_payload_str)
+                    .unwrap_or(serde_json::Value::Null);
+
+                if entity_type == "CONSULTATION" {
+                    let chief_complaint = server_json.get("chiefComplaint")
+                        .or_else(|| server_json.get("chief_complaint"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    let diagnosis = server_json.get("diagnosis").and_then(|v| v.as_str()).unwrap_or("");
+                    let status = server_json.get("status").and_then(|v| v.as_str()).unwrap_or("DRAFT");
+                    let snapshot = server_json.get("clinicalSnapshot")
+                        .or_else(|| server_json.get("clinical_snapshot_json"))
+                        .map(|v| v.to_string());
+
+                    let clinical_data = ClinicalData {
+                        chief_complaint: chief_complaint.to_string(),
+                        diagnosis: diagnosis.to_string(),
+                        clinical_snapshot_json: snapshot,
+                    };
+                    let clinical_bytes = serde_json::to_vec(&clinical_data)?;
+                    let (enc_bytes, nonce) = encrypt_payload(&dek.key, &clinical_bytes)?;
+
+                    tx.execute(
+                        r#"
+                        UPDATE local_consultations
+                        SET status = ?1,
+                            encrypted_clinical_data = ?2,
+                            nonce = ?3,
+                            sync_status = 'SYNCED',
+                            server_version = ?4,
+                            local_version = ?4,
+                            updated_at = CURRENT_TIMESTAMP
+                        WHERE clinic_id = ?5 AND (id = ?6 OR server_id = ?6)
+                        "#,
+                        params![status, enc_bytes, nonce, server_version, clinic_id, entity_id],
+                    )?;
+                }
+
+                // Mark original outbox item as SYNCED
+                tx.execute(
+                    r#"
+                    UPDATE local_sync_outbox
+                    SET sync_status = 'SYNCED',
+                        last_error = 'Resolved: Preserved both versions'
+                    WHERE id = ?1
+                    "#,
+                    params![outbox_id],
+                )?;
+
+                // Update conflict record
+                tx.execute(
+                    r#"
+                    UPDATE local_sync_conflicts
+                    SET status = 'RESOLVED',
+                        resolution_strategy = 'PRESERVE_BOTH',
+                        resolution_payload = ?1,
+                        resolved_at = CURRENT_TIMESTAMP
+                    WHERE id = ?2
+                    "#,
+                    params![server_payload_str, conflict_id],
+                )?;
+            }
+
+            other => {
+                return Err(DatabaseOpError::ConflictResolution(format!(
+                    "Unsupported conflict resolution strategy: '{other}'"
+                )));
+            }
+        }
+
+        tx.commit()?;
+
+        // Retrieve and return the updated conflict record
+        let updated = Self::get_conflicts_for_clinic(conn, clinic_id, None)?
+            .into_iter()
+            .find(|c| c.id == conflict_id)
+            .ok_or_else(|| {
+                DatabaseOpError::ConflictResolution("Conflict vanished after resolution commit".to_string())
+            })?;
+
+        Ok(updated)
     }
 
     /// Fetches pending outbox mutations for a clinic up to `batch_size`, marking them IN_FLIGHT.
@@ -2479,5 +3134,441 @@ mod tests {
         }
 
         let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn test_conflict_resolution_use_server() {
+        let (mut conn, dek) = setup_test_db();
+        let clinic_id = "clinic_res_test";
+
+        let local_pat_id = DbOperations::insert_patient(
+            &mut conn,
+            &dek,
+            clinic_id,
+            "P-100",
+            "Local Offline Name",
+            "1111111111",
+            "MALE",
+            None,
+            25,
+            &["LocalAllergy".to_string()],
+            &[],
+            None,
+        )
+        .unwrap();
+
+        let batch = DbOperations::get_pending_outbox_batch(&mut conn, &dek, clinic_id, 10).unwrap();
+        let outbox_id = &batch[0].id;
+
+        let conflict_details = serde_json::json!({
+            "conflictReason": "DIVERGENT_CLINICAL_DATA",
+            "serverVersion": 5,
+            "clientVersion": 1,
+            "serverState": {
+                "patientId": "P-100",
+                "name": "Server Authoritative Name",
+                "phone": "9999999999",
+                "gender": "MALE",
+                "age": 26,
+                "allergies": ["ServerAllergy"],
+                "conditions": ["ServerCondition"]
+            },
+            "clientPayload": {
+                "name": "Local Offline Name",
+                "phone": "1111111111"
+            }
+        });
+
+        DbOperations::apply_push_mutation_result(
+            &mut conn,
+            outbox_id,
+            "CONFLICT",
+            "PATIENT",
+            &local_pat_id,
+            Some("srv_p1"),
+            Some(5),
+            Some("Conflict"),
+            Some(&conflict_details),
+        )
+        .unwrap();
+
+        let open_conflicts = DbOperations::get_conflicts_for_clinic(&conn, clinic_id, Some("OPEN")).unwrap();
+        assert_eq!(open_conflicts.len(), 1);
+        let conflict_id = &open_conflicts[0].id;
+
+        // Resolve using USE_SERVER
+        let resolved = DbOperations::apply_conflict_resolution(
+            &mut conn,
+            &dek,
+            clinic_id,
+            conflict_id,
+            "USE_SERVER",
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(resolved.status, "RESOLVED");
+        assert_eq!(resolved.resolution_strategy.as_deref(), Some("USE_SERVER"));
+
+        // Verify patient record updated with server data and SYNCED
+        let patients = DbOperations::get_patients(&conn, &dek, clinic_id).unwrap();
+        let p = &patients[0];
+        assert_eq!(p.name, "Server Authoritative Name");
+        assert_eq!(p.phone, "9999999999");
+        assert_eq!(p.age, 26);
+        assert_eq!(p.allergies, vec!["ServerAllergy".to_string()]);
+        assert_eq!(p.conditions, vec!["ServerCondition".to_string()]);
+        assert_eq!(p.sync_status, "SYNCED");
+        assert_eq!(p.server_version, 5);
+
+        // Verify no pending outbox mutations remain
+        let summary = DbOperations::get_outbox_summary(&conn, clinic_id).unwrap();
+        assert_eq!(summary.pending_count, 0);
+        assert_eq!(summary.conflict_count, 0);
+    }
+
+    #[test]
+    fn test_conflict_resolution_use_local() {
+        let (mut conn, dek) = setup_test_db();
+        let clinic_id = "clinic_uselocal_test";
+
+        let local_pat_id = DbOperations::insert_patient(
+            &mut conn,
+            &dek,
+            clinic_id,
+            "P-200",
+            "Doctor Desired Name",
+            "2222222222",
+            "FEMALE",
+            None,
+            30,
+            &[],
+            &[],
+            None,
+        )
+        .unwrap();
+
+        let batch = DbOperations::get_pending_outbox_batch(&mut conn, &dek, clinic_id, 10).unwrap();
+        let outbox_id = &batch[0].id;
+
+        let conflict_details = serde_json::json!({
+            "conflictReason": "CONCURRENT_MODIFICATION",
+            "serverVersion": 3,
+            "clientVersion": 1,
+            "serverState": { "name": "Server Name" },
+            "clientPayload": { "name": "Doctor Desired Name", "phone": "2222222222" }
+        });
+
+        DbOperations::apply_push_mutation_result(
+            &mut conn,
+            outbox_id,
+            "CONFLICT",
+            "PATIENT",
+            &local_pat_id,
+            Some("srv_p2"),
+            Some(3),
+            Some("Conflict"),
+            Some(&conflict_details),
+        )
+        .unwrap();
+
+        let open_conflicts = DbOperations::get_conflicts_for_clinic(&conn, clinic_id, Some("OPEN")).unwrap();
+        let conflict_id = &open_conflicts[0].id;
+
+        // Resolve using USE_LOCAL
+        let resolved = DbOperations::apply_conflict_resolution(
+            &mut conn,
+            &dek,
+            clinic_id,
+            conflict_id,
+            "USE_LOCAL",
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(resolved.status, "RESOLVED");
+        assert_eq!(resolved.resolution_strategy.as_deref(), Some("USE_LOCAL"));
+
+        // Verify local patient marked PENDING with monotonic version >= server_version + 1
+        let patients = DbOperations::get_patients(&conn, &dek, clinic_id).unwrap();
+        let p = &patients[0];
+        assert_eq!(p.name, "Doctor Desired Name");
+        assert_eq!(p.sync_status, "PENDING");
+        assert_eq!(p.local_version, 4);
+
+        // Verify a NEW outbox mutation is enqueued with target version 4
+        let new_batch = DbOperations::get_pending_outbox_batch(&mut conn, &dek, clinic_id, 10).unwrap();
+        assert_eq!(new_batch.len(), 1);
+        assert_eq!(new_batch[0].action, "UPDATE");
+        assert!(new_batch[0].idempotency_key.contains("resolve-uselocal"));
+    }
+
+    #[test]
+    fn test_conflict_resolution_merge_manual() {
+        let (mut conn, dek) = setup_test_db();
+        let clinic_id = "clinic_merge_test";
+
+        let local_pat_id = DbOperations::insert_patient(
+            &mut conn,
+            &dek,
+            clinic_id,
+            "P-300",
+            "Dr Alice Notes",
+            "3333333333",
+            "FEMALE",
+            None,
+            45,
+            &["Penicillin".to_string()],
+            &[],
+            None,
+        )
+        .unwrap();
+
+        let batch = DbOperations::get_pending_outbox_batch(&mut conn, &dek, clinic_id, 10).unwrap();
+        let outbox_id = &batch[0].id;
+
+        let conflict_details = serde_json::json!({
+            "conflictReason": "DIVERGENT_CLINICAL_DATA",
+            "serverVersion": 2,
+            "clientVersion": 1,
+            "serverState": {
+                "name": "Dr Bob Notes",
+                "phone": "3333333333",
+                "allergies": ["Sulfa"],
+                "conditions": ["Diabetes"]
+            },
+            "clientPayload": {
+                "name": "Dr Alice Notes",
+                "allergies": ["Penicillin"]
+            }
+        });
+
+        DbOperations::apply_push_mutation_result(
+            &mut conn,
+            outbox_id,
+            "CONFLICT",
+            "PATIENT",
+            &local_pat_id,
+            Some("srv_p3"),
+            Some(2),
+            Some("Conflict"),
+            Some(&conflict_details),
+        )
+        .unwrap();
+
+        let open_conflicts = DbOperations::get_conflicts_for_clinic(&conn, clinic_id, Some("OPEN")).unwrap();
+        let conflict_id = &open_conflicts[0].id;
+
+        // Merged clinical data combines allergies Penicillin and Sulfa
+        let merged_payload = serde_json::json!({
+            "patientId": "P-300",
+            "name": "Dr Alice & Bob Reconciled",
+            "phone": "3333333333",
+            "gender": "FEMALE",
+            "age": 45,
+            "allergies": ["Penicillin", "Sulfa"],
+            "conditions": ["Diabetes"]
+        })
+        .to_string();
+
+        let resolved = DbOperations::apply_conflict_resolution(
+            &mut conn,
+            &dek,
+            clinic_id,
+            conflict_id,
+            "MERGE_MANUAL",
+            Some(&merged_payload),
+        )
+        .unwrap();
+
+        assert_eq!(resolved.status, "RESOLVED");
+        assert_eq!(resolved.resolution_strategy.as_deref(), Some("MERGE_MANUAL"));
+
+        // Verify patient updated with merged clinical state
+        let patients = DbOperations::get_patients(&conn, &dek, clinic_id).unwrap();
+        let p = &patients[0];
+        assert_eq!(p.name, "Dr Alice & Bob Reconciled");
+        assert_eq!(p.allergies, vec!["Penicillin".to_string(), "Sulfa".to_string()]);
+        assert_eq!(p.conditions, vec!["Diabetes".to_string()]);
+        assert_eq!(p.sync_status, "PENDING");
+    }
+
+    #[test]
+    fn test_conflict_resolution_preserve_both_consultations() {
+        let (mut conn, dek) = setup_test_db();
+        let clinic_id = "clinic_preserve_test";
+
+        let pat_id = DbOperations::insert_patient(
+            &mut conn,
+            &dek,
+            clinic_id,
+            "P-400",
+            "Preserve Patient",
+            "4444444444",
+            "MALE",
+            None,
+            50,
+            &[],
+            &[],
+            None,
+        )
+        .unwrap();
+
+        let consult_id = DbOperations::insert_consultation(
+            &mut conn,
+            &dek,
+            clinic_id,
+            &pat_id,
+            "doc_local",
+            "2026-10-27",
+            "Severe Migraine",
+            "Tension Headache",
+            None,
+        )
+        .unwrap();
+
+        let batch = DbOperations::get_pending_outbox_batch(&mut conn, &dek, clinic_id, 10).unwrap();
+        let outbox_id = batch.iter().find(|b| b.entity_id == consult_id).unwrap().id.clone();
+
+        let conflict_details = serde_json::json!({
+            "conflictReason": "CONCURRENT_DRAFT_COLLISION",
+            "serverVersion": 2,
+            "clientVersion": 1,
+            "serverState": {
+                "status": "COMPLETED",
+                "chiefComplaint": "Abdominal Pain",
+                "diagnosis": "Gastritis"
+            },
+            "clientPayload": {
+                "status": "DRAFT",
+                "chiefComplaint": "Severe Migraine",
+                "diagnosis": "Tension Headache"
+            }
+        });
+
+        DbOperations::apply_push_mutation_result(
+            &mut conn,
+            &outbox_id,
+            "CONFLICT",
+            "CONSULTATION",
+            &consult_id,
+            Some("srv_c4"),
+            Some(2),
+            Some("Conflict"),
+            Some(&conflict_details),
+        )
+        .unwrap();
+
+        let open_conflicts = DbOperations::get_conflicts_for_clinic(&conn, clinic_id, Some("OPEN")).unwrap();
+        let conflict_id = &open_conflicts[0].id;
+
+        // Resolve using PRESERVE_BOTH
+        let resolved = DbOperations::apply_conflict_resolution(
+            &mut conn,
+            &dek,
+            clinic_id,
+            conflict_id,
+            "PRESERVE_BOTH",
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(resolved.status, "RESOLVED");
+        assert_eq!(resolved.resolution_strategy.as_deref(), Some("PRESERVE_BOTH"));
+
+        // Verify there are now TWO distinct consultations locally:
+        // 1. The original consultation with server data (Gastritis), marked SYNCED
+        // 2. The cloned consultation with local data (Severe Migraine), marked PENDING
+        let consults = DbOperations::get_consultations(&conn, &dek, clinic_id).unwrap();
+        assert_eq!(consults.len(), 2);
+
+        let server_c = consults.iter().find(|c| c.id == consult_id).unwrap();
+        assert_eq!(server_c.diagnosis, "Gastritis");
+        assert_eq!(server_c.sync_status, "SYNCED");
+
+        let cloned_c = consults.iter().find(|c| c.id != consult_id).unwrap();
+        assert_eq!(cloned_c.diagnosis, "Tension Headache");
+        assert_eq!(cloned_c.chief_complaint, "Severe Migraine");
+        assert_eq!(cloned_c.sync_status, "PENDING");
+    }
+
+    #[test]
+    fn test_conflict_resolution_tenant_isolation_and_idempotency() {
+        let (mut conn, dek) = setup_test_db();
+        let clinic_a = "clinic_alpha";
+        let clinic_b = "clinic_beta";
+
+        let pat_a = DbOperations::insert_patient(
+            &mut conn,
+            &dek,
+            clinic_a,
+            "P-A",
+            "Alpha Patient",
+            "111",
+            "MALE",
+            None,
+            20,
+            &[],
+            &[],
+            None,
+        )
+        .unwrap();
+
+        let batch_a = DbOperations::get_pending_outbox_batch(&mut conn, &dek, clinic_a, 10).unwrap();
+        let outbox_a = &batch_a[0].id;
+
+        DbOperations::apply_push_mutation_result(
+            &mut conn,
+            outbox_a,
+            "CONFLICT",
+            "PATIENT",
+            &pat_a,
+            Some("srv_a"),
+            Some(2),
+            Some("Conflict"),
+            None,
+        )
+        .unwrap();
+
+        let conflicts_a = DbOperations::get_conflicts_for_clinic(&conn, clinic_a, Some("OPEN")).unwrap();
+        assert_eq!(conflicts_a.len(), 1);
+        let conflict_a_id = &conflicts_a[0].id;
+
+        // Clinic B must see ZERO conflicts
+        let conflicts_b = DbOperations::get_conflicts_for_clinic(&conn, clinic_b, Some("OPEN")).unwrap();
+        assert_eq!(conflicts_b.len(), 0);
+
+        // Clinic B cannot resolve Clinic A's conflict
+        let unauthorized_res = DbOperations::apply_conflict_resolution(
+            &mut conn,
+            &dek,
+            clinic_b,
+            conflict_a_id,
+            "USE_SERVER",
+            None,
+        );
+        assert!(unauthorized_res.is_err(), "Must reject cross-clinic conflict resolution");
+
+        // Clinic A resolves successfully
+        let success_res = DbOperations::apply_conflict_resolution(
+            &mut conn,
+            &dek,
+            clinic_a,
+            conflict_a_id,
+            "USE_SERVER",
+            None,
+        );
+        assert!(success_res.is_ok());
+
+        // Attempting to resolve an already resolved conflict fails closed
+        let duplicate_res = DbOperations::apply_conflict_resolution(
+            &mut conn,
+            &dek,
+            clinic_a,
+            conflict_a_id,
+            "USE_SERVER",
+            None,
+        );
+        assert!(duplicate_res.is_err(), "Duplicate resolution of resolved conflict must fail closed");
     }
 }

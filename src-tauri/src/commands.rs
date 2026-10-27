@@ -8,7 +8,8 @@ use crate::crypto::key_manager::KeyManager;
 use crate::db::DatabaseManager;
 use crate::db::operations::DbOperations;
 use crate::db::schema::{
-    ConsultationRecord, PatientRecord, PrescriptionRecord, SyncOutboxSummary, SyncStateRecord,
+    ConsultationRecord, PatientRecord, PrescriptionRecord, SyncConflictRecord, SyncOutboxSummary,
+    SyncStateRecord,
 };
 use crate::sync::{SyncStatusInfo, SyncWorkerHandle};
 
@@ -748,6 +749,49 @@ pub fn get_sync_state(
 
     let conn = state.db.get_connection();
     DbOperations::get_sync_state(&conn, &clinic_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn get_sync_conflicts(
+    state: State<'_, AppState>,
+    clinic_id: String,
+    status_filter: Option<String>,
+) -> Result<Vec<SyncConflictRecord>, String> {
+    let _session = state
+        .session_mgr
+        .validate_session(Some(&clinic_id))
+        .map_err(|e| e.to_string())?;
+
+    let conn = state.db.get_connection();
+    DbOperations::get_conflicts_for_clinic(&conn, &clinic_id, status_filter.as_deref())
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn resolve_sync_conflict(
+    state: State<'_, AppState>,
+    clinic_id: String,
+    conflict_id: String,
+    strategy: String,
+    resolution_payload: Option<String>,
+) -> Result<SyncConflictRecord, String> {
+    let _session = state
+        .session_mgr
+        .validate_session(Some(&clinic_id))
+        .map_err(|e| e.to_string())?;
+
+    let mut conn = state.db.get_connection();
+    let dek = state.db.get_dek();
+
+    DbOperations::apply_conflict_resolution(
+        &mut conn,
+        dek,
+        &clinic_id,
+        &conflict_id,
+        &strategy,
+        resolution_payload.as_deref(),
+    )
+    .map_err(|e| e.to_string())
 }
 
 #[cfg(test)]

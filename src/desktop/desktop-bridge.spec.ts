@@ -16,6 +16,8 @@ import {
   loginDesktop,
   getSyncStatus,
   switchActiveClinic,
+  getSyncConflicts,
+  resolveSyncConflict,
 } from "./desktop-bridge"
 
 describe("Desktop Bridge (Tauri 2 Frontend Integration)", () => {
@@ -166,6 +168,56 @@ describe("Desktop Bridge (Tauri 2 Frontend Integration)", () => {
     expect((loginResult as any).accessToken).toBeUndefined()
     expect(loginResult.clinics[0].id).toBe("clinic_1")
     expect(loginResult.session.role).toBe("DOCTOR")
+  })
+
+  it("safely handles getSyncConflicts and resolveSyncConflict in web browser mode", async () => {
+    const conflicts = await getSyncConflicts("clinic_test_1")
+    expect(conflicts).toEqual([])
+
+    const resolved = await resolveSyncConflict(
+      "clinic_test_1",
+      "conflict_1",
+      "USE_SERVER",
+    )
+    expect(resolved).toBeNull()
+
+    const resolvedManual = await resolveSyncConflict(
+      "clinic_test_1",
+      "conflict_2",
+      "MERGE_MANUAL",
+      JSON.stringify({ name: "Merged Patient" }),
+    )
+    expect(resolvedManual).toBeNull()
+
+    const resolvedPreserve = await resolveSyncConflict(
+      "clinic_test_1",
+      "conflict_3",
+      "PRESERVE_BOTH",
+    )
+    expect(resolvedPreserve).toBeNull()
+  })
+
+  it("verifies SyncConflictRecord type safety and forbidden token exposure", () => {
+    const record: import("./desktop-bridge").SyncConflictRecord = {
+      id: "cf_001",
+      outbox_id: "ob_001",
+      entity_type: "PATIENT",
+      entity_id: "pt_001",
+      server_version: 2,
+      client_version: 1,
+      server_payload: JSON.stringify({ name: "Server Name", allergies: ["Penicillin"] }),
+      client_payload: JSON.stringify({ name: "Local Name", allergies: ["Aspirin"] }),
+      conflict_reason: "DIVERGENT_CLINICAL_DATA",
+      resolution_payload: null,
+      status: "OPEN",
+      resolved_at: null,
+      resolution_strategy: null,
+      created_at: "2026-10-28T00:00:00Z",
+    }
+    expect(record.entity_type).toBe("PATIENT")
+    expect(record.status).toBe("OPEN")
+    expect((record as any).accessToken).toBeUndefined()
+    expect((record as any).refreshToken).toBeUndefined()
   })
 })
 

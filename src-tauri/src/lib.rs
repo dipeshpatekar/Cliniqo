@@ -96,6 +96,8 @@ pub fn run() {
             commands::get_local_prescriptions,
             commands::get_sync_outbox_summary,
             commands::get_sync_state,
+            commands::get_sync_conflicts,
+            commands::resolve_sync_conflict,
         ])
         .run(tauri::generate_context!())
         .expect("error while building tauri application");

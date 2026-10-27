@@ -545,7 +545,7 @@ async fn run_sync_loop(
                     failed_count: 0,
                 },
             );
-            let conflicts = DbOperations::get_conflicts(&conn, Some("OPEN"))
+            let conflicts = DbOperations::get_conflicts_for_clinic(&conn, &clinic_id, Some("OPEN"))
                 .map(|c| c.len() as i64)
                 .unwrap_or(0);
             (summary, conflicts)

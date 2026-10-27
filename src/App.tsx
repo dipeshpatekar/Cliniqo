@@ -19,6 +19,7 @@ import {
   type SyncStatusInfo,
   type LocalPatientRecord,
 } from "./desktop/desktop-bridge";
+import { ConflictResolutionModal } from "./components/ConflictResolutionModal";
 import {
   Activity,
   AlertCircle,
@@ -101,6 +102,7 @@ type Patient = {
   dateOfBirth?: string;
   alternatePhone?: string;
   address?: string;
+  syncStatus?: "PENDING" | "SYNCED" | "CONFLICT";
 };
 
 type Medicine = {
@@ -187,6 +189,7 @@ function mapLocalRecordToPatient(rec: LocalPatientRecord): Patient {
     allergies: Array.isArray(rec.allergies) ? rec.allergies : [],
     conditions: Array.isArray(rec.conditions) ? rec.conditions : [],
     dateOfBirth: rec.date_of_birth || undefined,
+    syncStatus: rec.sync_status,
   };
 }
 
@@ -952,6 +955,8 @@ function Sidebar({
   onToggle,
   onDoctorProfile,
   desktopSession,
+  conflictsCount,
+  onOpenConflicts,
 }: {
   page: Page;
   go: (page: Page) => void;
@@ -959,6 +964,8 @@ function Sidebar({
   onToggle: () => void;
   onDoctorProfile: () => void;
   desktopSession?: DesktopSessionContext | null;
+  conflictsCount?: number;
+  onOpenConflicts?: () => void;
 }) {
   const nav = [
     { id: "dashboard" as Page, label: "Dashboard", icon: LayoutDashboard },
@@ -976,6 +983,30 @@ function Sidebar({
           </button>
         ))}
       </nav>
+      {Boolean(conflictsCount && conflictsCount > 0) && (
+        <button
+          style={{
+            margin: "0 12px 10px",
+            padding: "8px 10px",
+            borderRadius: "8px",
+            background: "#fffbeb",
+            border: "1px solid #fde68a",
+            color: "#b45309",
+            fontSize: "11px",
+            fontWeight: "600",
+            display: "flex",
+            alignItems: "center",
+            gap: "6px",
+            cursor: "pointer",
+            textAlign: "left",
+          }}
+          onClick={onOpenConflicts}
+          title="Review unresolved synchronization conflicts"
+        >
+          <AlertCircle size={15} style={{ flexShrink: 0 }} />
+          <span>{conflictsCount} Sync Conflict{conflictsCount > 1 ? "s" : ""}</span>
+        </button>
+      )}
       <div className="sidebar-bottom">
         <div className="doctor-card">
           <span className="avatar">
@@ -998,12 +1029,54 @@ function Sidebar({
   );
 }
 
-function AppHeader({ title, subtitle, children, onMenu }: { title: string; subtitle?: string; children?: ReactNode; onMenu?: () => void }) {
+function AppHeader({
+  title,
+  subtitle,
+  children,
+  onMenu,
+  conflictsCount,
+  onOpenConflicts,
+}: {
+  title: string;
+  subtitle?: string;
+  children?: ReactNode;
+  onMenu?: () => void;
+  conflictsCount?: number;
+  onOpenConflicts?: () => void;
+}) {
   return (
     <header className="app-header">
       <div className="page-heading">
         {onMenu && <IconButton label="Open navigation" onClick={onMenu} className="mobile-menu"><Menu size={20} /></IconButton>}
-        <div><h1>{title}</h1>{subtitle && <p>{subtitle}</p>}</div>
+        <div>
+          <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+            <h1>{title}</h1>
+            {Boolean(conflictsCount && conflictsCount > 0) && (
+              <button
+                className="btn btn-sm"
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: "5px",
+                  background: "#fef3c7",
+                  color: "#b45309",
+                  border: "1px solid #fde68a",
+                  borderRadius: "14px",
+                  padding: "2px 8px",
+                  fontSize: "11px",
+                  fontWeight: "600",
+                  cursor: "pointer",
+                }}
+                onClick={onOpenConflicts}
+                title="Review unresolved sync conflicts"
+              >
+                <AlertCircle size={13} />
+                {conflictsCount} Conflict{conflictsCount > 1 ? "s" : ""}
+              </button>
+            )}
+          </div>
+          {subtitle && <p>{subtitle}</p>}
+        </div>
       </div>
       <div className="header-actions">
         {children}
@@ -1255,11 +1328,13 @@ function PatientProfile({
   patient,
   saveFeedback,
   onDeletePatient,
+  onOpenConflictResolution,
 }: {
   go: (page: Page) => void;
   patient: Patient;
   saveFeedback: "added" | "updated" | null;
   onDeletePatient?: (patientId: string) => void;
+  onOpenConflictResolution?: (patientId: string) => void;
 }) {
   const [tab, setTab] = useState("Overview");
   const allergyLabel = patient.allergies.join(", ");
@@ -1285,6 +1360,39 @@ function PatientProfile({
       </AppHeader>
       <div className="page-content profile-page">
         {saveFeedback && <div className="success-banner" role="status" aria-live="polite"><CheckCircle2 size={19} /><div><strong>{saveFeedback === "added" ? "Patient added successfully." : "Patient changes saved."}</strong><span>{saveFeedback === "added" ? "The local patient record is ready for this session." : "The existing local record was updated without changing its patient ID."}</span></div></div>}
+        {patient.syncStatus === "CONFLICT" && (
+          <div
+            style={{
+              margin: "0 0 16px",
+              padding: "12px 16px",
+              borderRadius: "8px",
+              background: "#fffbeb",
+              border: "1.5px solid #f59e0b",
+              color: "#92400e",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              gap: "12px",
+            }}
+          >
+            <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+              <AlertCircle size={20} style={{ color: "#d97706", flexShrink: 0 }} />
+              <div>
+                <strong style={{ display: "block", fontSize: "13px" }}>Clinical Sync Conflict Detected</strong>
+                <p style={{ margin: 0, fontSize: "11px", color: "#78350f" }}>
+                  This patient record has conflicting updates between this device and the cloud.
+                </p>
+              </div>
+            </div>
+            <Button
+              size="sm"
+              variant="secondary"
+              onClick={() => onOpenConflictResolution?.(patient.id)}
+            >
+              Resolve Conflict
+            </Button>
+          </div>
+        )}
         <section className="patient-hero">
           <div className="patient-identity"><span className="profile-avatar">{patient.initials}</span><div><h2>{patient.name}</h2><p>{patient.age} years · {patient.gender} · {patient.id}</p><span className="last-seen"><CalendarDays size={14} /> {patient.lastVisit === "No visits yet" ? "No consultations yet" : `Last visit ${patient.lastVisit.toLowerCase()}`}</span></div></div>
           <div className="contact-grid"><span><Phone size={16} /><small>Mobile</small><strong>{patient.phone}</strong></span><span><UserRound size={16} /><small>Patient ID</small><strong>{patient.id}</strong></span></div>
@@ -1673,6 +1781,7 @@ function SettingsPage({
   onBillLayoutChange,
   initialTab,
   desktopSession,
+  onOpenConflictModal,
 }: {
   go: (page: Page) => void;
   logout: () => void;
@@ -1697,6 +1806,7 @@ function SettingsPage({
   onBillLayoutChange: (layout: BillLayoutPreferences) => void;
   initialTab: string;
   desktopSession?: DesktopSessionContext | null;
+  onOpenConflictModal?: () => void;
 }) {
   const [tab, setTab] = useState(initialTab);
   const [saved, setSaved] = useState(false);
@@ -1725,7 +1835,7 @@ function SettingsPage({
           {tab === "Appearance" && <AppearanceSettings darkMode={darkMode} onDarkModeChange={onDarkModeChange} />}
           {tab === "WhatsApp" && <WhatsAppSettings />}
           {tab === "Security" && <SecuritySettings logout={logout} desktopSession={desktopSession} />}
-          {tab === "Sync & data" && <SyncSettings />}
+          {tab === "Sync & data" && <SyncSettings onOpenConflictModal={onOpenConflictModal} />}
           {(tab === "Doctor profile" || tab === "Clinic profile") && <div className="settings-actions"><Button variant="secondary" onClick={() => go("dashboard")}>Cancel</Button><Button onClick={() => { setSaved(true); window.setTimeout(() => setSaved(false), 1800); }}>{saved ? <><Check size={16} /> Saved</> : "Save changes"}</Button></div>}
         </main>
       </div>
@@ -1913,7 +2023,7 @@ function SecuritySettings({
   );
 }
 
-function SyncSettings() {
+function SyncSettings({ onOpenConflictModal }: { onOpenConflictModal?: () => void }) {
   const [syncEnabled, setSyncEnabled] = useState(false);
   const [nativeStatus, setNativeStatus] = useState<SyncStatusInfo | null>(null);
 
@@ -1990,7 +2100,18 @@ function SyncSettings() {
           </div>
           <div className="rounded-lg border border-slate-200 dark:border-slate-800 p-3 bg-slate-50 dark:bg-slate-900/50">
             <span className="text-xs text-slate-500 uppercase tracking-wider block">Conflicts Recorded</span>
-            <span className="text-xl font-bold text-amber-600 dark:text-amber-400">{nativeStatus?.conflicts_count ?? 0}</span>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: "4px" }}>
+              <span className="text-xl font-bold text-amber-600 dark:text-amber-400">{nativeStatus?.conflicts_count ?? 0}</span>
+              {onOpenConflictModal && (
+                <button
+                  className="btn btn-sm btn-secondary"
+                  style={{ fontSize: "11px", padding: "2px 8px" }}
+                  onClick={onOpenConflictModal}
+                >
+                  Review Conflicts
+                </button>
+              )}
+            </div>
           </div>
         </div>
 
@@ -2063,6 +2184,58 @@ export default function App() {
     items: [{ id: 1, description: "Consultation fee", quantity: 1, rate: 800 }],
   });
   const nextPatientId = `PC-${Math.max(...patientRecords.map((patient) => Number(patient.id.replace(/\D/g, "")) || 0), 1048) + 1}`;
+  const [showConflictModal, setShowConflictModal] = useState(false);
+  const [targetConflictId, setTargetConflictId] = useState<string | null>(null);
+  const [conflictsCount, setConflictsCount] = useState(0);
+
+  // Poll sync status to keep conflict count updated in desktop mode
+  useEffect(() => {
+    if (!isTauriDesktop() || !desktopSession?.clinic_id) return;
+    let mounted = true;
+    const updateConflictCount = async () => {
+      try {
+        const st = await getSyncStatus();
+        if (mounted && st) {
+          setConflictsCount(st.conflicts_count);
+        }
+      } catch (err) {
+        // Safe closed
+      }
+    };
+    updateConflictCount();
+    const interval = setInterval(updateConflictCount, 3000);
+    return () => {
+      mounted = false;
+      clearInterval(interval);
+    };
+  }, [desktopSession?.clinic_id]);
+
+  const handleOpenConflicts = (conflictId?: string) => {
+    setTargetConflictId(conflictId || null);
+    setShowConflictModal(true);
+  };
+
+  const handleConflictResolved = async () => {
+    if (desktopSession?.clinic_id) {
+      try {
+        const localPatients = await getLocalPatients(desktopSession.clinic_id);
+        if (localPatients) {
+          const mapped = localPatients.map(mapLocalRecordToPatient);
+          setPatientRecords(mapped);
+          setSelectedPatient((current) => {
+            const found = mapped.find((p) => p.id === current.id);
+            return found || current;
+          });
+        }
+        const st = await getSyncStatus();
+        if (st) {
+          setConflictsCount(st.conflicts_count);
+        }
+      } catch (err) {
+        console.warn("[Cliniqo Desktop] Failed to refresh local state after conflict resolution:", err);
+      }
+    }
+  };
 
   // Desktop session bootstrap: check active in-memory session or restore via DPAPI refresh token
   useEffect(() => {
@@ -2355,21 +2528,31 @@ export default function App() {
   if (page === "dashboard") content = <Dashboard go={go} patients={patientRecords} onOpenPatient={openPatient} />;
   else if (page === "patients") content = <PatientsPage go={go} patients={patientRecords} onOpenPatient={openPatient} onStartConsultation={startConsultation} onCreateBill={startBill} onEditPatient={editPatient} onDeletePatient={deletePatient} />;
   else if (page === "patient-form") content = <PatientForm go={go} onSave={savePatient} onReviewPatient={openPatient} patient={editingPatient} patients={patientRecords} nextPatientId={nextPatientId} />;
-  else if (page === "patient-profile") content = <PatientProfile go={go} patient={selectedPatient} saveFeedback={patientSaveFeedback} onDeletePatient={deletePatient} />;
+  else if (page === "patient-profile") content = <PatientProfile go={go} patient={selectedPatient} saveFeedback={patientSaveFeedback} onDeletePatient={deletePatient} onOpenConflictResolution={handleOpenConflicts} />;
   else if (page === "consultation") content = <Consultation go={go} patient={selectedPatient} clinicalLibrary={clinicalLibrary} vitals={vitals} onVitalsChange={updateVital} data={consultationData} onDataChange={setConsultationData} desktopSession={desktopSession} />;
   else if (page === "preview") content = <PrescriptionPreview go={go} patient={selectedPatient} vitals={vitals} data={consultationData} bannerVisible={prescriptionBannerVisible} bannerImage={prescriptionBannerImage} signatureImage={doctorSignatureImage} showClinicLogo={showClinicLogo} showClinicEmail={showClinicEmail} showAllergyWarning={showAllergyWarning} returnPage={prescriptionPreviewReturnPage} />;
   else if (page === "bill-form") content = <BillForm go={go} patient={selectedPatient} bill={billData} onChange={setBillData} />;
   else if (page === "bill-preview") content = <BillPreview go={go} patient={selectedPatient} bill={billData} bannerImage={prescriptionBannerImage} signatureImage={doctorSignatureImage} layout={billLayout} returnPage={billPreviewReturnPage} />;
-  else content = <SettingsPage key={settingsKey} go={go} logout={logout} darkMode={darkMode} onDarkModeChange={setDarkMode} clinicalLibrary={clinicalLibrary} onAddLibraryItem={addLibraryItem} onAddMedicine={addMedicineDefinition} bannerVisible={prescriptionBannerVisible} onBannerVisibleChange={setPrescriptionBannerVisible} bannerImage={prescriptionBannerImage} onBannerImageChange={setPrescriptionBannerImage} signatureImage={doctorSignatureImage} onSignatureImageChange={setDoctorSignatureImage} showClinicLogo={showClinicLogo} onShowClinicLogoChange={setShowClinicLogo} showClinicEmail={showClinicEmail} onShowClinicEmailChange={setShowClinicEmail} showAllergyWarning={showAllergyWarning} onShowAllergyWarningChange={setShowAllergyWarning} billLayout={billLayout} onBillLayoutChange={setBillLayout} initialTab={settingsInitialTab} desktopSession={desktopSession} />;
+  else content = <SettingsPage key={settingsKey} go={go} logout={logout} darkMode={darkMode} onDarkModeChange={setDarkMode} clinicalLibrary={clinicalLibrary} onAddLibraryItem={addLibraryItem} onAddMedicine={addMedicineDefinition} bannerVisible={prescriptionBannerVisible} onBannerVisibleChange={setPrescriptionBannerVisible} bannerImage={prescriptionBannerImage} onBannerImageChange={setPrescriptionBannerImage} signatureImage={doctorSignatureImage} onSignatureImageChange={setDoctorSignatureImage} showClinicLogo={showClinicLogo} onShowClinicLogoChange={setShowClinicLogo} showClinicEmail={showClinicEmail} onShowClinicEmailChange={setShowClinicEmail} showAllergyWarning={showAllergyWarning} onShowAllergyWarningChange={setShowAllergyWarning} billLayout={billLayout} onBillLayoutChange={setBillLayout} initialTab={settingsInitialTab} desktopSession={desktopSession} onOpenConflictModal={() => handleOpenConflicts()} />;
 
   return (
     <div className={cn("app-shell", sidebarCollapsed && "sidebar-collapsed")}>
       <div className={cn("mobile-overlay", sidebarOpen && "open")} onClick={() => setSidebarOpen(false)} />
-      <div className={cn("sidebar-wrap", sidebarOpen && "open", sidebarCollapsed && "collapsed")}><Sidebar page={page} go={go} collapsed={sidebarCollapsed} onToggle={() => { if (window.matchMedia("(max-width: 820px)").matches) setSidebarOpen(false); else setSidebarCollapsed((value) => !value); }} onDoctorProfile={openDoctorProfile} desktopSession={desktopSession} /></div>
+      <div className={cn("sidebar-wrap", sidebarOpen && "open", sidebarCollapsed && "collapsed")}><Sidebar page={page} go={go} collapsed={sidebarCollapsed} onToggle={() => { if (window.matchMedia("(max-width: 820px)").matches) setSidebarOpen(false); else setSidebarCollapsed((value) => !value); }} onDoctorProfile={openDoctorProfile} desktopSession={desktopSession} conflictsCount={conflictsCount} onOpenConflicts={() => handleOpenConflicts()} /></div>
       <div className="main-shell">
         <div className="mobile-topbar"><IconButton label="Open navigation" onClick={() => setSidebarOpen(true)}><Menu size={20} /></IconButton><Logo /><span className="sync-dot" /></div>
         {content}
       </div>
+      <ConflictResolutionModal
+        isOpen={showConflictModal}
+        onClose={() => {
+          setShowConflictModal(false);
+          setTargetConflictId(null);
+        }}
+        activeClinicId={desktopSession?.clinic_id || ""}
+        initialConflictId={targetConflictId}
+        onConflictResolved={handleConflictResolved}
+      />
     </div>
   );
 }

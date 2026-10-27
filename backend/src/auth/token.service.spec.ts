@@ -91,6 +91,14 @@ describe('TokenService', () => {
       expect(payload.aud).toBe('cliniqo-client');
     });
 
+    it('should expose backend public key metadata for desktop client verification', () => {
+      const keyInfo = tokenService.getPublicKeyInfo();
+      expect(keyInfo.algorithm).toBe('RS256');
+      expect(keyInfo.publicKey).toContain('BEGIN PUBLIC KEY');
+      expect(keyInfo.issuer).toBe('cliniqo-backend');
+      expect(keyInfo.audience).toBe('cliniqo-client');
+    });
+
     it('should fail verification if token is signed with wrong secret (secret separation)', async () => {
       // Sign with refresh secret instead of access secret
       const rogueToken = await jwtService.signAsync(

@@ -10,6 +10,8 @@ export interface AppConfig {
   jwtRefreshExpiresIn?: string;
   jwtIssuer?: string;
   jwtAudience?: string;
+  jwtPrivateKey?: string;
+  jwtPublicKey?: string;
   argon2MemoryCost?: number;
   argon2TimeCost?: number;
   argon2Parallelism?: number;
@@ -95,6 +97,8 @@ export class ConfigService {
       jwtRefreshExpiresIn: env.JWT_REFRESH_EXPIRES_IN || '7d',
       jwtIssuer: env.JWT_ISSUER || 'cliniqo-backend',
       jwtAudience: env.JWT_AUDIENCE || 'cliniqo-client',
+      jwtPrivateKey: env.JWT_PRIVATE_KEY,
+      jwtPublicKey: env.JWT_PUBLIC_KEY,
       argon2MemoryCost: env.ARGON2_MEMORY_COST
         ? parseInt(env.ARGON2_MEMORY_COST, 10)
         : 65536,
@@ -172,6 +176,14 @@ export class ConfigService {
 
   get jwtAudience(): string {
     return this.config.jwtAudience || 'cliniqo-client';
+  }
+
+  get jwtPrivateKey(): string | undefined {
+    return this.config.jwtPrivateKey;
+  }
+
+  get jwtPublicKey(): string | undefined {
+    return this.config.jwtPublicKey;
   }
 
   get argon2MemoryCost(): number {

@@ -1,6 +1,7 @@
 import {
   Controller,
   Post,
+  Get,
   Body,
   HttpCode,
   HttpStatus,
@@ -8,6 +9,7 @@ import {
 } from '@nestjs/common';
 import type { Request } from 'express';
 import { AuthService } from './auth.service.js';
+import { TokenService } from './token.service.js';
 import {
   LoginDto,
   RefreshTokenDto,
@@ -17,7 +19,16 @@ import {
 
 @Controller('auth')
 export class AuthController {
-  constructor(private readonly authService: AuthService) {}
+  constructor(
+    private readonly authService: AuthService,
+    private readonly tokenService: TokenService,
+  ) {}
+
+  @Get('public-key')
+  @HttpCode(HttpStatus.OK)
+  async getPublicKey() {
+    return this.tokenService.getPublicKeyInfo();
+  }
 
   @Post('login')
   @HttpCode(HttpStatus.OK)

@@ -46,9 +46,17 @@ export function hashOpaqueToken(token: string): string {
   return crypto.createHash('sha256').update(token).digest('hex');
 }
 
+export interface PublicKeyInfo {
+  algorithm: 'RS256';
+  publicKey: string;
+  issuer: string;
+  audience: string;
+}
+
 @Injectable()
 export class TokenService {
   private readonly logger = new Logger(TokenService.name);
+  private readonly rsaKeyPair: { privateKey: string; publicKey: string };
 
   constructor(
     private readonly jwtService: JwtService,
@@ -57,10 +65,23 @@ export class TokenService {
     private readonly sessionModel: Model<RefreshSessionDocument>,
     @InjectModel(Doctor.name)
     private readonly doctorModel: Model<DoctorDocument>,
-  ) {}
+  ) {
+    if (this.configService.jwtPrivateKey && this.configService.jwtPublicKey) {
+      this.rsaKeyPair = {
+        privateKey: this.configService.jwtPrivateKey,
+        publicKey: this.configService.jwtPublicKey,
+      };
+    } else {
+      this.rsaKeyPair = crypto.generateKeyPairSync('rsa', {
+        modulusLength: 2048,
+        publicKeyEncoding: { type: 'spki', format: 'pem' },
+        privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
+      });
+    }
+  }
 
   /**
-   * Generates a short-lived, signed JWT access token.
+   * Generates a short-lived, signed JWT access token using backend RS256 private key.
    */
   async generateAccessToken(doctor: {
     _id: Types.ObjectId | string;
@@ -79,29 +100,53 @@ export class TokenService {
     };
 
     return this.jwtService.signAsync(payload, {
-      secret: authConfig.jwtAccessSecret,
+      privateKey: this.rsaKeyPair.privateKey,
       expiresIn: authConfig.jwtAccessExpiresIn as any,
       issuer: authConfig.jwtIssuer,
       audience: authConfig.jwtAudience,
-      algorithm: 'HS256',
+      algorithm: 'RS256',
     });
   }
 
   /**
    * Validates a JWT access token signature, issuer, audience, and type.
+   * Supports backend RS256 as primary and HS256 for backward-compatible verification.
    */
   async verifyAccessToken(token: string): Promise<AccessTokenPayload> {
     const authConfig = this.configService.validateAuthConfig();
 
+    const parts = token.split('.');
+    let alg = 'RS256';
+    if (parts.length === 3) {
+      try {
+        const header = JSON.parse(
+          Buffer.from(parts[0], 'base64url').toString('utf8'),
+        );
+        if (header.alg) alg = header.alg;
+      } catch {
+        // Handled by verifyAsync failure
+      }
+    }
+
     try {
+      const verifyOptions: any = {
+        issuer: authConfig.jwtIssuer,
+        audience: authConfig.jwtAudience,
+      };
+
+      if (alg === 'RS256') {
+        verifyOptions.publicKey = this.rsaKeyPair.publicKey;
+        verifyOptions.algorithms = ['RS256'];
+      } else if (alg === 'HS256') {
+        verifyOptions.secret = authConfig.jwtAccessSecret;
+        verifyOptions.algorithms = ['HS256'];
+      } else {
+        throw new UnauthorizedException(`Unsupported token algorithm: ${alg}`);
+      }
+
       const payload = await this.jwtService.verifyAsync<AccessTokenPayload>(
         token,
-        {
-          secret: authConfig.jwtAccessSecret,
-          issuer: authConfig.jwtIssuer,
-          audience: authConfig.jwtAudience,
-          algorithms: ['HS256'],
-        },
+        verifyOptions,
       );
 
       if (payload.type !== 'access') {
@@ -112,6 +157,19 @@ export class TokenService {
     } catch {
       throw new UnauthorizedException('Invalid or expired access token.');
     }
+  }
+
+  /**
+   * Exposes backend public key and algorithm metadata for desktop/client verification.
+   */
+  getPublicKeyInfo(): PublicKeyInfo {
+    const authConfig = this.configService.validateAuthConfig();
+    return {
+      algorithm: 'RS256',
+      publicKey: this.rsaKeyPair.publicKey,
+      issuer: authConfig.jwtIssuer,
+      audience: authConfig.jwtAudience,
+    };
   }
 
   /**

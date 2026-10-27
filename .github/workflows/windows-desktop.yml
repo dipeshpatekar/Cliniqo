@@ -1,0 +1,117 @@
+name: Windows Desktop CI & Security Verification
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-verify-windows:
+    name: Build & Verify Windows Desktop (x86_64 MSVC)
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+          run_install: false
+
+      - name: Install Rust (x86_64-pc-windows-msvc)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+          components: rustfmt, clippy
+
+      - name: Get pnpm store directory
+        id: pnpm-cache
+        shell: bash
+        run: |
+          STORE_PATH=$(pnpm store path --silent)
+          echo "STORE_PATH=$STORE_PATH" >> $GITHUB_OUTPUT
+          echo "STORE_PATH=$STORE_PATH" >> $GITHUB_ENV
+
+      - name: Setup pnpm cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ steps.pnpm-cache.outputs.STORE_PATH }}
+          key: ${{ runner.os }}-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-pnpm-store-
+
+      - name: Setup Cargo Cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            src-tauri/target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('src-tauri/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Install workspace dependencies
+        run: pnpm install --no-frozen-lockfile
+
+      - name: Run Rust Security & DPAPI Tests (Native Windows Kernel)
+        # Note: Runs native Windows DPAPI CryptProtectData, CryptUnprotectData,
+        # zero-plaintext SQLite encryption, and session auth tests directly against LSASS.
+        run: cargo test --manifest-path src-tauri/Cargo.toml -- --nocapture
+
+      - name: Run Frontend Tests
+        run: pnpm test
+
+      - name: Run Backend Tests & Lint
+        run: |
+          pnpm --filter backend run lint
+          pnpm --filter backend test
+
+      - name: Build Web Application
+        run: pnpm build
+
+      - name: Build Backend Application
+        run: pnpm --filter backend build
+
+      - name: Build Tauri Windows Desktop Shell & NSIS Installer
+        # Generates production NSIS setup installer (.exe) for Windows distribution.
+        run: pnpm tauri build --bundles nsis
+
+      - name: Archive Windows NSIS Installer Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Cliniqo-Windows-Setup-x64
+          path: src-tauri/target/**/bundle/nsis/*.exe
+          retention-days: 14
+          if-no-files-found: error
+
+# ---------------------------------------------------------------------------
+# MANUAL VS CI TEST DISTINCTION:
+#
+# Tests Automated in this CI Pipeline:
+# 1. Native Windows DPAPI CryptProtectData / CryptUnprotectData round-trips.
+# 2. Key zeroization and memory cleanup validation.
+# 3. SQLite AES-256-GCM zero-plaintext database operations and migrations.
+# 4. JWT signature verification, session isolation, and cross-clinic rejection.
+# 5. Production release packaging and NSIS installer generation.
+#
+# Tests Requiring Interactive/Manual Execution on Physical Windows Machines:
+# 1. NSIS installer execution with User Account Control (UAC) elevation.
+# 2. Desktop WebView2 runtime initialization and GPU hardware acceleration.
+# 3. DPAPI key persistence across user logoff and machine reboot.
+# 4. Offline SQLite file locking semantics across simultaneous app launches.
+# ---------------------------------------------------------------------------

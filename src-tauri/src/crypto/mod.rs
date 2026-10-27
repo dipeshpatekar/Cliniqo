@@ -1,0 +1,101 @@
+pub mod key_manager;
+
+use aes_gcm::{
+    aead::{Aead, KeyInit, OsRng},
+    Aes256Gcm, Nonce,
+};
+use aes_gcm::aead::rand_core::RngCore;
+use thiserror::Error;
+
+#[derive(Error, Debug)]
+pub enum CryptoError {
+    #[error("Encryption failed: {0}")]
+    EncryptionFailed(String),
+
+    #[error("Decryption failed: {0}")]
+    DecryptionFailed(String),
+
+    #[error("Key store error: {0}")]
+    KeyStoreError(String),
+
+    #[error("Invalid nonce length: expected 12 bytes, got {0}")]
+    InvalidNonceLength(usize),
+}
+
+/// Encrypts plaintext data using AES-256-GCM with a freshly generated 96-bit nonce.
+/// Returns a tuple of (ciphertext, nonce).
+pub fn encrypt_payload(dek: &[u8; 32], plaintext: &[u8]) -> Result<(Vec<u8>, Vec<u8>), CryptoError> {
+    let cipher = Aes256Gcm::new_from_slice(dek)
+        .map_err(|e| CryptoError::EncryptionFailed(format!("Invalid key length: {e}")))?;
+
+    let mut nonce_bytes = [0u8; 12];
+    OsRng.fill_bytes(&mut nonce_bytes);
+    let nonce = Nonce::from_slice(&nonce_bytes);
+
+    let ciphertext = cipher
+        .encrypt(nonce, plaintext)
+        .map_err(|e| CryptoError::EncryptionFailed(format!("AEAD encryption error: {e}")))?;
+
+    Ok((ciphertext, nonce_bytes.to_vec()))
+}
+
+/// Decrypts AES-256-GCM ciphertext using the provided DEK and 96-bit nonce.
+pub fn decrypt_payload(
+    dek: &[u8; 32],
+    ciphertext: &[u8],
+    nonce_bytes: &[u8],
+) -> Result<Vec<u8>, CryptoError> {
+    if nonce_bytes.len() != 12 {
+        return Err(CryptoError::InvalidNonceLength(nonce_bytes.len()));
+    }
+
+    let cipher = Aes256Gcm::new_from_slice(dek)
+        .map_err(|e| CryptoError::DecryptionFailed(format!("Invalid key length: {e}")))?;
+
+    let nonce = Nonce::from_slice(nonce_bytes);
+
+    let plaintext = cipher
+        .decrypt(nonce, ciphertext)
+        .map_err(|e| CryptoError::DecryptionFailed(format!("AEAD decryption or authentication error: {e}")))?;
+
+    Ok(plaintext)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_encrypt_decrypt_roundtrip() {
+        let key = [42u8; 32];
+        let original_data = b"Sensitive clinical findings: patient allergic to penicillin";
+
+        let (ciphertext, nonce) = encrypt_payload(&key, original_data).expect("encryption succeeds");
+        assert_ne!(ciphertext, original_data);
+        assert_eq!(nonce.len(), 12);
+
+        let decrypted = decrypt_payload(&key, &ciphertext, &nonce).expect("decryption succeeds");
+        assert_eq!(decrypted, original_data);
+    }
+
+    #[test]
+    fn test_tamper_detection_fails_decryption() {
+        let key = [99u8; 32];
+        let original_data = b"Prescription: 500mg Augmentin BD";
+
+        let (mut ciphertext, nonce) = encrypt_payload(&key, original_data).expect("encryption succeeds");
+        // Tamper with one byte of ciphertext
+        ciphertext[0] ^= 0xFF;
+
+        let result = decrypt_payload(&key, &ciphertext, &nonce);
+        assert!(result.is_err(), "Tampered ciphertext must fail AEAD verification");
+    }
+
+    #[test]
+    fn test_invalid_nonce_length_rejected() {
+        let key = [1u8; 32];
+        let result = decrypt_payload(&key, b"data", b"short");
+        assert!(matches!(result, Err(CryptoError::InvalidNonceLength(_))));
+    }
+}
+

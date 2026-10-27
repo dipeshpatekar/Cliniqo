@@ -74,7 +74,9 @@ jobs:
       - name: Run Rust Security & DPAPI Tests (Native Windows Kernel)
         # Note: Runs native Windows DPAPI CryptProtectData, CryptUnprotectData,
         # zero-plaintext SQLite encryption, and session auth tests directly against LSASS.
-        run: cargo test --manifest-path src-tauri/Cargo.toml -- --nocapture
+        run: |
+          cargo test --manifest-path src-tauri/Cargo.toml -- --nocapture
+          cargo build --bin verify_token --manifest-path src-tauri/Cargo.toml
 
       - name: Run Frontend Tests
         run: pnpm test

@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import * as crypto from 'crypto';
+import * as fs from 'fs';
 import { spawnSync } from 'child_process';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
@@ -19,6 +20,29 @@ describe('Cross-Stack JWT Security Verification (Backend NestJS -> Rust Tauri)',
   let tokenService: TokenService;
   let hasCargo = false;
   const cargoManifestPath = path.resolve(__dirname, '../../src-tauri/Cargo.toml');
+
+  function runVerifier(inputPayload: string): { status: number | null; stdout: string; stderr: string } {
+    const exeName = process.platform === 'win32' ? 'verify_token.exe' : 'verify_token';
+    const directBinPath = path.resolve(__dirname, '../../src-tauri/target/debug', exeName);
+
+    if (fs.existsSync(directBinPath)) {
+      return spawnSync(directBinPath, [], {
+        input: inputPayload,
+        encoding: 'utf8',
+        timeout: 30_000,
+      });
+    }
+
+    return spawnSync(
+      'cargo',
+      ['run', '--quiet', '--bin', 'verify_token', '--manifest-path', cargoManifestPath],
+      {
+        input: inputPayload,
+        encoding: 'utf8',
+        timeout: 60_000,
+      },
+    );
+  }
 
   beforeAll(() => {
     // Generate valid RSA 2048-bit keypair for test configuration
@@ -61,7 +85,18 @@ describe('Cross-Stack JWT Security Verification (Backend NestJS -> Rust Tauri)',
     // Check if cargo is available in current PATH
     const checkCargo = spawnSync('cargo', ['--version'], { stdio: 'ignore' });
     hasCargo = checkCargo.status === 0;
-  });
+
+    // Ensure verify_token binary is compiled once before running tests
+    const exeName = process.platform === 'win32' ? 'verify_token.exe' : 'verify_token';
+    const directBinPath = path.resolve(__dirname, '../../src-tauri/target/debug', exeName);
+    if (hasCargo && !fs.existsSync(directBinPath)) {
+      spawnSync(
+        'cargo',
+        ['build', '--quiet', '--bin', 'verify_token', '--manifest-path', cargoManifestPath],
+        { stdio: 'ignore', timeout: 120_000 },
+      );
+    }
+  }, 120_000);
 
   it('generates a token conforming strictly to desktop RS256 and claim requirements', async () => {
     const doctorId = new Types.ObjectId().toString();
@@ -114,14 +149,7 @@ describe('Cross-Stack JWT Security Verification (Backend NestJS -> Rust Tauri)',
       role: 'DOCTOR',
     });
 
-    const result = spawnSync(
-      'cargo',
-      ['run', '--quiet', '--bin', 'verify_token', '--manifest-path', cargoManifestPath],
-      {
-        input: inputPayload,
-        encoding: 'utf8',
-      },
-    );
+    const result = runVerifier(inputPayload);
 
     expect(result.status).toBe(0);
     const parsed = JSON.parse(result.stdout.trim());
@@ -130,7 +158,7 @@ describe('Cross-Stack JWT Security Verification (Backend NestJS -> Rust Tauri)',
     expect(parsed.session.clinic_id).toBe('clinic_cross_001');
     expect(parsed.session.doctor_email).toBe('dr.accepted@cliniqo.app');
     expect(parsed.session.role).toBe('DOCTOR');
-  });
+  }, 30_000);
 
   it('proves that a tampered token is rejected by the Rust verifier', async () => {
     if (!hasCargo) return;
@@ -164,18 +192,11 @@ describe('Cross-Stack JWT Security Verification (Backend NestJS -> Rust Tauri)',
       role: 'DOCTOR',
     });
 
-    const result = spawnSync(
-      'cargo',
-      ['run', '--quiet', '--bin', 'verify_token', '--manifest-path', cargoManifestPath],
-      {
-        input: inputPayload,
-        encoding: 'utf8',
-      },
-    );
+    const result = runVerifier(inputPayload);
 
     expect(result.status).not.toBe(0);
     expect(result.stderr).toContain('Login failed');
-  });
+  }, 30_000);
 
   it('proves that a token verified against an unrelated public key is rejected by the Rust verifier', async () => {
     if (!hasCargo) return;
@@ -202,16 +223,9 @@ describe('Cross-Stack JWT Security Verification (Backend NestJS -> Rust Tauri)',
       role: 'DOCTOR',
     });
 
-    const result = spawnSync(
-      'cargo',
-      ['run', '--quiet', '--bin', 'verify_token', '--manifest-path', cargoManifestPath],
-      {
-        input: inputPayload,
-        encoding: 'utf8',
-      },
-    );
+    const result = runVerifier(inputPayload);
 
     expect(result.status).not.toBe(0);
     expect(result.stderr).toContain('Login failed');
-  });
+  }, 30_000);
 });

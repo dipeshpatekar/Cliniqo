@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
-import { Model, Types, ClientSession } from 'mongoose';
+import type { ClientSession } from 'mongoose';
+import { Model, Types } from 'mongoose';
 import {
   ClinicAuditLog,
   type ClinicAuditLogDocument,

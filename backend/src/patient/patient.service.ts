@@ -5,7 +5,8 @@ import {
   Logger,
 } from '@nestjs/common';
 import { InjectModel, InjectConnection } from '@nestjs/mongoose';
-import { Model, Connection, Types, ClientSession } from 'mongoose';
+import type { Connection, ClientSession } from 'mongoose';
+import { Model, Types } from 'mongoose';
 import {
   Patient,
   PatientDocument,

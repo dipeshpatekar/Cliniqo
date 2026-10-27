@@ -341,6 +341,14 @@ export class ConfigService {
       );
     }
 
+    if (this.isProduction) {
+      if (!this.config.jwtPrivateKey || !this.config.jwtPublicKey) {
+        throw new Error(
+          'Authentication configuration error: JWT_PRIVATE_KEY and JWT_PUBLIC_KEY are required in production for RS256 desktop verification.',
+        );
+      }
+    }
+
     return {
       jwtAccessSecret: accessSecret.trim(),
       jwtRefreshSecret: refreshSecret.trim(),

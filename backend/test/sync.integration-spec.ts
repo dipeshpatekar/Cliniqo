@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
-import mongoose, { Types, Model, Connection } from 'mongoose';
+import type { Connection, Model } from 'mongoose';
+import mongoose, { Types } from 'mongoose';
 import { MongoMemoryReplSet } from 'mongodb-memory-server';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '../src/config/config.service.js';
@@ -506,7 +507,7 @@ describe('Phase 5A Real MongoDB Replica Set Integration: Sync Engine & Asymmetri
           frequencyCode: FrequencyCode.TID,
           scheduleLabel: '1-1-1',
         },
-        duration: { value: 5, unit: 'DAYS' },
+        duration: { value: 5, unit: 'DAYS' as const },
         dispenseQuantity: { count: 15, packageDescription: '15 Tablets' },
         foodInstruction: FoodInstruction.AFTER_MEALS,
       };

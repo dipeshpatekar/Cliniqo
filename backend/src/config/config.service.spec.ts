@@ -111,6 +111,8 @@ describe('ConfigService', () => {
         JWT_REFRESH_SECRET: validRefreshSecret,
         JWT_ACCESS_EXPIRES_IN: '15m',
         JWT_REFRESH_EXPIRES_IN: '7d',
+        JWT_PRIVATE_KEY: '-----BEGIN PRIVATE KEY-----\ntest\n-----END PRIVATE KEY-----',
+        JWT_PUBLIC_KEY: '-----BEGIN PUBLIC KEY-----\ntest\n-----END PUBLIC KEY-----',
         ARGON2_MEMORY_COST: '65536',
         ARGON2_TIME_COST: '3',
         ARGON2_PARALLELISM: '4',
@@ -126,6 +128,29 @@ describe('ConfigService', () => {
       expect(authConfig.argon2MemoryCost).toBe(65536);
       expect(authConfig.argon2TimeCost).toBe(3);
       expect(authConfig.argon2Parallelism).toBe(4);
+    });
+
+    it('should reject production auth config if JWT_PRIVATE_KEY or JWT_PUBLIC_KEY is missing', () => {
+      const service = new ConfigService({
+        NODE_ENV: 'production',
+        JWT_ACCESS_SECRET: validAccessSecret,
+        JWT_REFRESH_SECRET: validRefreshSecret,
+      });
+
+      expect(() => service.validateAuthConfig()).toThrow(
+        /JWT_PRIVATE_KEY and JWT_PUBLIC_KEY are required in production/,
+      );
+    });
+
+    it('should allow development mode without JWT_PRIVATE_KEY or JWT_PUBLIC_KEY', () => {
+      const service = new ConfigService({
+        NODE_ENV: 'development',
+        JWT_ACCESS_SECRET: validAccessSecret,
+        JWT_REFRESH_SECRET: validRefreshSecret,
+      });
+
+      const authConfig = service.validateAuthConfig();
+      expect(authConfig).toBeDefined();
     });
 
     it('should provide default and custom SMTP and rate limit configuration', () => {

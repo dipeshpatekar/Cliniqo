@@ -4,6 +4,7 @@ use crate::crypto::key_manager::DatabaseEncryptionKey;
 use crate::crypto::{encrypt_payload, CryptoError};
 use super::schema::{
     ClinicalData, PatientDemographics, CREATE_MIGRATIONS_TABLE, MIGRATION_V1_SQL, MIGRATION_V2_SQL,
+    MIGRATION_V3_SQL,
 };
 
 #[derive(Error, Debug)]
@@ -19,6 +20,9 @@ pub enum MigrationError {
 
     #[error("Migration transaction failed: {0}")]
     TransactionError(String),
+
+    #[error("Unsupported schema version: database is at version {0}, but this client only supports up to version 3. Please update the application.")]
+    UnsupportedSchemaVersion(i32),
 }
 
 pub struct MigrationRunner;
@@ -31,7 +35,49 @@ impl MigrationRunner {
         // 1. Ensure migrations table exists
         conn.execute(CREATE_MIGRATIONS_TABLE, [])?;
 
-        // 2. Check if v1 has already been applied
+        // Disable foreign keys during table reconstruction migrations (SQLite requirement).
+        // Must be performed outside any active transaction block.
+        conn.pragma_update(None, "foreign_keys", "OFF")?;
+
+        let migration_res = Self::run_migration_steps(conn, dek);
+
+        // Foreign keys pragma MUST be restored on every success and failure path outside transactions
+        let restore_res = conn.pragma_update(None, "foreign_keys", "ON");
+
+        match migration_res {
+            Ok(()) => {
+                restore_res?;
+                Ok(())
+            }
+            Err(e) => {
+                if let Err(r_err) = restore_res {
+                    log::error!(
+                        "Failed to restore foreign_keys pragma on migration failure path: {r_err}"
+                    );
+                }
+                Err(e)
+            }
+        }
+    }
+
+    fn run_migration_steps(
+        conn: &mut Connection,
+        dek: &DatabaseEncryptionKey,
+    ) -> Result<(), MigrationError> {
+        // 2. Safeguard: Reject unsupported future schema versions
+        let max_version: i32 = conn
+            .query_row(
+                "SELECT COALESCE(MAX(version), 0) FROM schema_migrations",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
+
+        if max_version > 3 {
+            return Err(MigrationError::UnsupportedSchemaVersion(max_version));
+        }
+
+        // 3. Check if v1 has already been applied
         let v1_applied: bool = conn
             .query_row(
                 "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = 1)",
@@ -52,7 +98,7 @@ impl MigrationRunner {
             log::info!("Migration v1 applied successfully.");
         }
 
-        // 3. Check if v2 (Zero Plaintext Encryption at Rest) has already been applied
+        // 4. Check if v2 (Zero Plaintext Encryption at Rest) has already been applied
         let v2_applied: bool = conn
             .query_row(
                 "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = 2)",
@@ -65,6 +111,21 @@ impl MigrationRunner {
             log::info!("Applying local offline SQLite migration v2 (Zero-plaintext encryption at rest)...");
             Self::migrate_to_v2(conn, dek)?;
             log::info!("Migration v2 applied successfully. All sensitive clinical data and outbox mutations encrypted.");
+        }
+
+        // 5. Check if v3 (Sync Engine State & Conflict Extensions) has already been applied
+        let v3_applied: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = 3)",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or(false);
+
+        if !v3_applied {
+            log::info!("Applying local offline SQLite migration v3 (Sync state & conflict resolution)...");
+            Self::migrate_to_v3(conn)?;
+            log::info!("Migration v3 applied successfully. Sync state and extended conflict schemas active.");
         }
 
         Ok(())
@@ -387,5 +448,128 @@ impl MigrationRunner {
 
         tx.commit()?;
         Ok(())
+    }
+
+    fn migrate_to_v3(conn: &mut Connection) -> Result<(), MigrationError> {
+        let tx = conn.transaction()?;
+
+        // 1. Create local_sync_state table and index
+        tx.execute_batch(MIGRATION_V3_SQL)?;
+
+        // 2. Check and alter local_sync_conflicts idempotently
+        let (has_resolution_payload, has_status) = {
+            let mut stmt = tx.prepare("PRAGMA table_info(local_sync_conflicts)")?;
+            let mut rows = stmt.query([])?;
+            let mut has_res = false;
+            let mut has_st = false;
+            while let Some(row) = rows.next()? {
+                let col_name: String = row.get(1)?;
+                if col_name == "resolution_payload" {
+                    has_res = true;
+                } else if col_name == "status" {
+                    has_st = true;
+                }
+            }
+            (has_res, has_st)
+        };
+
+        if !has_resolution_payload {
+            tx.execute(
+                "ALTER TABLE local_sync_conflicts ADD COLUMN resolution_payload TEXT NULL",
+                [],
+            )?;
+        }
+
+        if !has_status {
+            tx.execute(
+                "ALTER TABLE local_sync_conflicts ADD COLUMN status TEXT NOT NULL DEFAULT 'OPEN'",
+                [],
+            )?;
+        }
+
+        // 3. Create conflict querying indexes
+        tx.execute(
+            "CREATE INDEX IF NOT EXISTS idx_sync_conflicts_status ON local_sync_conflicts(status)",
+            [],
+        )?;
+        tx.execute(
+            "CREATE INDEX IF NOT EXISTS idx_sync_conflicts_entity ON local_sync_conflicts(entity_type, entity_id)",
+            [],
+        )?;
+
+        // 4. Record migration in schema_migrations
+        tx.execute(
+            "INSERT INTO schema_migrations (version, name, checksum) VALUES (?1, ?2, ?3)",
+            params![3, "sync_engine_state_and_conflicts_v3", "v3_cliniqo_sync_state"],
+        )?;
+
+        tx.commit()?;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rusqlite::Connection;
+
+    fn get_foreign_keys_status(conn: &Connection) -> i32 {
+        conn.query_row("PRAGMA foreign_keys", [], |row| row.get(0))
+            .unwrap()
+    }
+
+    #[test]
+    fn test_migration_failure_restores_foreign_keys_and_rolls_back() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        conn.pragma_update(None, "foreign_keys", "ON").unwrap();
+        assert_eq!(get_foreign_keys_status(&conn), 1);
+
+        let dek = DatabaseEncryptionKey::new([0x42u8; 32]);
+
+        // 1. Manually insert an unsupported future version in schema_migrations table
+        conn.execute(CREATE_MIGRATIONS_TABLE, []).unwrap();
+        conn.execute(
+            "INSERT INTO schema_migrations (version, name, checksum) VALUES (99, 'future_version', 'checksum99')",
+            [],
+        )
+        .unwrap();
+
+        // 2. Run migrations - should fail due to unsupported version
+        let result = MigrationRunner::run_migrations(&mut conn, &dek);
+        assert!(matches!(
+            result,
+            Err(MigrationError::UnsupportedSchemaVersion(99))
+        ));
+
+        // 3. Verify foreign_keys pragma is restored to 1 (ON) even on failure path
+        assert_eq!(
+            get_foreign_keys_status(&conn),
+            1,
+            "foreign_keys pragma must be restored to ON on failure"
+        );
+
+        // 4. Verify connection remains healthy and safe for subsequent queries
+        let count: i32 = conn
+            .query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn test_successful_migrations_preserve_foreign_keys_on() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        conn.pragma_update(None, "foreign_keys", "ON").unwrap();
+        assert_eq!(get_foreign_keys_status(&conn), 1);
+
+        let dek = DatabaseEncryptionKey::new([0x55u8; 32]);
+        MigrationRunner::run_migrations(&mut conn, &dek).expect("migrations succeed");
+
+        assert_eq!(
+            get_foreign_keys_status(&conn),
+            1,
+            "foreign_keys pragma must remain ON after successful migrations"
+        );
     }
 }

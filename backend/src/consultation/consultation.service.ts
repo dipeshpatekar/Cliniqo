@@ -9,7 +9,8 @@ import {
   Logger,
 } from '@nestjs/common';
 import { InjectModel, InjectConnection } from '@nestjs/mongoose';
-import { Model, Connection, Types } from 'mongoose';
+import type { Connection } from 'mongoose';
+import { Model, Types } from 'mongoose';
 import { createHash, randomUUID } from 'crypto';
 import {
   Consultation,

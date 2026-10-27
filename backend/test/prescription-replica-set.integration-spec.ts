@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
-import mongoose, { Types, Model, Connection } from 'mongoose';
+import type { Connection, Model } from 'mongoose';
+import mongoose, { Types } from 'mongoose';
 import { MongoMemoryReplSet } from 'mongodb-memory-server';
 import {
   ConflictException,

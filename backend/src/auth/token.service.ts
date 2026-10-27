@@ -72,6 +72,14 @@ export class TokenService {
         publicKey: this.configService.jwtPublicKey,
       };
     } else {
+      if (this.configService.isProduction) {
+        throw new Error(
+          'Production environment requires JWT_PRIVATE_KEY and JWT_PUBLIC_KEY to be configured.',
+        );
+      }
+      this.logger.warn(
+        'JWT_PRIVATE_KEY / JWT_PUBLIC_KEY not configured. Generating ephemeral RSA-2048 keypair for development.',
+      );
       this.rsaKeyPair = crypto.generateKeyPairSync('rsa', {
         modulusLength: 2048,
         publicKeyEncoding: { type: 'spki', format: 'pem' },

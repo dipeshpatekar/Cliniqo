@@ -32,6 +32,9 @@ thiserror = "2.0"
 hmac = "0.12"
 sha2 = "0.10"
 base64 = "0.22"
+jsonwebtoken = "9"
+reqwest = { version = "0.13", features = ["json"] }
+tokio = { version = "1", features = ["full"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = ["Win32_Security_Cryptography", "Win32_Foundation"] }

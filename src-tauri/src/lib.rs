@@ -1,13 +1,17 @@
 pub mod auth;
 pub mod commands;
+pub mod config;
 pub mod crypto;
 pub mod db;
+pub mod sync;
 
 use std::sync::Arc;
 use tauri::Manager;
 use auth::SessionManager;
-use commands::AppState;
+use commands::{AppState, RefreshCoordinator};
+use crypto::key_manager::KeyManager;
 use db::DatabaseManager;
+use sync::SyncWorkerHandle;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -34,28 +38,66 @@ pub fn run() {
             let db_manager = DatabaseManager::init(&app_data_dir)
                 .expect("Failed to initialize local encrypted database");
 
-            let session_manager = SessionManager::with_default_secret();
+            let key_manager = KeyManager::new(&app_data_dir);
+
+            // Initialize SessionManager: fail-closed with pinned default unless dynamic rotation is active
+            let session_manager = if SessionManager::DYNAMIC_KEY_ROTATION_ENABLED {
+                match key_manager.load_backend_public_key() {
+                    Ok(Some((version, ref pem))) => match SessionManager::new_with_version(pem, version) {
+                        Ok(mgr) => {
+                            log::info!("Loaded verified cached backend public key v{} from secure store.", version);
+                            mgr
+                        }
+                        Err(e) => {
+                            log::warn!(
+                                "Corrupted cached backend public key ({e}), falling back to pinned default."
+                            );
+                            SessionManager::with_default_public_key()
+                                .expect("Failed to initialize session manager with default public key")
+                        }
+                    },
+                    _ => SessionManager::with_default_public_key()
+                        .expect("Failed to initialize session manager with default public key"),
+                }
+            } else {
+                SessionManager::with_default_public_key()
+                    .expect("Failed to initialize session manager with default public key")
+            };
+
+            let sync_handle = Arc::new(SyncWorkerHandle::new());
+            let refresh_coordinator = Arc::new(RefreshCoordinator::new());
 
             app.manage(AppState {
                 db: Arc::new(db_manager),
                 session_mgr: Arc::new(session_manager),
+                key_mgr: Arc::new(key_manager),
+                sync_handle,
+                refresh_coordinator,
             });
 
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             commands::get_desktop_info,
+            commands::login_desktop,
             commands::login_desktop_session,
+            commands::refresh_desktop_session,
             commands::logout_desktop_session,
             commands::get_desktop_session,
+            commands::has_persisted_refresh_token,
+            commands::get_sync_status,
+            commands::switch_active_clinic,
             commands::save_local_patient,
+            commands::delete_local_patient,
             commands::get_local_patients,
             commands::save_local_consultation,
             commands::get_local_consultations,
             commands::save_local_prescription,
             commands::get_local_prescriptions,
             commands::get_sync_outbox_summary,
+            commands::get_sync_state,
         ])
         .run(tauri::generate_context!())
         .expect("error while building tauri application");
 }
+

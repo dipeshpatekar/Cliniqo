@@ -201,6 +201,18 @@ CREATE TABLE IF NOT EXISTS local_sync_outbox_v2 (
 CREATE INDEX IF NOT EXISTS idx_outbox_v2_sync ON local_sync_outbox_v2(sync_status, created_at);
 "#;
 
+/// Migration V3: Introduces local synchronization state tracking (sequence, push/pull timestamps)
+/// and extends local sync conflicts with explicit status and resolution payload.
+pub const MIGRATION_V3_SQL: &str = r#"
+CREATE TABLE IF NOT EXISTS local_sync_state (
+    clinic_id TEXT PRIMARY KEY,
+    last_pulled_seq INTEGER NOT NULL DEFAULT 0,
+    last_pulled_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    last_pushed_at TIMESTAMP NULL,
+    in_sync BOOLEAN NOT NULL DEFAULT 1
+);
+"#;
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct PatientDemographics {
     pub name: String,
@@ -284,3 +296,89 @@ pub struct SyncOutboxSummary {
     pub conflict_count: i64,
     pub failed_count: i64,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum ConflictStatus {
+    Open,
+    Resolved,
+    Dismissed,
+}
+
+impl ConflictStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ConflictStatus::Open => "OPEN",
+            ConflictStatus::Resolved => "RESOLVED",
+            ConflictStatus::Dismissed => "DISMISSED",
+        }
+    }
+
+    pub fn from_str(s: &str) -> Result<Self, String> {
+        match s.to_uppercase().as_str() {
+            "OPEN" => Ok(ConflictStatus::Open),
+            "RESOLVED" => Ok(ConflictStatus::Resolved),
+            "DISMISSED" => Ok(ConflictStatus::Dismissed),
+            _ => Err(format!("Unknown conflict status: '{s}'")),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SyncStateRecord {
+    pub clinic_id: String,
+    pub last_pulled_seq: i64,
+    pub last_pulled_at: String,
+    pub last_pushed_at: Option<String>,
+    pub in_sync: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SyncConflictRecord {
+    pub id: String,
+    pub outbox_id: String,
+    pub entity_type: String,
+    pub entity_id: String,
+    pub server_version: i32,
+    pub client_version: i32,
+    pub server_payload: String,
+    pub client_payload: String,
+    pub conflict_reason: String,
+    pub resolution_payload: Option<String>,
+    pub status: String,
+    pub resolved_at: Option<String>,
+    pub resolution_strategy: Option<String>,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DecryptedOutboxItem {
+    pub id: String,
+    pub clinic_id: String,
+    pub entity_type: String,
+    pub entity_id: String,
+    pub action: String,
+    pub idempotency_key: String,
+    pub client_version: i64,
+    pub server_id: Option<String>,
+    pub payload: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SyncFeedChangeItem {
+    pub seq: i64,
+    #[serde(rename = "entityType")]
+    pub entity_type: String,
+    #[serde(rename = "entityId")]
+    pub entity_id: String,
+    #[serde(rename = "clientEntityId")]
+    pub client_entity_id: Option<String>,
+    pub action: String,
+    pub version: i64,
+    pub payload: serde_json::Value,
+    #[serde(rename = "committedAt")]
+    pub committed_at: String,
+    #[serde(rename = "actorDoctorId")]
+    pub actor_doctor_id: String,
+}
+
+

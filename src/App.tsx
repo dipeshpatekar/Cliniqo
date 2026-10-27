@@ -1,5 +1,25 @@
 import { useEffect, useMemo, useRef, useState, type ComponentType, type FormEvent, type ReactNode } from "react";
 import {
+  isTauriDesktop,
+  getDesktopSession,
+  loginDesktop,
+  refreshDesktopSession,
+  hasPersistedRefreshToken,
+  loginDesktopSession,
+  logoutDesktopSession,
+  getSyncStatus,
+  getApiBaseUrl,
+  saveLocalPatient,
+  deleteLocalPatient,
+  getLocalPatients,
+  saveLocalConsultation,
+  saveLocalPrescription,
+  type DesktopSessionContext,
+  type DesktopLoginResult,
+  type SyncStatusInfo,
+  type LocalPatientRecord,
+} from "./desktop/desktop-bridge";
+import {
   Activity,
   AlertCircle,
   ArrowLeft,
@@ -146,8 +166,29 @@ const initialPatients: Patient[] = [
   { id: "PC-1046", name: "Sana Kapoor", initials: "SK", age: 28, gender: "Female", phone: "+91 99876 22109", lastVisit: "22 Jun 2025", allergies: ["Sulfonamides"], conditions: [] },
   { id: "PC-1045", name: "Rohan Shah", initials: "RS", age: 41, gender: "Male", phone: "+91 98921 88276", lastVisit: "18 Jun 2025", allergies: [], conditions: ["Type 2 diabetes"] },
   { id: "PC-1044", name: "Meera Nair", initials: "MN", age: 66, gender: "Female", phone: "+91 97694 33721", lastVisit: "15 Jun 2025", allergies: [], conditions: ["Osteoarthritis"] },
-  { id: "PC-1043", name: "Arjun Rao", initials: "AR", age: 23, gender: "Male", phone: "+91 90047 51287", lastVisit: "09 Jun 2025", allergies: [], conditions: [] },
 ];
+
+function mapLocalRecordToPatient(rec: LocalPatientRecord): Patient {
+  const name = rec.name || "Unnamed Patient";
+  const initials = name
+    .split(/\s+/)
+    .slice(0, 2)
+    .map((part) => part[0])
+    .join("")
+    .toUpperCase() || "PT";
+  return {
+    id: rec.id,
+    name,
+    initials,
+    age: rec.age ?? 0,
+    gender: rec.gender || "Other",
+    phone: rec.phone || "",
+    lastVisit: "No visits yet",
+    allergies: Array.isArray(rec.allergies) ? rec.allergies : [],
+    conditions: Array.isArray(rec.conditions) ? rec.conditions : [],
+    dateOfBirth: rec.date_of_birth || undefined,
+  };
+}
 
 const emptyMedicine = (id: number): Medicine => ({
   id,
@@ -387,7 +428,13 @@ function Logo({ large = false }: { large?: boolean }) {
   );
 }
 
-function Login({ go }: { go: (page: Page) => void }) {
+function Login({
+  go,
+  onLoginSuccess,
+}: {
+  go: (page: Page) => void;
+  onLoginSuccess?: (session: DesktopSessionContext) => void;
+}) {
   const [view, setView] = useState<"login" | "forgot" | "otp" | "reset" | "success">("login");
   const [email, setEmail] = useState("nikhil@nishtihospital.in");
   const [password, setPassword] = useState("");
@@ -412,7 +459,7 @@ function Login({ go }: { go: (page: Page) => void }) {
     return () => window.clearInterval(timer);
   }, [view, countdown]);
 
-  const signIn = (event: FormEvent) => {
+  const signIn = async (event: FormEvent) => {
     event.preventDefault();
     const nextErrors: Record<string, string> = {};
     if (!emailPattern.test(email)) nextErrors.email = "Enter a valid email address";
@@ -422,6 +469,32 @@ function Login({ go }: { go: (page: Page) => void }) {
       setErrors(nextErrors);
       return;
     }
+
+    if (isTauriDesktop()) {
+      try {
+        setAuthState("loading");
+        const loginRes = await loginDesktop(email, password);
+
+        if (!loginRes) {
+          setAuthState("idle");
+          setErrors({ form: "Cryptographic session verification or clinic resolution failed." });
+          return;
+        }
+
+        setAuthState("idle");
+        if (onLoginSuccess) {
+          onLoginSuccess(loginRes.session);
+        } else {
+          go("dashboard");
+        }
+        return;
+      } catch (err: any) {
+        setAuthState("idle");
+        setErrors({ form: err?.message || "Invalid email or password." });
+        return;
+      }
+    }
+
     if (password === "wrongpass") {
       setErrors({ form: "The email or password you entered is incorrect." });
       return;
@@ -872,7 +945,21 @@ function Setup({ go }: { go: (page: Page) => void }) {
   );
 }
 
-function Sidebar({ page, go, collapsed, onToggle, onDoctorProfile }: { page: Page; go: (page: Page) => void; collapsed: boolean; onToggle: () => void; onDoctorProfile: () => void }) {
+function Sidebar({
+  page,
+  go,
+  collapsed,
+  onToggle,
+  onDoctorProfile,
+  desktopSession,
+}: {
+  page: Page;
+  go: (page: Page) => void;
+  collapsed: boolean;
+  onToggle: () => void;
+  onDoctorProfile: () => void;
+  desktopSession?: DesktopSessionContext | null;
+}) {
   const nav = [
     { id: "dashboard" as Page, label: "Dashboard", icon: LayoutDashboard },
     { id: "patients" as Page, label: "Patients", icon: Users },
@@ -891,8 +978,20 @@ function Sidebar({ page, go, collapsed, onToggle, onDoctorProfile }: { page: Pag
       </nav>
       <div className="sidebar-bottom">
         <div className="doctor-card">
-          <span className="avatar">NK</span>
-          <button onClick={onDoctorProfile}><strong>Dr. Nikhil Kanade</strong><small>Nishti Hospital</small></button>
+          <span className="avatar">
+            {desktopSession?.doctor_name
+              ? desktopSession.doctor_name
+                  .split(" ")
+                  .map((n) => n[0])
+                  .slice(0, 2)
+                  .join("")
+                  .toUpperCase()
+              : "NK"}
+          </span>
+          <button onClick={onDoctorProfile}>
+            <strong>{desktopSession?.doctor_name || "Dr. Nikhil Kanade"}</strong>
+            <small>{desktopSession ? `Clinic: ${desktopSession.clinic_id}` : "Nishti Hospital"}</small>
+          </button>
         </div>
       </div>
     </aside>
@@ -983,6 +1082,7 @@ function PatientsPage({
   onStartConsultation,
   onCreateBill,
   onEditPatient,
+  onDeletePatient,
 }: {
   go: (page: Page) => void;
   patients: Patient[];
@@ -990,6 +1090,7 @@ function PatientsPage({
   onStartConsultation: (patient: Patient) => void;
   onCreateBill: (patient: Patient) => void;
   onEditPatient: (patient: Patient) => void;
+  onDeletePatient?: (patientId: string) => void;
 }) {
   const [query, setQuery] = useState("");
   const [gender, setGender] = useState("All patients");
@@ -1034,7 +1135,7 @@ function PatientsPage({
                       <td>{patient.age} yrs <span className="muted">· {patient.gender}</span></td>
                       <td>{patient.phone}</td>
                       <td>{patient.lastVisit}</td>
-                      <td><div className="row-actions"><Button size="sm" variant="secondary" icon={ReceiptIndianRupee} onClick={() => onCreateBill(patient)}>Bill</Button><Button size="sm" variant="secondary" onClick={() => onStartConsultation(patient)}>Start consultation</Button><IconButton label={`Edit ${patient.name}`} onClick={() => onEditPatient(patient)}><PencilLine size={16} /></IconButton><IconButton label={`More actions for ${patient.name}`} onClick={() => onOpenPatient(patient)}><MoreHorizontal size={18} /></IconButton></div></td>
+                      <td><div className="row-actions"><Button size="sm" variant="secondary" icon={ReceiptIndianRupee} onClick={() => onCreateBill(patient)}>Bill</Button><Button size="sm" variant="secondary" onClick={() => onStartConsultation(patient)}>Start consultation</Button><IconButton label={`Edit ${patient.name}`} onClick={() => onEditPatient(patient)}><PencilLine size={16} /></IconButton>{onDeletePatient && <IconButton label={`Delete ${patient.name}`} onClick={() => { if (window.confirm(`Delete patient ${patient.name}?`)) onDeletePatient(patient.id); }}><Trash2 size={16} /></IconButton>}<IconButton label={`More actions for ${patient.name}`} onClick={() => onOpenPatient(patient)}><MoreHorizontal size={18} /></IconButton></div></td>
                     </tr>
                   ))}
                 </tbody>
@@ -1149,7 +1250,17 @@ function FormSection({ icon: Icon, title, description, children }: { icon: Compo
   );
 }
 
-function PatientProfile({ go, patient, saveFeedback }: { go: (page: Page) => void; patient: Patient; saveFeedback: "added" | "updated" | null }) {
+function PatientProfile({
+  go,
+  patient,
+  saveFeedback,
+  onDeletePatient,
+}: {
+  go: (page: Page) => void;
+  patient: Patient;
+  saveFeedback: "added" | "updated" | null;
+  onDeletePatient?: (patientId: string) => void;
+}) {
   const [tab, setTab] = useState("Overview");
   const allergyLabel = patient.allergies.join(", ");
   const hasHistory = patient.lastVisit !== "No visits yet";
@@ -1159,6 +1270,18 @@ function PatientProfile({ go, patient, saveFeedback }: { go: (page: Page) => voi
         <IconButton className="topbar-back" label="Back to patients" onClick={() => go("patients")}><ArrowLeft size={18} /></IconButton>
         <Button variant="secondary" icon={Edit3} onClick={() => go("patient-form")}>Edit patient</Button>
         <Button icon={Stethoscope} onClick={() => go("consultation")}>Start consultation</Button>
+        {onDeletePatient && (
+          <Button
+            variant="ghost"
+            onClick={() => {
+              if (window.confirm(`Are you sure you want to delete patient ${patient.name}?`)) {
+                onDeletePatient(patient.id);
+              }
+            }}
+          >
+            <Trash2 size={16} /> Delete
+          </Button>
+        )}
       </AppHeader>
       <div className="page-content profile-page">
         {saveFeedback && <div className="success-banner" role="status" aria-live="polite"><CheckCircle2 size={19} /><div><strong>{saveFeedback === "added" ? "Patient added successfully." : "Patient changes saved."}</strong><span>{saveFeedback === "added" ? "The local patient record is ready for this session." : "The existing local record was updated without changing its patient ID."}</span></div></div>}
@@ -1201,9 +1324,28 @@ function PrescriptionsTab({ go, hasHistory }: { go: (page: Page) => void; hasHis
   return <section className="panel record-list"><div className="panel-head"><div><h2>Prescription history</h2><p>Finalized records and tracked revisions</p></div></div>{hasHistory ? [["12 Mar 2025", "Revision 1", "Delivered"], ["18 Nov 2024", "Original", "Printed"], ["03 Jul 2024", "Original", "Delivered"]].map((r) => <button key={r[0]} onClick={() => go("preview")}><span className="record-icon"><FileText size={18} /></span><span><strong>Prescription · {r[1]}</strong><small>Finalized {r[0]}</small></span><StatusPill tone="success">{r[2]}</StatusPill><ChevronRight size={17} /></button>) : <div className="empty-state compact"><FileText size={25} /><h2>No prescriptions yet</h2><p>Finalized prescriptions and revisions will appear here.</p></div>}</section>;
 }
 
-function Consultation({ go, patient, clinicalLibrary, vitals, onVitalsChange, data, onDataChange }: { go: (page: Page) => void; patient: Patient; clinicalLibrary: ClinicalLibrary; vitals: Vitals; onVitalsChange: (key: keyof Vitals, value: string) => void; data: ConsultationData; onDataChange: (data: ConsultationData) => void }) {
+function Consultation({
+  go,
+  patient,
+  clinicalLibrary,
+  vitals,
+  onVitalsChange,
+  data,
+  onDataChange,
+  desktopSession,
+}: {
+  go: (page: Page) => void;
+  patient: Patient;
+  clinicalLibrary: ClinicalLibrary;
+  vitals: Vitals;
+  onVitalsChange: (key: keyof Vitals, value: string) => void;
+  data: ConsultationData;
+  onDataChange: (data: ConsultationData) => void;
+  desktopSession?: DesktopSessionContext | null;
+}) {
   const [saved, setSaved] = useState(false);
   const [showFinalize, setShowFinalize] = useState(false);
+  const [isFinalizing, setIsFinalizing] = useState(false);
   const [complaintPreset, setComplaintPreset] = useState("");
   const [durationPreset, setDurationPreset] = useState("");
   const [diagnosisPreset, setDiagnosisPreset] = useState("");
@@ -1212,6 +1354,44 @@ function Consultation({ go, patient, clinicalLibrary, vitals, onVitalsChange, da
   const updateMedicine = (id: number, key: keyof Medicine, value: string) => updateData({ medicines: data.medicines.map((row) => row.id === id ? { ...row, [key]: value } : row) });
   const addMedicine = () => updateData({ medicines: [...data.medicines, emptyMedicine(Math.max(...data.medicines.map((row) => row.id), 0) + 1)] });
   const removeMedicine = (id: number) => updateData({ medicines: data.medicines.filter((row) => row.id !== id) });
+
+  const handleFinalize = async () => {
+    if (isTauriDesktop() && desktopSession?.clinic_id) {
+      setIsFinalizing(true);
+      try {
+        const consultationId = await saveLocalConsultation({
+          clinic_id: desktopSession.clinic_id,
+          patient_id: patient.id,
+          consultation_date: data.date,
+          chief_complaint: data.chiefComplaint,
+          diagnosis: data.diagnosis,
+          clinical_snapshot_json: JSON.stringify({
+            vitals,
+            symptomDuration: data.symptomDuration,
+            followUpDate: data.followUpDate,
+            followUpInstructions: data.followUpInstructions,
+          }),
+        });
+
+        if (consultationId && data.medicines.length > 0) {
+          const rxNumber = `RX-${Date.now().toString().slice(-6)}`;
+          await saveLocalPrescription({
+            clinic_id: desktopSession.clinic_id,
+            consultation_id: consultationId,
+            patient_id: patient.id,
+            prescription_number: rxNumber,
+            items_json: JSON.stringify(data.medicines),
+          });
+        }
+      } catch (err) {
+        console.error("[Cliniqo Desktop] Failed to save consultation/prescription to SQLite:", err);
+      } finally {
+        setIsFinalizing(false);
+      }
+    }
+    setShowFinalize(false);
+    go("preview");
+  };
   return (
     <>
       <AppHeader title="New consultation" subtitle={`${patient.name} · ${patient.id}`}>
@@ -1290,8 +1470,20 @@ function Consultation({ go, patient, clinicalLibrary, vitals, onVitalsChange, da
       </div>
       {showFinalize && <Modal title="Finalize prescription?" description="Confirm that you have reviewed the diagnosis, medicines, doses, and instructions." onClose={() => setShowFinalize(false)}>
         <div className="review-checklist"><p><CheckCircle2 size={18} /> Patient and allergy details reviewed</p><p><CheckCircle2 size={18} /> Clinical notes and diagnosis reviewed</p><p><CheckCircle2 size={18} /> Medicines and directions reviewed</p></div>
-        <div className="modal-warning"><LockKeyhole size={17} /><p>This frontend can preview the finalized layout, but durable finalization and revision history require a backend.</p></div>
-        <div className="modal-actions"><Button variant="ghost" onClick={() => setShowFinalize(false)}>Continue editing</Button><Button onClick={() => go("preview")}>Open final preview</Button></div>
+        <div className="modal-warning">
+          <LockKeyhole size={17} />
+          <p>
+            {isTauriDesktop() && desktopSession
+              ? "Encrypted local SQLite storage and durable sync outbox are active for this clinic."
+              : "This frontend can preview the finalized layout, but durable finalization and revision history require a backend."}
+          </p>
+        </div>
+        <div className="modal-actions">
+          <Button variant="ghost" onClick={() => setShowFinalize(false)}>Continue editing</Button>
+          <Button onClick={handleFinalize} disabled={isFinalizing}>
+            {isFinalizing ? "Saving to encrypted storage..." : "Finalize & view prescription"}
+          </Button>
+        </div>
       </Modal>}
     </>
   );
@@ -1457,7 +1649,55 @@ function PrescriptionPreview({ go, patient, vitals, data, bannerVisible, bannerI
   );
 }
 
-function SettingsPage({ go, logout, darkMode, onDarkModeChange, clinicalLibrary, onAddLibraryItem, onAddMedicine, bannerVisible, onBannerVisibleChange, bannerImage, onBannerImageChange, signatureImage, onSignatureImageChange, showClinicLogo, onShowClinicLogoChange, showClinicEmail, onShowClinicEmailChange, showAllergyWarning, onShowAllergyWarningChange, billLayout, onBillLayoutChange, initialTab }: { go: (page: Page) => void; logout: () => void; darkMode: boolean; onDarkModeChange: (enabled: boolean) => void; clinicalLibrary: ClinicalLibrary; onAddLibraryItem: (category: ClinicalLibraryCategory, value: string) => void; onAddMedicine: (medicine: ClinicalMedicineDefinition) => void; bannerVisible: boolean; onBannerVisibleChange: (visible: boolean) => void; bannerImage: { src: string; name: string } | null; onBannerImageChange: (image: { src: string; name: string } | null) => void; signatureImage: { src: string; name: string } | null; onSignatureImageChange: (image: { src: string; name: string } | null) => void; showClinicLogo: boolean; onShowClinicLogoChange: (visible: boolean) => void; showClinicEmail: boolean; onShowClinicEmailChange: (visible: boolean) => void; showAllergyWarning: boolean; onShowAllergyWarningChange: (visible: boolean) => void; billLayout: BillLayoutPreferences; onBillLayoutChange: (layout: BillLayoutPreferences) => void; initialTab: string }) {
+function SettingsPage({
+  go,
+  logout,
+  darkMode,
+  onDarkModeChange,
+  clinicalLibrary,
+  onAddLibraryItem,
+  onAddMedicine,
+  bannerVisible,
+  onBannerVisibleChange,
+  bannerImage,
+  onBannerImageChange,
+  signatureImage,
+  onSignatureImageChange,
+  showClinicLogo,
+  onShowClinicLogoChange,
+  showClinicEmail,
+  onShowClinicEmailChange,
+  showAllergyWarning,
+  onShowAllergyWarningChange,
+  billLayout,
+  onBillLayoutChange,
+  initialTab,
+  desktopSession,
+}: {
+  go: (page: Page) => void;
+  logout: () => void;
+  darkMode: boolean;
+  onDarkModeChange: (enabled: boolean) => void;
+  clinicalLibrary: ClinicalLibrary;
+  onAddLibraryItem: (category: ClinicalLibraryCategory, value: string) => void;
+  onAddMedicine: (medicine: ClinicalMedicineDefinition) => void;
+  bannerVisible: boolean;
+  onBannerVisibleChange: (visible: boolean) => void;
+  bannerImage: { src: string; name: string } | null;
+  onBannerImageChange: (image: { src: string; name: string } | null) => void;
+  signatureImage: { src: string; name: string } | null;
+  onSignatureImageChange: (image: { src: string; name: string } | null) => void;
+  showClinicLogo: boolean;
+  onShowClinicLogoChange: (visible: boolean) => void;
+  showClinicEmail: boolean;
+  onShowClinicEmailChange: (visible: boolean) => void;
+  showAllergyWarning: boolean;
+  onShowAllergyWarningChange: (visible: boolean) => void;
+  billLayout: BillLayoutPreferences;
+  onBillLayoutChange: (layout: BillLayoutPreferences) => void;
+  initialTab: string;
+  desktopSession?: DesktopSessionContext | null;
+}) {
   const [tab, setTab] = useState(initialTab);
   const [saved, setSaved] = useState(false);
   const sections = [
@@ -1484,7 +1724,7 @@ function SettingsPage({ go, logout, darkMode, onDarkModeChange, clinicalLibrary,
           {tab === "Clinical library" && <ClinicalLibrarySettings library={clinicalLibrary} onAdd={onAddLibraryItem} onAddMedicine={onAddMedicine} />}
           {tab === "Appearance" && <AppearanceSettings darkMode={darkMode} onDarkModeChange={onDarkModeChange} />}
           {tab === "WhatsApp" && <WhatsAppSettings />}
-          {tab === "Security" && <SecuritySettings logout={logout} />}
+          {tab === "Security" && <SecuritySettings logout={logout} desktopSession={desktopSession} />}
           {tab === "Sync & data" && <SyncSettings />}
           {(tab === "Doctor profile" || tab === "Clinic profile") && <div className="settings-actions"><Button variant="secondary" onClick={() => go("dashboard")}>Cancel</Button><Button onClick={() => { setSaved(true); window.setTimeout(() => setSaved(false), 1800); }}>{saved ? <><Check size={16} /> Saved</> : "Save changes"}</Button></div>}
         </main>
@@ -1623,21 +1863,175 @@ function WhatsAppSettings() {
   return <section className="settings-section"><div className="settings-title with-status"><div><h2>WhatsApp configuration</h2><p>Provider credentials and delivery webhooks are backend-dependent.</p></div><StatusPill tone="warning">Not connected</StatusPill></div><div className="integration-card"><span><MessageCircle size={21} /></span><div><strong>WhatsApp Business provider</strong><p>{tested ? "Frontend check complete · No provider request sent" : "No provider is connected in this UI build"}</p></div><Button size="sm" variant="secondary" onClick={() => setTested(true)}>{tested ? "UI checked" : "Check UI state"}</Button></div><div className="info-callout"><AlertCircle size={17} /><p>Real queued, sent, delivered, and failed statuses must come from provider API responses and webhooks. This frontend does not send messages.</p></div><h3 className="subsection-title">Delivery history</h3><div className="empty-state compact"><MessageCircle size={24} /><h2>No provider delivery data</h2><p>Delivery records will appear only after a backend integration is connected.</p></div></section>;
 }
 
-function SecuritySettings({ logout }: { logout: () => void }) {
-  return <section className="settings-section"><div className="settings-title"><h2>Security</h2><p>Authentication and clinic access controls require a backend.</p></div><div className="security-row"><span><ShieldCheck size={20} /></span><div><strong>Frontend authentication demo</strong><p>No verified session, account, role, or clinic access boundary is active.</p></div><StatusPill tone="warning">Demo only</StatusPill></div><div className="danger-zone"><div><strong>Return to sign in</strong><p>This clears the current UI route; no server session exists to revoke.</p></div><Button variant="danger" onClick={logout}>Log out</Button></div></section>;
+function SecuritySettings({
+  logout,
+  desktopSession,
+}: {
+  logout: () => void;
+  desktopSession?: DesktopSessionContext | null;
+}) {
+  return (
+    <section className="settings-section">
+      <div className="settings-title">
+        <h2>Security</h2>
+        <p>
+          {desktopSession
+            ? "Cryptographically verified RS256 desktop session with DPAPI-protected credentials."
+            : "Authentication and clinic access controls require a backend."}
+        </p>
+      </div>
+      <div className="security-row">
+        <span><ShieldCheck size={20} /></span>
+        <div>
+          <strong>
+            {desktopSession
+              ? `Verified Session: ${desktopSession.doctor_name}`
+              : "Frontend authentication demo"}
+          </strong>
+          <p>
+            {desktopSession
+              ? `Clinic: ${desktopSession.clinic_id} • Role: ${desktopSession.role} • Expires: ${new Date(desktopSession.expires_at * 1000).toLocaleTimeString()}`
+              : "No verified session, account, role, or clinic access boundary is active."}
+          </p>
+        </div>
+        <StatusPill tone={desktopSession ? "success" : "warning"}>
+          {desktopSession ? "Active (RS256)" : "Demo only"}
+        </StatusPill>
+      </div>
+      <div className="danger-zone">
+        <div>
+          <strong>{desktopSession ? "End desktop session" : "Return to sign in"}</strong>
+          <p>
+            {desktopSession
+              ? "Revokes server session, clears in-memory keys, and wipes DPAPI-persisted refresh token."
+              : "This clears the current UI route; no server session exists to revoke."}
+          </p>
+        </div>
+        <Button variant="danger" onClick={logout}>Log out</Button>
+      </div>
+    </section>
+  );
 }
 
 function SyncSettings() {
   const [syncEnabled, setSyncEnabled] = useState(false);
+  const [nativeStatus, setNativeStatus] = useState<SyncStatusInfo | null>(null);
+
+  useEffect(() => {
+    if (!isTauriDesktop()) return;
+
+    let mounted = true;
+    const fetchStatus = async () => {
+      try {
+        const s = await getSyncStatus();
+        if (mounted && s) {
+          setNativeStatus(s);
+        }
+      } catch (err) {
+        console.warn("Failed to query sync status:", err);
+      }
+    };
+
+    fetchStatus();
+    const interval = setInterval(fetchStatus, 3000);
+    return () => {
+      mounted = false;
+      clearInterval(interval);
+    };
+  }, []);
+
+  if (isTauriDesktop()) {
+    const isLive = nativeStatus?.is_running ?? false;
+    const tone =
+      nativeStatus?.status === "SYNCING"
+        ? "info"
+        : nativeStatus?.status === "OFFLINE"
+        ? "warning"
+        : nativeStatus?.status === "ERROR"
+        ? "danger"
+        : "success";
+
+    return (
+      <section className="settings-section">
+        <div className="settings-title with-status">
+          <div>
+            <h2>Native Synchronization Engine</h2>
+            <p>Background worker with transactional SQLite persistence and cloud sync.</p>
+          </div>
+          <StatusPill tone={tone}>
+            {nativeStatus?.status || (isLive ? "RUNNING" : "STOPPED")}
+          </StatusPill>
+        </div>
+
+        <div className="sync-hero">
+          <span><Cloud size={24} /></span>
+          <div>
+            <strong>
+              {nativeStatus?.active_clinic_id
+                ? `Active Clinic: ${nativeStatus.active_clinic_id}`
+                : "No active clinic session"}
+            </strong>
+            <p>
+              {nativeStatus?.last_synced_at
+                ? `Last synchronized: ${new Date(nativeStatus.last_synced_at).toLocaleTimeString()}`
+                : "Awaiting initial sync cycle"}
+            </p>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-3 gap-3 my-4">
+          <div className="rounded-lg border border-slate-200 dark:border-slate-800 p-3 bg-slate-50 dark:bg-slate-900/50">
+            <span className="text-xs text-slate-500 uppercase tracking-wider block">Pending Mutations</span>
+            <span className="text-xl font-bold text-slate-800 dark:text-slate-100">{nativeStatus?.pending_mutations ?? 0}</span>
+          </div>
+          <div className="rounded-lg border border-slate-200 dark:border-slate-800 p-3 bg-slate-50 dark:bg-slate-900/50">
+            <span className="text-xs text-slate-500 uppercase tracking-wider block">In-Flight Jobs</span>
+            <span className="text-xl font-bold text-slate-800 dark:text-slate-100">{nativeStatus?.in_flight_mutations ?? 0}</span>
+          </div>
+          <div className="rounded-lg border border-slate-200 dark:border-slate-800 p-3 bg-slate-50 dark:bg-slate-900/50">
+            <span className="text-xs text-slate-500 uppercase tracking-wider block">Conflicts Recorded</span>
+            <span className="text-xl font-bold text-amber-600 dark:text-amber-400">{nativeStatus?.conflicts_count ?? 0}</span>
+          </div>
+        </div>
+
+        {nativeStatus?.last_error && (
+          <div className="info-callout text-amber-700 bg-amber-50 dark:bg-amber-950/40 border-amber-200 dark:border-amber-900 mb-3">
+            <AlertCircle size={17} />
+            <p><strong>Sync Alert:</strong> {nativeStatus.last_error}</p>
+          </div>
+        )}
+
+        <div className="info-callout">
+          <Cloud size={17} />
+          <p>
+            <strong>Phase 5C Native Sync Active:</strong> Patient demographics and clinical snapshots are encrypted with AES-256-GCM before local SQLite persistence. Mutations push with backend idempotency keys, and changes pull with monotonic sequence cursors.
+          </p>
+        </div>
+      </section>
+    );
+  }
+
   return <section className="settings-section"><div className="settings-title with-status"><div><h2>Synchronization & data</h2><p>This frontend keeps workflow data in memory unless explicitly noted.</p></div><StatusPill tone={syncEnabled ? "info" : "warning"}>{syncEnabled ? "UI demo on" : "UI demo off"}</StatusPill></div><div className="sync-hero"><span><Cloud size={24} /></span><div><strong>{syncEnabled ? "Sync preference is on" : "Sync preference is off"}</strong><p>{syncEnabled ? "UI state only — no data is uploaded to or downloaded from a cloud service" : "Local workflow data stays in this browser session"}</p></div><button className={cn("theme-switch", syncEnabled && "active")} role="switch" aria-checked={syncEnabled} aria-label="Toggle synchronization demo" onClick={() => setSyncEnabled((enabled) => !enabled)}><span /></button></div><div className="info-callout"><WifiOff size={17} /><p><strong>UI prototype only:</strong> Turning this switch on does not upload, download, back up, or synchronize patient data. A secure backend and authenticated clinic account are required for real cloud sync.</p></div></section>;
 }
 
 export default function App() {
   const [page, setPage] = useState<Page>("login");
+  const [desktopSession, setDesktopSession] = useState<DesktopSessionContext | null>(null);
+  const [isRestoringSession, setIsRestoringSession] = useState<boolean>(isTauriDesktop);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(true);
-  const [patientRecords, setPatientRecords] = useState<Patient[]>(initialPatients);
-  const [selectedPatient, setSelectedPatient] = useState<Patient>(initialPatients[0]);
+  const [patientRecords, setPatientRecords] = useState<Patient[]>(() => isTauriDesktop() ? [] : initialPatients);
+  const [selectedPatient, setSelectedPatient] = useState<Patient>(() => isTauriDesktop() ? ({
+    id: "PT-INIT",
+    name: "No patient selected",
+    initials: "--",
+    age: 0,
+    gender: "Other",
+    phone: "",
+    lastVisit: "No visits yet",
+    allergies: [],
+    conditions: [],
+  }) : initialPatients[0]);
   const [editingPatient, setEditingPatient] = useState<Patient | null>(null);
   const [patientSaveFeedback, setPatientSaveFeedback] = useState<"added" | "updated" | null>(null);
   const [settingsKey, setSettingsKey] = useState(0);
@@ -1668,15 +2062,99 @@ export default function App() {
     discount: 0,
     items: [{ id: 1, description: "Consultation fee", quantity: 1, rate: 800 }],
   });
-  const nextPatientId = `PC-${Math.max(...patientRecords.map((patient) => Number(patient.id.replace(/\D/g, ""))), 1048) + 1}`;
+  const nextPatientId = `PC-${Math.max(...patientRecords.map((patient) => Number(patient.id.replace(/\D/g, "")) || 0), 1048) + 1}`;
+
+  // Desktop session bootstrap: check active in-memory session or restore via DPAPI refresh token
+  useEffect(() => {
+    if (!isTauriDesktop()) return;
+
+    let mounted = true;
+    async function bootstrapDesktopSession() {
+      try {
+        const active = await getDesktopSession();
+        const nowSec = Math.floor(Date.now() / 1000);
+        if (active && active.expires_at > nowSec) {
+          if (mounted) {
+            setDesktopSession(active);
+            try {
+              const localPatients = await getLocalPatients(active.clinic_id);
+              if (localPatients && localPatients.length > 0) {
+                const mapped = localPatients.map(mapLocalRecordToPatient);
+                setPatientRecords(mapped);
+                setSelectedPatient(mapped[0]);
+              } else {
+                setPatientRecords([]);
+              }
+            } catch (err) {
+              console.warn("[Cliniqo Desktop] Failed to load local patients:", err);
+            }
+            setPage((curr) => (curr === "login" || curr === "register" ? "dashboard" : curr));
+            setIsRestoringSession(false);
+          }
+          return;
+        }
+
+        const hasToken = await hasPersistedRefreshToken();
+        if (hasToken) {
+          const restored = await refreshDesktopSession();
+          if (restored && mounted) {
+            setDesktopSession(restored.session);
+            try {
+              const localPatients = await getLocalPatients(restored.session.clinic_id);
+              if (localPatients && localPatients.length > 0) {
+                const mapped = localPatients.map(mapLocalRecordToPatient);
+                setPatientRecords(mapped);
+                setSelectedPatient(mapped[0]);
+              } else {
+                setPatientRecords([]);
+              }
+            } catch (err) {
+              console.warn("[Cliniqo Desktop] Failed to load local patients:", err);
+            }
+            setPage((curr) => (curr === "login" || curr === "register" ? "dashboard" : curr));
+            setIsRestoringSession(false);
+            return;
+          }
+        }
+
+        if (mounted) {
+          setDesktopSession(null);
+          setPage("login");
+          setIsRestoringSession(false);
+        }
+      } catch (err) {
+        console.warn("[Cliniqo Desktop] Session bootstrap error:", err);
+        if (mounted) {
+          setDesktopSession(null);
+          setPage("login");
+          setIsRestoringSession(false);
+        }
+      }
+    }
+
+    bootstrapDesktopSession();
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
   useEffect(() => {
     document.documentElement.classList.toggle("dark", darkMode);
     window.localStorage.setItem("cliniqo-theme", darkMode ? "dark" : "light");
   }, [darkMode]);
+
   useEffect(() => {
     window.localStorage.setItem("cliniqo-clinical-library", JSON.stringify(clinicalLibrary));
   }, [clinicalLibrary]);
+
   const go = (next: Page) => {
+    // Desktop Route Guard:
+    // When running inside Tauri desktop container, do not allow navigation to protected pages without verified session
+    if (isTauriDesktop() && !desktopSession && next !== "login" && next !== "register") {
+      setPage("login");
+      return;
+    }
+
     if (next === "preview") {
       const fromSettings = page === "settings";
       setPrescriptionPreviewReturnPage(fromSettings ? "settings" : "consultation");
@@ -1693,7 +2171,20 @@ export default function App() {
     setSidebarOpen(false);
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
-  const logout = () => go("login");
+
+  const logout = async () => {
+    if (isTauriDesktop()) {
+      try {
+        await logoutDesktopSession();
+      } catch (err) {
+        console.warn("[Cliniqo Desktop] Error during logout:", err);
+      }
+      setDesktopSession(null);
+      setPatientRecords([]);
+    }
+    go("login");
+  };
+
   const openPatient = (patient: Patient) => {
     setSelectedPatient(patient);
     setPatientSaveFeedback(null);
@@ -1701,6 +2192,7 @@ export default function App() {
     setVitals({ systolic: "", diastolic: "", heartRate: "", spo2: "", temperature: "", height: "", weight: "" });
     go("patient-profile");
   };
+
   const startConsultation = (patient: Patient) => {
     setSelectedPatient(patient);
     setPatientSaveFeedback(null);
@@ -1708,6 +2200,7 @@ export default function App() {
     setVitals({ systolic: "", diastolic: "", heartRate: "", spo2: "", temperature: "", height: "", weight: "" });
     go("consultation");
   };
+
   const editPatient = (patient: Patient) => {
     setSelectedPatient(patient);
     setPatientSaveFeedback(null);
@@ -1716,6 +2209,7 @@ export default function App() {
     setSidebarOpen(false);
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
+
   const startBill = (patient: Patient) => {
     setSelectedPatient(patient);
     setBillData({
@@ -1727,10 +2221,35 @@ export default function App() {
     });
     go("bill-form");
   };
-  const savePatient = (patient: Patient, startConsultation = false) => {
+
+  const savePatient = async (patient: Patient, startConsultation = false) => {
     const wasEditing = Boolean(editingPatient);
-    setPatientRecords((records) => [patient, ...records.filter((record) => record.id !== patient.id)]);
-    setSelectedPatient(patient);
+    let effectivePatient = patient;
+
+    if (isTauriDesktop() && desktopSession?.clinic_id) {
+      try {
+        const savedId = await saveLocalPatient({
+          id: wasEditing ? editingPatient?.id : null,
+          clinic_id: desktopSession.clinic_id,
+          patient_code: patient.id,
+          name: patient.name,
+          phone: patient.phone,
+          gender: patient.gender,
+          date_of_birth: patient.dateOfBirth || null,
+          age: patient.age,
+          allergies: patient.allergies,
+          conditions: patient.conditions,
+        });
+        if (savedId) {
+          effectivePatient = { ...patient, id: wasEditing ? patient.id : savedId };
+        }
+      } catch (err) {
+        console.error("[Cliniqo Desktop] Failed to save patient to SQLite:", err);
+      }
+    }
+
+    setPatientRecords((records) => [effectivePatient, ...records.filter((record) => record.id !== patient.id && record.id !== effectivePatient.id)]);
+    setSelectedPatient(effectivePatient);
     setPatientSaveFeedback(startConsultation ? null : wasEditing ? "updated" : "added");
     setEditingPatient(null);
     if (startConsultation) {
@@ -1739,9 +2258,46 @@ export default function App() {
     }
     go(startConsultation ? "consultation" : "patient-profile");
   };
+
+  const deletePatient = async (patientId: string) => {
+    if (isTauriDesktop() && desktopSession?.clinic_id) {
+      try {
+        await deleteLocalPatient(desktopSession.clinic_id, patientId);
+      } catch (err) {
+        console.error("[Cliniqo Desktop] Failed to delete patient from SQLite:", err);
+      }
+    }
+    setPatientRecords((records) => records.filter((p) => p.id !== patientId));
+    if (selectedPatient?.id === patientId) {
+      const remaining = patientRecords.filter((p) => p.id !== patientId);
+      if (remaining.length > 0) {
+        setSelectedPatient(remaining[0]);
+      }
+    }
+    go("patients");
+  };
+
+  const handleLoginSuccess = async (session: DesktopSessionContext) => {
+    setDesktopSession(session);
+    try {
+      const localPatients = await getLocalPatients(session.clinic_id);
+      if (localPatients && localPatients.length > 0) {
+        const mapped = localPatients.map(mapLocalRecordToPatient);
+        setPatientRecords(mapped);
+        setSelectedPatient(mapped[0]);
+      } else {
+        setPatientRecords([]);
+      }
+    } catch (err) {
+      console.warn("[Cliniqo Desktop] Failed to load local patients on login:", err);
+    }
+    go("dashboard");
+  };
+
   const addLibraryItem = (category: ClinicalLibraryCategory, value: string) => {
     setClinicalLibrary((library) => ({ ...library, [category]: [...library[category], value] }));
   };
+
   const addMedicineDefinition = (medicine: ClinicalMedicineDefinition) => {
     setClinicalLibrary((library) => {
       const exists = library.MedicineDefinitions.some((item) => item.name.toLowerCase() === medicine.name.toLowerCase() && item.formulation === medicine.formulation && item.strength === medicine.strength);
@@ -1753,33 +2309,63 @@ export default function App() {
       };
     });
   };
+
   const openDoctorProfile = () => {
     setSettingsKey((key) => key + 1);
     go("settings");
   };
+
   const updateVital = (key: keyof Vitals, value: string) => {
     setVitals((current) => ({ ...current, [key]: value }));
   };
 
-  if (page === "login") return <Login go={go} />;
+  if (isRestoringSession) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-slate-50 dark:bg-slate-900 text-slate-700 dark:text-slate-200">
+        <div className="flex flex-col items-center gap-3">
+          <RefreshCw className="animate-spin text-teal-600" size={32} />
+          <p className="text-sm font-medium">Verifying desktop security session...</p>
+        </div>
+      </div>
+    );
+  }
+
+  // Desktop unauthenticated route guard fallback
+  if (isTauriDesktop() && !desktopSession && page !== "login" && page !== "register") {
+    return (
+      <Login
+        go={go}
+        onLoginSuccess={handleLoginSuccess}
+      />
+    );
+  }
+
+  if (page === "login") {
+    return (
+      <Login
+        go={go}
+        onLoginSuccess={handleLoginSuccess}
+      />
+    );
+  }
   if (page === "register") return <Register go={go} />;
   if (page === "setup") return <Setup go={go} />;
 
   let content: ReactNode;
   if (page === "dashboard") content = <Dashboard go={go} patients={patientRecords} onOpenPatient={openPatient} />;
-  else if (page === "patients") content = <PatientsPage go={go} patients={patientRecords} onOpenPatient={openPatient} onStartConsultation={startConsultation} onCreateBill={startBill} onEditPatient={editPatient} />;
+  else if (page === "patients") content = <PatientsPage go={go} patients={patientRecords} onOpenPatient={openPatient} onStartConsultation={startConsultation} onCreateBill={startBill} onEditPatient={editPatient} onDeletePatient={deletePatient} />;
   else if (page === "patient-form") content = <PatientForm go={go} onSave={savePatient} onReviewPatient={openPatient} patient={editingPatient} patients={patientRecords} nextPatientId={nextPatientId} />;
-  else if (page === "patient-profile") content = <PatientProfile go={go} patient={selectedPatient} saveFeedback={patientSaveFeedback} />;
-  else if (page === "consultation") content = <Consultation go={go} patient={selectedPatient} clinicalLibrary={clinicalLibrary} vitals={vitals} onVitalsChange={updateVital} data={consultationData} onDataChange={setConsultationData} />;
+  else if (page === "patient-profile") content = <PatientProfile go={go} patient={selectedPatient} saveFeedback={patientSaveFeedback} onDeletePatient={deletePatient} />;
+  else if (page === "consultation") content = <Consultation go={go} patient={selectedPatient} clinicalLibrary={clinicalLibrary} vitals={vitals} onVitalsChange={updateVital} data={consultationData} onDataChange={setConsultationData} desktopSession={desktopSession} />;
   else if (page === "preview") content = <PrescriptionPreview go={go} patient={selectedPatient} vitals={vitals} data={consultationData} bannerVisible={prescriptionBannerVisible} bannerImage={prescriptionBannerImage} signatureImage={doctorSignatureImage} showClinicLogo={showClinicLogo} showClinicEmail={showClinicEmail} showAllergyWarning={showAllergyWarning} returnPage={prescriptionPreviewReturnPage} />;
   else if (page === "bill-form") content = <BillForm go={go} patient={selectedPatient} bill={billData} onChange={setBillData} />;
   else if (page === "bill-preview") content = <BillPreview go={go} patient={selectedPatient} bill={billData} bannerImage={prescriptionBannerImage} signatureImage={doctorSignatureImage} layout={billLayout} returnPage={billPreviewReturnPage} />;
-  else content = <SettingsPage key={settingsKey} go={go} logout={logout} darkMode={darkMode} onDarkModeChange={setDarkMode} clinicalLibrary={clinicalLibrary} onAddLibraryItem={addLibraryItem} onAddMedicine={addMedicineDefinition} bannerVisible={prescriptionBannerVisible} onBannerVisibleChange={setPrescriptionBannerVisible} bannerImage={prescriptionBannerImage} onBannerImageChange={setPrescriptionBannerImage} signatureImage={doctorSignatureImage} onSignatureImageChange={setDoctorSignatureImage} showClinicLogo={showClinicLogo} onShowClinicLogoChange={setShowClinicLogo} showClinicEmail={showClinicEmail} onShowClinicEmailChange={setShowClinicEmail} showAllergyWarning={showAllergyWarning} onShowAllergyWarningChange={setShowAllergyWarning} billLayout={billLayout} onBillLayoutChange={setBillLayout} initialTab={settingsInitialTab} />;
+  else content = <SettingsPage key={settingsKey} go={go} logout={logout} darkMode={darkMode} onDarkModeChange={setDarkMode} clinicalLibrary={clinicalLibrary} onAddLibraryItem={addLibraryItem} onAddMedicine={addMedicineDefinition} bannerVisible={prescriptionBannerVisible} onBannerVisibleChange={setPrescriptionBannerVisible} bannerImage={prescriptionBannerImage} onBannerImageChange={setPrescriptionBannerImage} signatureImage={doctorSignatureImage} onSignatureImageChange={setDoctorSignatureImage} showClinicLogo={showClinicLogo} onShowClinicLogoChange={setShowClinicLogo} showClinicEmail={showClinicEmail} onShowClinicEmailChange={setShowClinicEmail} showAllergyWarning={showAllergyWarning} onShowAllergyWarningChange={setShowAllergyWarning} billLayout={billLayout} onBillLayoutChange={setBillLayout} initialTab={settingsInitialTab} desktopSession={desktopSession} />;
 
   return (
     <div className={cn("app-shell", sidebarCollapsed && "sidebar-collapsed")}>
       <div className={cn("mobile-overlay", sidebarOpen && "open")} onClick={() => setSidebarOpen(false)} />
-      <div className={cn("sidebar-wrap", sidebarOpen && "open", sidebarCollapsed && "collapsed")}><Sidebar page={page} go={go} collapsed={sidebarCollapsed} onToggle={() => { if (window.matchMedia("(max-width: 820px)").matches) setSidebarOpen(false); else setSidebarCollapsed((value) => !value); }} onDoctorProfile={openDoctorProfile} /></div>
+      <div className={cn("sidebar-wrap", sidebarOpen && "open", sidebarCollapsed && "collapsed")}><Sidebar page={page} go={go} collapsed={sidebarCollapsed} onToggle={() => { if (window.matchMedia("(max-width: 820px)").matches) setSidebarOpen(false); else setSidebarCollapsed((value) => !value); }} onDoctorProfile={openDoctorProfile} desktopSession={desktopSession} /></div>
       <div className="main-shell">
         <div className="mobile-topbar"><IconButton label="Open navigation" onClick={() => setSidebarOpen(true)}><Menu size={20} /></IconButton><Logo /><span className="sync-dot" /></div>
         {content}

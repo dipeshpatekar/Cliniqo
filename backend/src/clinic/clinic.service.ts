@@ -7,7 +7,8 @@ import {
   ForbiddenException,
 } from '@nestjs/common';
 import { InjectModel, InjectConnection } from '@nestjs/mongoose';
-import { Model, Types, Connection } from 'mongoose';
+import type { Connection } from 'mongoose';
+import { Model, Types } from 'mongoose';
 import crypto from 'node:crypto';
 import {
   Clinic,

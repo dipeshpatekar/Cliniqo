@@ -13,6 +13,15 @@ describe('HealthController', () => {
     controller = new HealthController(service);
   });
 
+  describe('getHealth', () => {
+    it('should return status ok and valid uptime for root /health endpoint', () => {
+      const result = controller.getHealth();
+      expect(result.status).toBe('ok');
+      expect(typeof result.uptime).toBe('number');
+      expect(typeof result.timestamp).toBe('string');
+    });
+  });
+
   describe('getLiveness', () => {
     it('should return status ok and valid uptime', () => {
       const result = controller.getLiveness();

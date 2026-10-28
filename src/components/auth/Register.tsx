@@ -19,6 +19,7 @@ import {
 } from "lucide-react"
 import {
   registerDoctor,
+  getApiBaseUrl,
   type RegisterDoctorResult,
 } from "../../desktop/desktop-bridge"
 
@@ -116,10 +117,25 @@ export function Register({ go, onRegisterSuccess }: RegisterProps) {
         setErrors({ email: "An account with this email already exists" })
       } else {
         setStatus("failure")
-        setErrorMessage(
-          err?.message ||
-            "The registration request could not be completed. Review your details and try again.",
-        )
+        const rawMessage = err?.message || ""
+        if (
+          err?.isNetworkError ||
+          rawMessage.includes("Failed to fetch") ||
+          rawMessage.includes("NetworkError") ||
+          rawMessage.includes("connect to Cliniqo") ||
+          rawMessage.includes("ECONNREFUSED")
+        ) {
+          setErrorMessage(
+            err?.message && !err.message.includes("Failed to fetch")
+              ? err.message
+              : `Unable to connect to the Cliniqo authentication server (${getApiBaseUrl()}). Please ensure your network is connected and the API server is reachable.`,
+          )
+        } else {
+          setErrorMessage(
+            err?.message ||
+              "The registration request could not be completed. Review your details and try again.",
+          )
+        }
       }
     }
   }

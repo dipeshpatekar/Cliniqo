@@ -227,6 +227,83 @@ pub async fn login_desktop(
     })
 }
 
+#[derive(Deserialize)]
+pub struct RegisterDesktopInput {
+    #[serde(rename = "fullName")]
+    pub full_name: String,
+    pub email: String,
+    pub password: String,
+    pub phone: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct RegisteredDoctorInfo {
+    pub id: String,
+    pub email: String,
+    #[serde(rename = "fullName")]
+    pub full_name: String,
+    pub phone: Option<String>,
+    pub status: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct RegisterDesktopResult {
+    #[serde(rename = "accessToken")]
+    pub access_token: String,
+    #[serde(rename = "refreshToken")]
+    pub refresh_token: Option<String>,
+    pub doctor: RegisteredDoctorInfo,
+}
+
+#[tauri::command]
+pub fn get_trusted_api_url() -> Result<String, String> {
+    crate::config::get_trusted_backend_url()
+}
+
+#[tauri::command]
+pub async fn register_desktop(
+    state: State<'_, AppState>,
+    input: RegisterDesktopInput,
+) -> Result<RegisterDesktopResult, String> {
+    let base_url = crate::config::get_trusted_backend_url()?;
+    let client = crate::config::create_secure_http_client(Duration::from_secs(10))?;
+
+    let register_url = format!("{base_url}/auth/register");
+    let resp = client
+        .post(&register_url)
+        .json(&serde_json::json!({
+            "fullName": input.full_name.trim(),
+            "email": input.email.trim(),
+            "password": input.password,
+            "phone": input.phone.as_ref().map(|p| p.trim()),
+        }))
+        .send()
+        .await
+        .map_err(|e| format!("Authentication server unreachable ({base_url}): {e}"))?;
+
+    let status = resp.status();
+    if !status.is_success() {
+        if status == reqwest::StatusCode::CONFLICT {
+            return Err("An account with this email address already exists.".to_string());
+        }
+        let body_text = resp.text().await.unwrap_or_default();
+        return Err(format!("Registration failed (HTTP {status}): {body_text}"));
+    }
+
+    let reg_data = resp
+        .json::<RegisterDesktopResult>()
+        .await
+        .map_err(|e| format!("Invalid registration response from auth server: {e}"))?;
+
+    if let Some(ref rt) = reg_data.refresh_token {
+        if !rt.trim().is_empty() {
+            let _ = state.key_mgr.save_refresh_token(rt);
+        }
+    }
+
+    Ok(reg_data)
+}
+
 #[tauri::command]
 pub async fn login_desktop_session(
     state: State<'_, AppState>,

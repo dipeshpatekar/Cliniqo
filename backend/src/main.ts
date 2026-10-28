@@ -35,9 +35,20 @@ async function bootstrap() {
     }),
   );
 
-  // Restrictive CORS using validated environment origin
+  // Restrictive CORS using validated legitimate origins without wildcards
+  const allowedOrigins = configService.corsOrigins;
   app.enableCors({
-    origin: configService.corsOrigin,
+    origin: (
+      requestOrigin: string | undefined,
+      callback: (err: Error | null, allow?: boolean) => void,
+    ) => {
+      // Allow requests with no origin (like native desktop apps, mobile, curl)
+      if (!requestOrigin) return callback(null, true);
+      if (allowedOrigins.includes(requestOrigin)) {
+        return callback(null, true);
+      }
+      return callback(new Error(`Origin ${requestOrigin} not allowed by CORS`));
+    },
     credentials: true,
   });
 

@@ -148,20 +148,52 @@ export function isTauriDesktop(): boolean {
 }
 
 /**
+ * Production and development backend API URLs.
+ * In production desktop and web builds, never points at localhost.
+ */
+export const PRODUCTION_API_URL = "https://api.cliniqo.app"
+export const DEFAULT_DEV_API_URL = "http://localhost:3000"
+
+/**
  * Returns the configured API base URL, safely falling back to local backend in development.
  * Never leaks MongoDB credentials or administrative secrets to the frontend.
+ * In production builds, never returns localhost to avoid targeting non-existent local servers.
  */
 export function getApiBaseUrl(): string {
   if (
     typeof import.meta !== "undefined" &&
     import.meta.env?.VITE_API_BASE_URL
   ) {
-    return import.meta.env.VITE_API_BASE_URL
+    const customUrl = import.meta.env.VITE_API_BASE_URL.trim()
+    if (customUrl) {
+      return customUrl.replace(/\/+$/, "")
+    }
   }
-  return "http://localhost:3000"
+
+  // In production builds (packaged app or production deployment), never default to localhost
+  if (typeof import.meta !== "undefined" && import.meta.env?.PROD) {
+    return PRODUCTION_API_URL
+  }
+
+  return DEFAULT_DEV_API_URL
 }
 
 export const getBackendUrl = getApiBaseUrl
+
+/**
+ * Returns the trusted backend API URL from the native desktop environment if available.
+ */
+export async function getTrustedApiUrl(): Promise<string> {
+  if (isTauriDesktop()) {
+    try {
+      const url = await invokeTauri<string>("get_trusted_api_url")
+      if (url) return url
+    } catch {
+      // Fallback to getApiBaseUrl
+    }
+  }
+  return getApiBaseUrl()
+}
 
 export interface RegisterDoctorInput {
   fullName: string
@@ -213,17 +245,64 @@ export interface CreateClinicResult {
   }
 }
 
+/**
+ * Safely invokes a Tauri command if running in desktop mode.
+ */
+async function invokeTauri<T>(
+  cmd: string,
+  args?: Record<string, unknown>,
+): Promise<T | null> {
+  if (!isTauriDesktop()) {
+    return null
+  }
+
+  try {
+    const { invoke } = await import("@tauri-apps/api/core")
+    return await invoke<T>(cmd, args)
+  } catch (err) {
+    console.error(`[Tauri Bridge] Error invoking ${cmd}:`, err)
+    throw err
+  }
+}
+
 export async function registerDoctor(
   input: RegisterDoctorInput,
 ): Promise<RegisterDoctorResult> {
-  const url = `${getApiBaseUrl()}/auth/register`
-  const res = await fetch(url, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(input),
-  })
+  // If running in Tauri desktop environment, use native Rust command for DPAPI storage
+  // and direct OS network stack request (bypassing WebView2 CORS and local loopback issues)
+  if (isTauriDesktop()) {
+    const desktopResult = await invokeTauri<RegisterDoctorResult>(
+      "register_desktop",
+      { input },
+    )
+    if (desktopResult) {
+      return desktopResult
+    }
+  }
+
+  const baseUrl = getApiBaseUrl()
+  const url = `${baseUrl}/auth/register`
+  let res: Response
+  try {
+    res = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(input),
+    })
+  } catch (netErr: any) {
+    const isFetchFail =
+      netErr?.message === "Failed to fetch" ||
+      netErr?.name === "TypeError" ||
+      netErr?.code === "ECONNREFUSED"
+    const message = isFetchFail
+      ? `Unable to connect to the Cliniqo authentication server at ${baseUrl}. Please check your internet connection or verify the server is running.`
+      : (netErr?.message || "Registration request failed")
+    const err = new Error(message)
+    ;(err as any).isNetworkError = true
+    throw err
+  }
 
   const data = await res.json().catch(() => ({}))
 
@@ -250,15 +329,30 @@ export async function createClinic(
   token: string,
   input: CreateClinicInput,
 ): Promise<CreateClinicResult> {
-  const url = `${getApiBaseUrl()}/clinics`
-  const res = await fetch(url, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${token}`,
-    },
-    body: JSON.stringify(input),
-  })
+  const baseUrl = getApiBaseUrl()
+  const url = `${baseUrl}/clinics`
+  let res: Response
+  try {
+    res = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify(input),
+    })
+  } catch (netErr: any) {
+    const isFetchFail =
+      netErr?.message === "Failed to fetch" ||
+      netErr?.name === "TypeError" ||
+      netErr?.code === "ECONNREFUSED"
+    const message = isFetchFail
+      ? `Unable to connect to the Cliniqo server at ${baseUrl}. Please check your network connection.`
+      : (netErr?.message || "Failed to create clinic")
+    const err = new Error(message)
+    ;(err as any).isNetworkError = true
+    throw err
+  }
 
   const data = await res.json().catch(() => ({}))
 
@@ -283,15 +377,30 @@ export async function createClinic(
 
 export async function refreshAuthTokens(
   refreshToken: string,
-): Promise<{ accessToken: string refreshToken: string }> {
-  const url = `${getApiBaseUrl()}/auth/refresh`
-  const res = await fetch(url, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ refreshToken }),
-  })
+): Promise<{ accessToken: string; refreshToken: string }> {
+  const baseUrl = getApiBaseUrl()
+  const url = `${baseUrl}/auth/refresh`
+  let res: Response
+  try {
+    res = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ refreshToken }),
+    })
+  } catch (netErr: any) {
+    const isFetchFail =
+      netErr?.message === "Failed to fetch" ||
+      netErr?.name === "TypeError" ||
+      netErr?.code === "ECONNREFUSED"
+    const message = isFetchFail
+      ? `Unable to connect to the Cliniqo server at ${baseUrl}. Please check your network connection.`
+      : (netErr?.message || "Failed to refresh authentication session")
+    const err = new Error(message)
+    ;(err as any).isNetworkError = true
+    throw err
+  }
 
   const data = await res.json().catch(() => ({}))
 
@@ -304,26 +413,6 @@ export async function refreshAuthTokens(
   }
 
   return data
-}
-
-/**
- * Safely invokes a Tauri command if running in desktop mode.
- */
-async function invokeTauri<T>(
-  cmd: string,
-  args?: Record<string, unknown>,
-): Promise<T | null> {
-  if (!isTauriDesktop()) {
-    return null
-  }
-
-  try {
-    const { invoke } = await import("@tauri-apps/api/core")
-    return await invoke<T>(cmd, args)
-  } catch (err) {
-    console.error(`[Tauri Bridge] Error invoking ${cmd}:`, err)
-    throw err
-  }
 }
 
 export async function getDesktopInfo(): Promise<DesktopInfo | null> {

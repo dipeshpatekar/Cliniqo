@@ -126,6 +126,25 @@ describe("Auth Flow Regression: Registration to Profile Setup Navigation", () =>
       expect(caughtError).toBeDefined()
       expect(goMock).not.toHaveBeenCalled()
     })
+
+    it("formats Failed to fetch or network errors into clear actionable message with target URL", () => {
+      const networkErr = new TypeError("Failed to fetch")
+      const rawMessage = networkErr.message
+      const targetUrl = desktopBridge.getApiBaseUrl()
+
+      const isNetworkIssue =
+        rawMessage.includes("Failed to fetch") ||
+        rawMessage.includes("NetworkError") ||
+        rawMessage.includes("connect to Cliniqo") ||
+        rawMessage.includes("ECONNREFUSED")
+
+      expect(isNetworkIssue).toBe(true)
+
+      const formattedError = `Unable to connect to the Cliniqo authentication server (${targetUrl}). Please ensure your network is connected and the API server is reachable.`
+      expect(formattedError).toContain(targetUrl)
+      expect(formattedError).toContain("Cliniqo authentication server")
+      expect(formattedError).not.toBe("Failed to fetch")
+    })
   })
 
   describe("Setup Component", () => {

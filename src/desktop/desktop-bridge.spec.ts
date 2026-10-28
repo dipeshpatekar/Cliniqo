@@ -2,6 +2,9 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest"
 import {
   isTauriDesktop,
   getApiBaseUrl,
+  getTrustedApiUrl,
+  PRODUCTION_API_URL,
+  DEFAULT_DEV_API_URL,
   getDesktopInfo,
   getLocalPatients,
   saveLocalPatient,
@@ -18,6 +21,7 @@ import {
   switchActiveClinic,
   getSyncConflicts,
   resolveSyncConflict,
+  registerDoctor,
 } from "./desktop-bridge"
 
 describe("Desktop Bridge (Tauri 2 Frontend Integration)", () => {
@@ -44,6 +48,13 @@ describe("Desktop Bridge (Tauri 2 Frontend Integration)", () => {
   it("detects desktop mode when __TAURI_INTERNALS__ is present on window", () => {
     win.__TAURI_INTERNALS__ = {}
     expect(isTauriDesktop()).toBe(true)
+  })
+
+  it("enforces explicit production and dev API constants without credentials", () => {
+    expect(PRODUCTION_API_URL).toBe("https://api.cliniqo.app")
+    expect(DEFAULT_DEV_API_URL).toBe("http://localhost:3000")
+    expect(PRODUCTION_API_URL).not.toContain("mongodb")
+    expect(PRODUCTION_API_URL).not.toContain("password")
   })
 
   it("returns valid API base URL without exposing backend secrets", () => {
@@ -482,6 +493,73 @@ describe("Desktop Bridge (Tauri 2 Frontend Integration)", () => {
           body: JSON.stringify({ refreshToken: "old-refresh-token" }),
         }),
       )
+    })
+
+    it("formats TypeError: Failed to fetch into actionable diagnostic message with target URL", async () => {
+      globalThis.fetch = vi.fn().mockRejectedValue(new TypeError("Failed to fetch"))
+
+      const { registerDoctor, getApiBaseUrl } = await import("./desktop-bridge")
+      const targetUrl = getApiBaseUrl()
+
+      let caughtError: any = null
+      try {
+        await registerDoctor({
+          fullName: "Dr. Network Error",
+          email: "network.error@clinic.com",
+          password: "SecurePassword123!",
+          phone: "9876543210",
+        })
+      } catch (err) {
+        caughtError = err
+      }
+
+      expect(caughtError).toBeDefined()
+      expect(caughtError.isNetworkError).toBe(true)
+      expect(caughtError.message).toContain("Unable to connect to the Cliniqo authentication server at")
+      expect(caughtError.message).toContain(targetUrl)
+      expect(caughtError.message).not.toBe("Failed to fetch")
+    })
+
+    it("delegates registerDoctor to native register_desktop IPC when in Tauri desktop mode", async () => {
+      win.__TAURI_INTERNALS__ = {}
+      const mockDesktopDoctor = {
+        accessToken: "desktop-access-token",
+        refreshToken: "desktop-refresh-token",
+        doctor: {
+          id: "doc-desktop-1",
+          email: "desktop@clinic.com",
+          fullName: "Dr. Desktop",
+          phone: "9876543210",
+        },
+      }
+
+      // Mock @tauri-apps/api/core dynamically
+      vi.doMock("@tauri-apps/api/core", () => ({
+        invoke: vi.fn().mockImplementation((cmd: string, args: any) => {
+          if (cmd === "register_desktop") {
+            return Promise.resolve(mockDesktopDoctor)
+          }
+          if (cmd === "get_trusted_api_url") {
+            return Promise.resolve("https://api.cliniqo.app")
+          }
+          return Promise.resolve(null)
+        }),
+      }))
+
+      const { registerDoctor, getTrustedApiUrl } = await import("./desktop-bridge")
+      const desktopResult = await registerDoctor({
+        fullName: "Dr. Desktop",
+        email: "desktop@clinic.com",
+        password: "SecurePassword123!",
+        phone: "9876543210",
+      })
+
+      expect(desktopResult).toEqual(mockDesktopDoctor)
+
+      const trustedUrl = await getTrustedApiUrl()
+      expect(trustedUrl).toBe("https://api.cliniqo.app")
+
+      vi.doUnmock("@tauri-apps/api/core")
     })
   })
 })

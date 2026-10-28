@@ -154,6 +154,30 @@ export class ConfigService {
     return this.config.corsOrigin;
   }
 
+  get corsOrigins(): string[] {
+    const raw = this.config.corsOrigin || '';
+    const configured = raw
+      .split(',')
+      .map((o) => o.trim())
+      .filter(Boolean);
+
+    const standardOrigins = [
+      'http://localhost:8443',
+      'http://127.0.0.1:8443',
+      'http://tauri.localhost',
+      'https://tauri.localhost',
+      'tauri://localhost',
+    ];
+
+    for (const origin of standardOrigins) {
+      if (!configured.includes(origin)) {
+        configured.push(origin);
+      }
+    }
+
+    return configured;
+  }
+
   get mongodbUri(): string | undefined {
     return this.config.mongodbUri;
   }

@@ -26,6 +26,11 @@ describe('ConfigService', () => {
     expect(service.isProduction).toBe(true);
     expect(service.isDevelopment).toBe(false);
     expect(service.corsOrigin).toBe('https://cliniqo.app');
+    expect(service.corsOrigins).toContain('https://cliniqo.app');
+    expect(service.corsOrigins).toContain('http://tauri.localhost');
+    expect(service.corsOrigins).toContain('https://tauri.localhost');
+    expect(service.corsOrigins).toContain('tauri://localhost');
+    expect(service.corsOrigins).not.toContain('*');
     expect(service.mongodbUri).toBe(
       'mongodb+srv://user:pass@cluster.test/cliniqo',
     );

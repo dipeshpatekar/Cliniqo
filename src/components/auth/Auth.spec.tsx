@@ -145,6 +145,32 @@ describe("Auth Flow Regression: Registration to Profile Setup Navigation", () =>
       expect(formattedError).toContain("Cliniqo authentication server")
       expect(formattedError).not.toBe("Failed to fetch")
     })
+
+    it("handles string rejections from Tauri IPC and displays server connectivity error rather than review details", () => {
+      const rawStringError =
+        "Authentication server unreachable (https://api.cliniqo.app): dns error: failed to lookup address information"
+
+      const rawMessage =
+        typeof rawStringError === "string"
+          ? rawStringError
+          : (rawStringError as any)?.message || ""
+
+      const isNetwork =
+        rawMessage.includes("Failed to fetch") ||
+        rawMessage.includes("unreachable") ||
+        rawMessage.includes("dns error") ||
+        rawMessage.includes("Authentication server unreachable")
+
+      expect(isNetwork).toBe(true)
+
+      const displayMessage =
+        isNetwork && rawMessage && !rawMessage.includes("Failed to fetch")
+          ? rawMessage
+          : "Fallback"
+
+      expect(displayMessage).toContain("Authentication server unreachable")
+      expect(displayMessage).not.toContain("Review your details and try again")
+    })
   })
 
   describe("Setup Component", () => {

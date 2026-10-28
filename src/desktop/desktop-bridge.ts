@@ -259,8 +259,24 @@ async function invokeTauri<T>(
   try {
     const { invoke } = await import("@tauri-apps/api/core")
     return await invoke<T>(cmd, args)
-  } catch (err) {
+  } catch (err: any) {
     console.error(`[Tauri Bridge] Error invoking ${cmd}:`, err)
+    if (typeof err === "string") {
+      const normalized = new Error(err)
+      const lower = err.toLowerCase()
+      if (
+        lower.includes("unreachable") ||
+        lower.includes("dns error") ||
+        lower.includes("failed to lookup") ||
+        lower.includes("no such host") ||
+        lower.includes("connection refused") ||
+        lower.includes("connection timed out") ||
+        lower.includes("network")
+      ) {
+        ;(normalized as any).isNetworkError = true
+      }
+      throw normalized
+    }
     throw err
   }
 }

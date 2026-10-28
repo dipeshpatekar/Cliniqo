@@ -561,5 +561,39 @@ describe("Desktop Bridge (Tauri 2 Frontend Integration)", () => {
 
       vi.doUnmock("@tauri-apps/api/core")
     })
+
+    it("normalizes Tauri IPC string rejections into Error objects with isNetworkError flag", async () => {
+      win.__TAURI_INTERNALS__ = {}
+      const mockDnsError =
+        "Authentication server unreachable (https://api.cliniqo.app): dns error: failed to lookup address information: No such host is known."
+
+      vi.doMock("@tauri-apps/api/core", () => ({
+        invoke: vi.fn().mockImplementation((cmd: string) => {
+          if (cmd === "register_desktop") {
+            return Promise.reject(mockDnsError)
+          }
+          return Promise.resolve(null)
+        }),
+      }))
+
+      const { registerDoctor } = await import("./desktop-bridge")
+      let caught: any = null
+      try {
+        await registerDoctor({
+          fullName: "Dr. DNS Error",
+          email: "dns@clinic.com",
+          password: "SecurePassword123!",
+          phone: "9876543210",
+        })
+      } catch (err) {
+        caught = err
+      }
+
+      expect(caught).toBeInstanceOf(Error)
+      expect(caught.message).toBe(mockDnsError)
+      expect(caught.isNetworkError).toBe(true)
+
+      vi.doUnmock("@tauri-apps/api/core")
+    })
   })
 })

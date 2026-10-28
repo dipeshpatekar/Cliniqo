@@ -7,19 +7,21 @@ pub const PRODUCTION_BACKEND_URL: &str = "https://api.cliniqo.app";
 pub const DEFAULT_DEV_BACKEND_URL: &str = "http://localhost:3000";
 
 /// Resolves the trusted backend base URL.
-/// In release/production builds, strictly enforces HTTPS and only permits trusted production domains.
-/// In debug builds, permits an override via CLINIQO_BACKEND_URL, defaulting to http://localhost:3000.
+/// Resolves the trusted backend base URL.
+/// Permits an explicit override via CLINIQO_BACKEND_URL (validating http:// or https:// scheme).
+/// When unset, defaults to DEFAULT_DEV_BACKEND_URL in debug builds and PRODUCTION_BACKEND_URL in release builds.
 pub fn get_trusted_backend_url() -> Result<String, String> {
+    if let Ok(env_val) = std::env::var("CLINIQO_BACKEND_URL") {
+        let trimmed = env_val.trim().trim_end_matches('/').to_string();
+        if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+            return Ok(trimmed);
+        } else {
+            return Err("CLINIQO_BACKEND_URL must use http:// or https:// scheme".to_string());
+        }
+    }
+
     #[cfg(debug_assertions)]
     {
-        if let Ok(env_val) = std::env::var("CLINIQO_BACKEND_URL") {
-            let trimmed = env_val.trim().trim_end_matches('/').to_string();
-            if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
-                return Ok(trimmed);
-            } else {
-                return Err("CLINIQO_BACKEND_URL must use http:// or https:// scheme".to_string());
-            }
-        }
         Ok(DEFAULT_DEV_BACKEND_URL.to_string())
     }
     #[cfg(not(debug_assertions))]
@@ -58,5 +60,17 @@ mod tests {
         let url = get_trusted_backend_url().expect("valid trusted URL");
         assert!(url.starts_with("http://") || url.starts_with("https://"));
         assert!(!url.ends_with('/'));
+    }
+
+    #[test]
+    fn test_trusted_backend_url_env_override() {
+        unsafe {
+            std::env::set_var("CLINIQO_BACKEND_URL", "https://staging.cliniqo.app");
+        }
+        let url = get_trusted_backend_url().expect("valid override URL");
+        assert_eq!(url, "https://staging.cliniqo.app");
+        unsafe {
+            std::env::remove_var("CLINIQO_BACKEND_URL");
+        }
     }
 }

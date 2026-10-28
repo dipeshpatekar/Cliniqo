@@ -104,10 +104,17 @@ export function Register({ go, onRegisterSuccess }: RegisterProps) {
       }
       go("setup")
     } catch (err: any) {
+      const rawMessage =
+        typeof err === "string"
+          ? err
+          : typeof err?.message === "string"
+            ? err.message
+            : ""
+
       const isDuplicate =
         err?.status === 409 ||
-        err?.message?.toLowerCase().includes("already exists") ||
-        err?.message?.toLowerCase().includes("duplicate")
+        rawMessage.toLowerCase().includes("already exists") ||
+        rawMessage.toLowerCase().includes("duplicate")
 
       if (isDuplicate) {
         setStatus("duplicate")
@@ -117,22 +124,27 @@ export function Register({ go, onRegisterSuccess }: RegisterProps) {
         setErrors({ email: "An account with this email already exists" })
       } else {
         setStatus("failure")
-        const rawMessage = err?.message || ""
-        if (
+        const isNetwork =
           err?.isNetworkError ||
           rawMessage.includes("Failed to fetch") ||
           rawMessage.includes("NetworkError") ||
+          rawMessage.includes("unreachable") ||
+          rawMessage.includes("dns error") ||
+          rawMessage.includes("failed to lookup") ||
+          rawMessage.includes("No such host") ||
           rawMessage.includes("connect to Cliniqo") ||
-          rawMessage.includes("ECONNREFUSED")
-        ) {
+          rawMessage.includes("ECONNREFUSED") ||
+          rawMessage.includes("Authentication server unreachable")
+
+        if (isNetwork) {
           setErrorMessage(
-            err?.message && !err.message.includes("Failed to fetch")
-              ? err.message
+            rawMessage && !rawMessage.includes("Failed to fetch")
+              ? rawMessage
               : `Unable to connect to the Cliniqo authentication server (${getApiBaseUrl()}). Please ensure your network is connected and the API server is reachable.`,
           )
         } else {
           setErrorMessage(
-            err?.message ||
+            rawMessage ||
               "The registration request could not be completed. Review your details and try again.",
           )
         }

@@ -60,9 +60,16 @@ describe('CatalogueImportService', () => {
     });
 
     it('prioritizes CDCI_DATA_DIR environment variable when set', () => {
-      process.env.CDCI_DATA_DIR = '/custom/ci/cdci-package';
+      const customEnvDir = path.resolve('custom', 'ci', 'cdci-package');
+      process.env.CDCI_DATA_DIR = customEnvDir;
       const p = service.resolveSourcePath();
-      expect(p).toBe('/custom/ci/cdci-package');
+      expect(p).toBe(customEnvDir);
+      expect(path.isAbsolute(p)).toBe(true);
+      expect(p).not.toContain('CommonDrugCodesForIndia_FlatFilePackage');
+
+      // Explicit argument must take precedence over CDCI_DATA_DIR
+      const explicitDir = path.resolve('explicit', 'cdci-package');
+      expect(service.resolveSourcePath(explicitDir)).toBe(explicitDir);
     });
 
     it('resolves tilde in custom path', () => {

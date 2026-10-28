@@ -4,7 +4,7 @@ use crate::crypto::key_manager::DatabaseEncryptionKey;
 use crate::crypto::{encrypt_payload, CryptoError};
 use super::schema::{
     ClinicalData, PatientDemographics, CREATE_MIGRATIONS_TABLE, MIGRATION_V1_SQL, MIGRATION_V2_SQL,
-    MIGRATION_V3_SQL,
+    MIGRATION_V3_SQL, MIGRATION_V4_SQL,
 };
 
 #[derive(Error, Debug)]
@@ -21,7 +21,7 @@ pub enum MigrationError {
     #[error("Migration transaction failed: {0}")]
     TransactionError(String),
 
-    #[error("Unsupported schema version: database is at version {0}, but this client only supports up to version 3. Please update the application.")]
+    #[error("Unsupported schema version: database is at version {0}, but this client only supports up to version 4. Please update the application.")]
     UnsupportedSchemaVersion(i32),
 }
 
@@ -73,7 +73,7 @@ impl MigrationRunner {
             )
             .unwrap_or(0);
 
-        if max_version > 3 {
+        if max_version > 4 {
             return Err(MigrationError::UnsupportedSchemaVersion(max_version));
         }
 
@@ -126,6 +126,21 @@ impl MigrationRunner {
             log::info!("Applying local offline SQLite migration v3 (Sync state & conflict resolution)...");
             Self::migrate_to_v3(conn)?;
             log::info!("Migration v3 applied successfully. Sync state and extended conflict schemas active.");
+        }
+
+        // 6. Check if v4 (Billing & Clinical Formulary) has already been applied
+        let v4_applied: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = 4)",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or(false);
+
+        if !v4_applied {
+            log::info!("Applying local offline SQLite migration v4 (Billing & Clinical Formulary)...");
+            Self::migrate_to_v4(conn)?;
+            log::info!("Migration v4 applied successfully. Billing and clinical formulary schemas active.");
         }
 
         Ok(())
@@ -503,6 +518,17 @@ impl MigrationRunner {
             params![3, "sync_engine_state_and_conflicts_v3", "v3_cliniqo_sync_state"],
         )?;
 
+        tx.commit()?;
+        Ok(())
+    }
+
+    fn migrate_to_v4(conn: &mut Connection) -> Result<(), MigrationError> {
+        let tx = conn.transaction()?;
+        tx.execute_batch(MIGRATION_V4_SQL)?;
+        tx.execute(
+            "INSERT INTO schema_migrations (version, name, checksum) VALUES (?1, ?2, ?3)",
+            params![4, "billing_and_formulary_v4", "v4_cliniqo_billing_formulary_schema"],
+        )?;
         tx.commit()?;
         Ok(())
     }

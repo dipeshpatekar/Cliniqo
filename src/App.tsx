@@ -14,10 +14,22 @@ import {
   getLocalPatients,
   saveLocalConsultation,
   saveLocalPrescription,
+  saveLocalInvoice,
+  getLocalInvoices,
+  getLocalInvoiceById,
+  finalizeLocalInvoice,
+  saveLocalFormularyItem,
+  getLocalFormulary,
+  deleteLocalFormularyItem,
   type DesktopSessionContext,
   type DesktopLoginResult,
   type SyncStatusInfo,
   type LocalPatientRecord,
+  type LocalInvoiceRecord,
+  type LocalInvoiceItem,
+  type LocalFormularyItemRecord,
+  type SaveInvoiceArgs,
+  type SaveFormularyArgs,
 } from "./desktop/desktop-bridge";
 import { ConflictResolutionModal } from "./components/ConflictResolutionModal";
 import {
@@ -116,6 +128,7 @@ type Medicine = {
   duration: string;
   food: string;
   directions: string;
+  activeIngredient?: string;
 };
 
 type Vitals = {
@@ -147,12 +160,110 @@ type BillItem = {
 };
 
 type BillData = {
+  id?: string;
   invoiceNumber: string;
   date: string;
+  status: "DRAFT" | "FINALIZED" | "CANCELLED";
   paymentStatus: "Unpaid" | "Paid";
   discount: number;
+  taxRatePercent: number;
+  notes?: string;
   items: BillItem[];
 };
+
+export function computeBillTotals(
+  items: Array<{ quantity: number; rate: number }>,
+  discountRupees: number = 0,
+  taxRatePercent: number = 0,
+) {
+  const subtotalPaise = items.reduce((sum, item) => {
+    const qty = Math.max(1, Math.floor(Number(item.quantity) || 1));
+    const ratePaise = Math.max(0, Math.round((Number(item.rate) || 0) * 100));
+    return sum + qty * ratePaise;
+  }, 0);
+
+  const rawDiscountPaise = Math.max(0, Math.round((Number(discountRupees) || 0) * 100));
+  const discountPaise = Math.min(subtotalPaise, rawDiscountPaise);
+  const taxablePaise = subtotalPaise - discountPaise;
+  const ratePct = Math.max(0, Math.min(100, Number(taxRatePercent) || 0));
+  const taxPaise = Math.round((taxablePaise * ratePct) / 100);
+  const totalPaise = taxablePaise + taxPaise;
+
+  return {
+    subtotalPaise,
+    discountPaise,
+    taxRatePercent: ratePct,
+    taxPaise,
+    totalPaise,
+    subtotalRupees: subtotalPaise / 100,
+    discountRupees: discountPaise / 100,
+    taxRupees: taxPaise / 100,
+    totalRupees: totalPaise / 100,
+  };
+}
+
+export function validateMedicineFormulation(med: Partial<Medicine>): { valid: boolean; error?: string } {
+  if (!med.formulation) {
+    return { valid: false, error: "Formulation is required" };
+  }
+  if (!med.name || !med.name.trim()) {
+    return { valid: false, error: "Medicine name is required" };
+  }
+
+  const f = med.formulation.toLowerCase();
+
+  if (f.includes("injection")) {
+    if (!med.route || !med.route.trim()) {
+      return { valid: false, error: "Route (IV, IM, SC, ID) required for injection" };
+    }
+    if (!med.dose || !med.dose.trim()) {
+      return { valid: false, error: "Dose required for injection" };
+    }
+  } else if (f.includes("cream") || f.includes("ointment") || f.includes("gel") || f.includes("topical")) {
+    if (!med.directions || !med.directions.trim()) {
+      return { valid: false, error: "Application instructions required for topical" };
+    }
+    if (!med.frequency || !med.frequency.trim()) {
+      return { valid: false, error: "Frequency required for topical" };
+    }
+    if (!med.duration || !med.duration.trim()) {
+      return { valid: false, error: "Duration required for topical" };
+    }
+  } else if (f.includes("drop")) {
+    if (!med.dose || !med.dose.trim()) {
+      return { valid: false, error: "Dose (drops) required" };
+    }
+    if (!med.frequency || !med.frequency.trim()) {
+      return { valid: false, error: "Frequency required" };
+    }
+    if (!med.duration || !med.duration.trim()) {
+      return { valid: false, error: "Duration required" };
+    }
+  } else if (f.includes("inhaler")) {
+    if (!med.dose || !med.dose.trim()) {
+      return { valid: false, error: "Dose (puffs) required" };
+    }
+    if (!med.frequency || !med.frequency.trim()) {
+      return { valid: false, error: "Frequency required" };
+    }
+    if (!med.duration || !med.duration.trim()) {
+      return { valid: false, error: "Duration required" };
+    }
+  } else {
+    // Tablets, Capsules, Syrups, Suspensions
+    if (!med.dose || !med.dose.trim()) {
+      return { valid: false, error: "Dose required" };
+    }
+    if (!med.frequency || !med.frequency.trim()) {
+      return { valid: false, error: "Frequency required" };
+    }
+    if (!med.duration || !med.duration.trim()) {
+      return { valid: false, error: "Duration required" };
+    }
+  }
+
+  return { valid: true };
+}
 
 type BillLayoutPreferences = {
   showBanner: boolean;
@@ -204,6 +315,7 @@ const emptyMedicine = (id: number): Medicine => ({
   duration: "",
   food: "",
   directions: "",
+  activeIngredient: "",
 });
 
 const createEmptyConsultationData = (): ConsultationData => ({
@@ -264,9 +376,16 @@ const diagnosisOptions = ["Upper respiratory tract infection", "Viral fever", "H
 
 type ClinicalLibraryCategory = "Medicines" | "Formulations" | "Strengths" | "Doses" | "Durations";
 type ClinicalMedicineDefinition = {
+  id?: string;
   name: string;
   formulation: string;
   strength: string;
+  activeIngredient?: string;
+  defaultDosage?: string;
+  defaultRoute?: string;
+  defaultFrequency?: string;
+  defaultDuration?: string;
+  defaultInstructions?: string;
 };
 type ClinicalLibrary = Record<ClinicalLibraryCategory, string[]> & {
   MedicineDefinitions: ClinicalMedicineDefinition[];
@@ -1329,12 +1448,16 @@ function PatientProfile({
   saveFeedback,
   onDeletePatient,
   onOpenConflictResolution,
+  desktopSession,
+  onStartBill,
 }: {
   go: (page: Page) => void;
   patient: Patient;
   saveFeedback: "added" | "updated" | null;
   onDeletePatient?: (patientId: string) => void;
   onOpenConflictResolution?: (patientId: string) => void;
+  desktopSession?: DesktopSessionContext | null;
+  onStartBill?: (patient: Patient, invoice?: LocalInvoiceRecord) => void;
 }) {
   const [tab, setTab] = useState("Overview");
   const allergyLabel = patient.allergies.join(", ");
@@ -1344,6 +1467,7 @@ function PatientProfile({
       <AppHeader title="Patient profile" subtitle={`Patient ID ${patient.id}`}>
         <IconButton className="topbar-back" label="Back to patients" onClick={() => go("patients")}><ArrowLeft size={18} /></IconButton>
         <Button variant="secondary" icon={Edit3} onClick={() => go("patient-form")}>Edit patient</Button>
+        <Button variant="secondary" icon={ReceiptIndianRupee} onClick={() => onStartBill?.(patient)}>Create bill</Button>
         <Button icon={Stethoscope} onClick={() => go("consultation")}>Start consultation</Button>
         {onDeletePatient && (
           <Button
@@ -1399,14 +1523,106 @@ function PatientProfile({
         </section>
         {patient.allergies.length > 0 && <div className="allergy-alert"><AlertCircle size={20} /><div><strong>Allergy alert: {allergyLabel}</strong><p>Review and confirm with the patient before prescribing.</p></div></div>}
         <div className="tabs" role="tablist">
-          {["Overview", "Medical History", "Consultations", "Prescriptions"].map((item) => <button key={item} role="tab" aria-selected={tab === item} className={tab === item ? "active" : ""} onClick={() => setTab(item)}>{item}{item === "Consultations" && <span>{hasHistory ? 8 : 0}</span>}{item === "Prescriptions" && <span>{hasHistory ? 7 : 0}</span>}</button>)}
+          {["Overview", "Medical History", "Consultations", "Prescriptions", "Invoices"].map((item) => (
+            <button
+              key={item}
+              role="tab"
+              aria-selected={tab === item}
+              className={tab === item ? "active" : ""}
+              onClick={() => setTab(item)}
+            >
+              {item}
+              {item === "Consultations" && <span>{hasHistory ? 8 : 0}</span>}
+              {item === "Prescriptions" && <span>{hasHistory ? 7 : 0}</span>}
+            </button>
+          ))}
         </div>
         {tab === "Overview" && <OverviewTab go={go} patient={patient} hasHistory={hasHistory} />}
         {tab === "Medical History" && <HistoryTab patient={patient} />}
         {tab === "Consultations" && <ConsultationsTab go={go} hasHistory={hasHistory} />}
         {tab === "Prescriptions" && <PrescriptionsTab go={go} hasHistory={hasHistory} />}
+        {tab === "Invoices" && (
+          <InvoicesTab patient={patient} desktopSession={desktopSession} onStartBill={onStartBill} />
+        )}
       </div>
     </>
+  );
+}
+
+function InvoicesTab({
+  patient,
+  desktopSession,
+  onStartBill,
+}: {
+  patient: Patient;
+  desktopSession?: DesktopSessionContext | null;
+  onStartBill?: (patient: Patient, invoice?: LocalInvoiceRecord) => void;
+}) {
+  const [invoices, setInvoices] = useState<LocalInvoiceRecord[]>([]);
+
+  useEffect(() => {
+    let mounted = true;
+    if (isTauriDesktop() && desktopSession?.clinic_id) {
+      getLocalInvoices(desktopSession.clinic_id, patient.id)
+        .then((records) => {
+          if (mounted) setInvoices(records);
+        })
+        .catch((err) => {
+          console.error("Failed to load patient invoices:", err);
+        });
+    }
+    return () => {
+      mounted = false;
+    };
+  }, [desktopSession?.clinic_id, patient.id]);
+
+  return (
+    <section className="panel record-list">
+      <div className="panel-head">
+        <div>
+          <h2>Patient invoices</h2>
+          <p>Preserved billing records with safe minor-unit monetary arithmetic</p>
+        </div>
+        <Button size="sm" icon={Plus} onClick={() => onStartBill?.(patient)}>
+          New bill
+        </Button>
+      </div>
+      {invoices.length > 0 ? (
+        invoices.map((inv) => (
+          <button key={inv.id} onClick={() => onStartBill?.(patient, inv)}>
+            <span className="record-icon">
+              <ReceiptIndianRupee size={18} />
+            </span>
+            <span>
+              <strong>
+                {inv.invoice_number} · ₹{(inv.total_paise / 100).toLocaleString("en-IN", { minimumFractionDigits: 2 })}
+              </strong>
+              <small>
+                {inv.created_at ? inv.created_at.slice(0, 10) : "Today"} · {inv.items ? inv.items.length : 0} {inv.items && inv.items.length === 1 ? "item" : "items"}
+              </small>
+            </span>
+            <div style={{ display: "flex", gap: "6px" }}>
+              <StatusPill tone={inv.status === "FINALIZED" ? "success" : "warning"}>
+                {inv.status === "FINALIZED" ? "Finalized" : "Draft"}
+              </StatusPill>
+              <StatusPill tone={inv.payment_status === "PAID" ? "success" : "neutral"}>
+                {inv.payment_status === "PAID" ? "Paid" : "Unpaid"}
+              </StatusPill>
+            </div>
+            <ChevronRight size={17} />
+          </button>
+        ))
+      ) : (
+        <div className="empty-state compact">
+          <ReceiptIndianRupee size={25} />
+          <h2>No invoices recorded</h2>
+          <p>Create an itemized invoice for consultation, tests, or clinical procedures.</p>
+          <Button icon={Plus} onClick={() => onStartBill?.(patient)}>
+            Create first bill
+          </Button>
+        </div>
+      )}
+    </section>
   );
 }
 
@@ -1457,8 +1673,52 @@ function Consultation({
   const [complaintPreset, setComplaintPreset] = useState("");
   const [durationPreset, setDurationPreset] = useState("");
   const [diagnosisPreset, setDiagnosisPreset] = useState("");
+  const [localFormulary, setLocalFormulary] = useState<LocalFormularyItemRecord[]>([]);
+
+  useEffect(() => {
+    let mounted = true;
+    if (isTauriDesktop() && desktopSession?.clinic_id) {
+      getLocalFormulary(desktopSession.clinic_id)
+        .then((items) => {
+          if (mounted) setLocalFormulary(items);
+        })
+        .catch((err) => {
+          console.error("Failed to load local formulary in consultation:", err);
+        });
+    }
+    return () => {
+      mounted = false;
+    };
+  }, [desktopSession?.clinic_id]);
+
+  const mergedDefinitions: ClinicalMedicineDefinition[] = useMemo(() => {
+    const list = [...clinicalLibrary.MedicineDefinitions];
+    for (const item of localFormulary) {
+      if (!list.some((existing) => existing.name.toLowerCase() === item.name.toLowerCase() && existing.formulation === item.formulation)) {
+        list.push({
+          id: item.id,
+          name: item.name,
+          formulation: item.formulation,
+          strength: item.strength || "",
+          activeIngredient: item.active_ingredient || undefined,
+          defaultDosage: item.default_dosage || undefined,
+          defaultRoute: item.default_route || undefined,
+          defaultFrequency: item.default_frequency || undefined,
+          defaultDuration: item.default_duration || undefined,
+          defaultInstructions: item.default_instructions || undefined,
+        });
+      }
+    }
+    return list;
+  }, [clinicalLibrary.MedicineDefinitions, localFormulary]);
+
   const updateData = (updates: Partial<ConsultationData>) => onDataChange({ ...data, ...updates });
-  const consultationComplete = Boolean(data.chiefComplaint.trim() && data.diagnosis.trim());
+  const medicinesValid = data.medicines.every((m) => validateMedicineFormulation(m).valid);
+  const consultationComplete = Boolean(
+    data.chiefComplaint.trim() &&
+    data.diagnosis.trim() &&
+    (data.medicines.length === 0 || medicinesValid)
+  );
   const updateMedicine = (id: number, key: keyof Medicine, value: string) => updateData({ medicines: data.medicines.map((row) => row.id === id ? { ...row, [key]: value } : row) });
   const addMedicine = () => updateData({ medicines: [...data.medicines, emptyMedicine(Math.max(...data.medicines.map((row) => row.id), 0) + 1)] });
   const removeMedicine = (id: number) => updateData({ medicines: data.medicines.filter((row) => row.id !== id) });
@@ -1534,7 +1794,7 @@ function Consultation({
             </div>
           </FormSection>
           <section className="form-section medicines-section">
-            <div className="form-section-head medicines-head"><span><Pill size={18} /></span><div><h2>Medicines</h2><p>Add only after clinical review. No medicine or dose is prefilled.</p></div><Button size="sm" variant="secondary" icon={Plus} onClick={addMedicine}>Add medicine</Button></div>
+            <div className="form-section-head medicines-head"><span><Pill size={18} /></span><div><h2>Medicines</h2><p>Add only after clinical review. Formulation determines required dosage fields.</p></div><Button size="sm" variant="secondary" icon={Plus} onClick={addMedicine}>Add medicine</Button></div>
             {data.medicines.length === 0 ? <div className="medicine-empty"><Pill size={22} /><p>No medicines added</p><Button size="sm" variant="secondary" icon={Plus} onClick={addMedicine}>Add medicine</Button></div> : data.medicines.map((medicine, index) => {
               const doseConfig = getDoseConfig(medicine.formulation);
               const strengthOptions = [...new Set([
@@ -1546,22 +1806,54 @@ function Consultation({
                 ...(doseConfig.unit === "mL" ? ["2.5", "5", "10", "15"] : doseConfig.step === "0.5" ? ["0.5", "1", "1.5", "2"] : ["1", "2", "3", "4"]),
               ])];
               const frequencyOptions = ["Once daily", "Twice daily", "Three times daily", "Four times daily", "As needed"];
+              const validation = validateMedicineFormulation(medicine);
               return (
               <div className="medicine-row" key={medicine.id}>
                 <div className="medicine-number">{index + 1}</div>
                 <div className="medicine-fields">
-                  <Field label="Formulation" hint={!medicine.formulation ? "Select a formulation to continue" : undefined} className={!medicine.formulation ? "med-formulation-first" : undefined}><SelectInput value={medicine.formulation} style={{ width: "100%", height: "40px" }} onChange={(event) => { const formulation = event.target.value; updateData({ medicines: data.medicines.map((row) => row.id === medicine.id ? { ...row, formulation, name: "", strength: "", dose: "", route: "", food: "", directions: "" } : row) }); }}><option value="">Select formulation</option>{clinicalLibrary.Formulations.map((option) => <option key={option}>{option}</option>)}</SelectInput></Field>
+                  <Field label="Formulation" hint={!medicine.formulation ? "Select a formulation to continue" : undefined} className={!medicine.formulation ? "med-formulation-first" : undefined}><SelectInput value={medicine.formulation} style={{ width: "100%", height: "40px" }} onChange={(event) => { const formulation = event.target.value; updateData({ medicines: data.medicines.map((row) => row.id === medicine.id ? { ...row, formulation, name: "", strength: "", dose: "", route: "", food: "", directions: "", activeIngredient: "" } : row) }); }}><option value="">Select formulation</option>{clinicalLibrary.Formulations.map((option) => <option key={option}>{option}</option>)}</SelectInput></Field>
                   {medicine.formulation && <>
-                    <Field label="Medicine name" required className="med-name"><SearchableOptionSelect id={`medicine-${medicine.id}`} value={medicine.name} options={[...new Set([...medicineOptions, ...clinicalLibrary.MedicineDefinitions.filter((item) => item.formulation === medicine.formulation).map((item) => item.name)])]} onChange={(value) => { updateMedicine(medicine.id, "name", value); const definition = clinicalLibrary.MedicineDefinitions.find((item) => item.name === value && item.formulation === medicine.formulation); if (definition) updateMedicine(medicine.id, "strength", definition.strength); }} placeholder="Search medicine" ariaLabel="Search and select medicine" emptyMessage="No matching medicine. Continue typing to use a custom name." /></Field>
+                    <Field label="Medicine name" required className="med-name">
+                      <SearchableOptionSelect
+                        id={`medicine-${medicine.id}`}
+                        value={medicine.name}
+                        options={[...new Set([...medicineOptions, ...mergedDefinitions.filter((item) => item.formulation === medicine.formulation).map((item) => item.name)])]}
+                        onChange={(value) => {
+                          updateMedicine(medicine.id, "name", value);
+                          const definition = mergedDefinitions.find((item) => item.name === value && item.formulation === medicine.formulation);
+                          if (definition) {
+                            if (definition.strength) updateMedicine(medicine.id, "strength", definition.strength);
+                            if (definition.activeIngredient) updateMedicine(medicine.id, "activeIngredient", definition.activeIngredient);
+                            if (definition.defaultDosage) updateMedicine(medicine.id, "dose", definition.defaultDosage);
+                            if (definition.defaultRoute) updateMedicine(medicine.id, "route", definition.defaultRoute);
+                            if (definition.defaultFrequency) updateMedicine(medicine.id, "frequency", definition.defaultFrequency);
+                            if (definition.defaultDuration) updateMedicine(medicine.id, "duration", definition.defaultDuration);
+                            if (definition.defaultInstructions) updateMedicine(medicine.id, "directions", definition.defaultInstructions);
+                          }
+                        }}
+                        placeholder="Search medicine"
+                        ariaLabel="Search and select medicine"
+                        emptyMessage="No matching medicine. Continue typing to use a custom name."
+                      />
+                      {medicine.activeIngredient && (
+                        <span className="med-active-ingredient">Active: {medicine.activeIngredient}</span>
+                      )}
+                    </Field>
                     <Field label="Strength"><SearchableOptionSelect id={`strength-${medicine.id}`} value={medicine.strength} options={strengthOptions} onChange={(value) => updateMedicine(medicine.id, "strength", value)} placeholder="Search strength" ariaLabel="Search and select strength" emptyMessage="No matching strength. Continue typing to use a custom value." /></Field>
                     <Field label="Dose" hint={`Unit: ${doseConfig.unit}`}><SearchableOptionSelect id={`dose-${medicine.id}`} value={medicine.dose} options={doseOptions} onChange={(value) => updateMedicine(medicine.id, "dose", value)} placeholder="Search dose" ariaLabel="Search and select dose" emptyMessage="No matching dose. Continue typing to use a custom value." /></Field>
                     <Field label="Frequency"><SearchableOptionSelect id={`frequency-${medicine.id}`} value={medicine.frequency} options={frequencyOptions} onChange={(value) => updateMedicine(medicine.id, "frequency", value)} placeholder="Search frequency" ariaLabel="Search and select frequency" emptyMessage="No matching frequency. Continue typing to use a custom value." /></Field>
                     <Field label="Duration"><SearchableOptionSelect id={`duration-${medicine.id}`} value={medicine.duration} options={clinicalLibrary.Durations} onChange={(value) => updateMedicine(medicine.id, "duration", value)} placeholder="Search duration" ariaLabel="Search and select duration" emptyMessage="No matching duration. Continue typing to use a custom value." /></Field>
-                    {medicine.formulation === "Injection" && <Field label="Route"><SelectInput value={medicine.route} style={{ height: "40px" }} onChange={(e) => updateMedicine(medicine.id, "route", e.target.value)}><option value="">Select route</option><option>Intravenous (IV)</option><option>Intramuscular (IM)</option><option>Subcutaneous (SC)</option><option>Intradermal (ID)</option></SelectInput></Field>}
+                    {medicine.formulation === "Injection" && <Field label="Route (Required)"><SelectInput value={medicine.route} style={{ height: "40px" }} onChange={(e) => updateMedicine(medicine.id, "route", e.target.value)}><option value="">Select route</option><option>Intravenous (IV)</option><option>Intramuscular (IM)</option><option>Subcutaneous (SC)</option><option>Intradermal (ID)</option></SelectInput></Field>}
                     {oralFormulations.has(medicine.formulation) && <Field label="Food instruction"><SelectInput value={medicine.food} style={{ height: "40px" }} onChange={(e) => updateMedicine(medicine.id, "food", e.target.value)}><option value="">Select</option><option>Before food</option><option>After food</option><option>With food</option><option>Not applicable</option></SelectInput></Field>}
-                    <Field label={topicalFormulations.has(medicine.formulation) ? "Application instructions" : "Additional directions"} className="med-directions"><TextInput value={medicine.directions} onChange={(e) => updateMedicine(medicine.id, "directions", e.target.value)} placeholder={topicalFormulations.has(medicine.formulation) ? "Site, amount, and method of application" : "Optional directions"} /></Field>
+                    <Field label={topicalFormulations.has(medicine.formulation) ? "Application instructions (Required)" : "Additional directions"} className="med-directions"><TextInput value={medicine.directions} onChange={(e) => updateMedicine(medicine.id, "directions", e.target.value)} placeholder={topicalFormulations.has(medicine.formulation) ? "Site, amount, and method of application" : "Optional directions"} /></Field>
                   </>}
                 </div>
+                {!validation.valid && medicine.formulation && (
+                  <div className="med-validation-warning">
+                    <AlertCircle size={13} />
+                    <span>{validation.error}</span>
+                  </div>
+                )}
                 <IconButton label={`Remove medicine ${index + 1}`} onClick={() => removeMedicine(medicine.id)}><Trash2 size={17} /></IconButton>
               </div>
               );
@@ -1601,97 +1893,647 @@ function CompactField({ label, suffix, placeholder, secondaryPlaceholder, value,
   return <label className={cn("compact-field", wide && "wide")}><span>{label}</span><div><input type="number" inputMode="decimal" min="0" step={step} value={value} onChange={(event) => onChange(event.target.value)} placeholder={placeholder} aria-label={secondaryPlaceholder ? `${label} systolic` : label} />{secondaryPlaceholder && <><b>/</b><input type="number" inputMode="decimal" min="0" step="1" value={secondaryValue} onChange={(event) => onSecondaryChange?.(event.target.value)} placeholder={secondaryPlaceholder} aria-label={`${label} diastolic`} /></>}<em>{suffix}</em></div></label>;
 }
 
-function BillForm({ go, patient, bill, onChange }: { go: (page: Page) => void; patient: Patient; bill: BillData; onChange: (bill: BillData) => void }) {
-  const subtotal = bill.items.reduce((total, item) => total + item.quantity * item.rate, 0);
-  const total = Math.max(0, subtotal - bill.discount);
-  const updateItem = (id: number, updates: Partial<BillItem>) => onChange({ ...bill, items: bill.items.map((item) => item.id === id ? { ...item, ...updates } : item) });
-  const addItem = () => onChange({ ...bill, items: [...bill.items, { id: Date.now(), description: "", quantity: 1, rate: 0 }] });
-  const removeItem = (id: number) => {
-    if (bill.items.length === 1) return;
-    onChange({ ...bill, items: bill.items.filter((item) => item.id !== id) });
+function BillForm({
+  go,
+  patient,
+  bill,
+  onChange,
+  desktopSession,
+  onFinalized,
+}: {
+  go: (page: Page) => void;
+  patient: Patient;
+  bill: BillData;
+  onChange: (bill: BillData) => void;
+  desktopSession?: DesktopSessionContext | null;
+  onFinalized?: (invoice: LocalInvoiceRecord) => void;
+}) {
+  const [isSaving, setIsSaving] = useState(false);
+  const [isFinalizing, setIsFinalizing] = useState(false);
+  const [showFinalizeModal, setShowFinalizeModal] = useState(false);
+  const [saveFeedback, setSaveFeedback] = useState<string | null>(null);
+
+  const isFinalized = bill.status === "FINALIZED";
+
+  const {
+    subtotalPaise,
+    discountPaise,
+    taxRatePercent,
+    taxPaise,
+    totalPaise,
+    subtotalRupees,
+    discountRupees,
+    taxRupees,
+    totalRupees,
+  } = computeBillTotals(bill.items, bill.discount, bill.taxRatePercent);
+
+  const updateItem = (id: number, updates: Partial<BillItem>) => {
+    if (isFinalized) return;
+    onChange({
+      ...bill,
+      items: bill.items.map((item) => (item.id === id ? { ...item, ...updates } : item)),
+    });
   };
-  const canPreview = bill.items.some((item) => item.description.trim() && item.rate > 0);
+
+  const addItem = () => {
+    if (isFinalized) return;
+    onChange({
+      ...bill,
+      items: [
+        ...bill.items,
+        { id: Date.now(), description: "", quantity: 1, rate: 0 },
+      ],
+    });
+  };
+
+  const removeItem = (id: number) => {
+    if (isFinalized || bill.items.length === 1) return;
+    onChange({
+      ...bill,
+      items: bill.items.filter((item) => item.id !== id),
+    });
+  };
+
+  const canPreview = bill.items.some((item) => item.description.trim() && item.rate >= 0);
+  const canFinalize =
+    bill.items.length > 0 &&
+    bill.items.every((item) => item.description.trim() && item.quantity >= 1 && item.rate >= 0);
+
+  const handleSaveDraft = async () => {
+    setIsSaving(true);
+    try {
+      const items: LocalInvoiceItem[] = bill.items.map((it) => ({
+        name: it.description.trim() || "Service",
+        quantity: Math.max(1, Math.floor(Number(it.quantity) || 1)),
+        unit_price_paise: Math.max(0, Math.round((Number(it.rate) || 0) * 100)),
+        line_total_paise:
+          Math.max(1, Math.floor(Number(it.quantity) || 1)) *
+          Math.max(0, Math.round((Number(it.rate) || 0) * 100)),
+      }));
+
+      if (isTauriDesktop() && desktopSession?.clinic_id) {
+        const savedId = await saveLocalInvoice({
+          id: bill.id || null,
+          clinic_id: desktopSession.clinic_id,
+          patient_id: patient.id,
+          invoice_number: bill.invoiceNumber,
+          subtotal_paise: subtotalPaise,
+          discount_paise: discountPaise,
+          tax_rate_percent: taxRatePercent,
+          tax_paise: taxPaise,
+          total_paise: totalPaise,
+          items,
+          notes: bill.notes || null,
+        });
+        if (savedId) {
+          onChange({ ...bill, id: savedId, status: "DRAFT" });
+        }
+      }
+      setSaveFeedback("Draft invoice saved to local encrypted storage.");
+      window.setTimeout(() => setSaveFeedback(null), 2500);
+    } catch (err) {
+      console.error("Failed to save draft invoice:", err);
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const handleFinalizeBill = async () => {
+    setIsFinalizing(true);
+    try {
+      const items: LocalInvoiceItem[] = bill.items.map((it) => ({
+        name: it.description.trim() || "Service",
+        quantity: Math.max(1, Math.floor(Number(it.quantity) || 1)),
+        unit_price_paise: Math.max(0, Math.round((Number(it.rate) || 0) * 100)),
+        line_total_paise:
+          Math.max(1, Math.floor(Number(it.quantity) || 1)) *
+          Math.max(0, Math.round((Number(it.rate) || 0) * 100)),
+      }));
+
+      let invoiceId = bill.id;
+      if (isTauriDesktop() && desktopSession?.clinic_id) {
+        if (!invoiceId) {
+          invoiceId =
+            (await saveLocalInvoice({
+              id: null,
+              clinic_id: desktopSession.clinic_id,
+              patient_id: patient.id,
+              invoice_number: bill.invoiceNumber,
+              subtotal_paise: subtotalPaise,
+              discount_paise: discountPaise,
+              tax_rate_percent: taxRatePercent,
+              tax_paise: taxPaise,
+              total_paise: totalPaise,
+              items,
+              notes: bill.notes || null,
+            })) || undefined;
+        }
+        if (invoiceId) {
+          const finalizedRecord = await finalizeLocalInvoice(desktopSession.clinic_id, invoiceId);
+          if (finalizedRecord) {
+            onChange({
+              ...bill,
+              id: finalizedRecord.id,
+              status: "FINALIZED",
+            });
+            onFinalized?.(finalizedRecord);
+          }
+        }
+      } else {
+        onChange({ ...bill, status: "FINALIZED" });
+      }
+      setShowFinalizeModal(false);
+      go("bill-preview");
+    } catch (err) {
+      console.error("Failed to finalize invoice:", err);
+    } finally {
+      setIsFinalizing(false);
+    }
+  };
 
   return (
     <>
-      <AppHeader title="Create bill" subtitle={`${patient.name} · ${patient.id}`}>
-        <IconButton className="topbar-back" label="Back to patients" onClick={() => go("patients")}><ArrowLeft size={18} /></IconButton>
+      <AppHeader title={isFinalized ? "View finalized bill" : "Create bill"} subtitle={`${patient.name} · ${patient.id}`}>
+        <IconButton className="topbar-back" label="Back to patient profile" onClick={() => go("patient-profile")}><ArrowLeft size={18} /></IconButton>
+        {!isFinalized && (
+          <>
+            <Button variant="secondary" onClick={handleSaveDraft} disabled={isSaving}>
+              {isSaving ? "Saving draft..." : "Save draft"}
+            </Button>
+            <Button icon={ReceiptIndianRupee} disabled={!canFinalize} onClick={() => setShowFinalizeModal(true)}>
+              Finalize bill
+            </Button>
+          </>
+        )}
+        <Button variant={isFinalized ? "primary" : "secondary"} disabled={!canPreview} onClick={() => go("bill-preview")}>
+          {isFinalized ? "Print / Preview bill" : "Preview bill"}
+        </Button>
       </AppHeader>
       <div className="page-content billing-page">
-        <div className="patient-strip"><span className="avatar subtle">{patient.initials}</span><div><strong>{patient.name}</strong><small>{patient.age} years · {patient.gender} · {patient.phone}</small></div><StatusPill tone="warning">Local draft</StatusPill></div>
-        <FormSection icon={ReceiptIndianRupee} title="Bill details" description="Add services and charges for this patient">
-          <div className="form-grid three bill-meta">
-            <Field label="Invoice number"><TextInput value={bill.invoiceNumber} onChange={(event) => onChange({ ...bill, invoiceNumber: event.target.value })} /></Field>
-            <Field label="Invoice date"><TextInput type="date" value={bill.date} onChange={(event) => onChange({ ...bill, date: event.target.value })} /></Field>
-            <Field label="Payment status"><SelectInput value={bill.paymentStatus} onChange={(event) => onChange({ ...bill, paymentStatus: event.target.value as BillData["paymentStatus"] })}><option>Unpaid</option><option>Paid</option></SelectInput></Field>
+        {saveFeedback && (
+          <div className="success-banner" role="status" aria-live="polite">
+            <CheckCircle2 size={19} />
+            <div>
+              <strong>{saveFeedback}</strong>
+              <span>Changes are persisted in encrypted local storage.</span>
+            </div>
           </div>
-          <div className="bill-items-head"><span>Service or item</span><span>Qty</span><span>Rate</span><span>Amount</span><span /></div>
+        )}
+        {isFinalized && (
+          <div className="bill-immutable-callout">
+            <ShieldCheck size={20} style={{ flexShrink: 0 }} />
+            <div>
+              <strong>Finalized Medical Invoice (Immutable)</strong>
+              <p style={{ margin: 0, fontSize: "11px", opacity: 0.9 }}>
+                This invoice has been finalized in accordance with clinical and financial audit integrity standards. Line items, quantities, and totals are locked and cannot be edited.
+              </p>
+            </div>
+          </div>
+        )}
+        <div className="patient-strip">
+          <span className="avatar subtle">{patient.initials}</span>
+          <div>
+            <strong>{patient.name}</strong>
+            <small>{patient.age} years · {patient.gender} · {patient.phone}</small>
+          </div>
+          <StatusPill tone={isFinalized ? "success" : "warning"}>
+            {isFinalized ? "Finalized bill" : "Local draft"}
+          </StatusPill>
+        </div>
+        <FormSection icon={ReceiptIndianRupee} title="Bill details" description="Services, procedure fees, taxes and discounts">
+          <div className="form-grid four bill-meta">
+            <Field label="Invoice number">
+              <TextInput value={bill.invoiceNumber} disabled={isFinalized} onChange={(event) => onChange({ ...bill, invoiceNumber: event.target.value })} />
+            </Field>
+            <Field label="Invoice date">
+              <TextInput type="date" value={bill.date} disabled={isFinalized} onChange={(event) => onChange({ ...bill, date: event.target.value })} />
+            </Field>
+            <Field label="Payment status">
+              <SelectInput value={bill.paymentStatus} disabled={isFinalized} onChange={(event) => onChange({ ...bill, paymentStatus: event.target.value as BillData["paymentStatus"] })}>
+                <option>Unpaid</option>
+                <option>Paid</option>
+              </SelectInput>
+            </Field>
+            <Field label="GST / Tax configuration">
+              <SelectInput value={String(bill.taxRatePercent ?? 0)} disabled={isFinalized} onChange={(event) => onChange({ ...bill, taxRatePercent: Number(event.target.value) })}>
+                <option value="0">0% (GST Exempt / Nil)</option>
+                <option value="5">5% GST</option>
+                <option value="12">12% GST</option>
+                <option value="18">18% GST</option>
+              </SelectInput>
+            </Field>
+          </div>
+          <div className="bill-items-head">
+            <span>Service or item</span>
+            <span>Qty</span>
+            <span>Unit Rate (₹)</span>
+            <span>Amount (₹)</span>
+            <span />
+          </div>
           <div className="bill-items">
             {bill.items.map((item) => (
               <div className="bill-item-row" key={item.id}>
-                <TextInput aria-label="Service or item" value={item.description} onChange={(event) => updateItem(item.id, { description: event.target.value })} placeholder="e.g. Consultation fee" />
-                <TextInput aria-label="Quantity" type="number" min="1" value={item.quantity} onChange={(event) => updateItem(item.id, { quantity: Math.max(1, Number(event.target.value)) })} />
-                <div className="money-input"><IndianRupee size={14} /><input aria-label="Rate" type="number" min="0" value={item.rate || ""} onChange={(event) => updateItem(item.id, { rate: Math.max(0, Number(event.target.value)) })} placeholder="0" /></div>
-                <strong>₹{(item.quantity * item.rate).toLocaleString("en-IN")}</strong>
-                <IconButton label="Remove item" onClick={() => removeItem(item.id)} disabled={bill.items.length === 1}><Trash2 size={16} /></IconButton>
+                <TextInput
+                  aria-label="Service or item"
+                  value={item.description}
+                  disabled={isFinalized}
+                  onChange={(event) => updateItem(item.id, { description: event.target.value })}
+                  placeholder="e.g. Consultation fee, ECG, Procedure"
+                />
+                <TextInput
+                  aria-label="Quantity"
+                  type="number"
+                  min="1"
+                  disabled={isFinalized}
+                  value={item.quantity}
+                  onChange={(event) => updateItem(item.id, { quantity: Math.max(1, Number(event.target.value)) })}
+                />
+                <div className="money-input">
+                  <IndianRupee size={14} />
+                  <input
+                    aria-label="Rate"
+                    type="number"
+                    min="0"
+                    disabled={isFinalized}
+                    value={item.rate || ""}
+                    onChange={(event) => updateItem(item.id, { rate: Math.max(0, Number(event.target.value)) })}
+                    placeholder="0"
+                  />
+                </div>
+                <strong>₹{(item.quantity * item.rate).toLocaleString("en-IN", { minimumFractionDigits: 2 })}</strong>
+                <IconButton label="Remove item" onClick={() => removeItem(item.id)} disabled={isFinalized || bill.items.length === 1}>
+                  <Trash2 size={16} />
+                </IconButton>
               </div>
             ))}
           </div>
-          <Button size="sm" variant="secondary" icon={Plus} onClick={addItem}>Add item</Button>
+          {!isFinalized && (
+            <Button size="sm" variant="secondary" icon={Plus} onClick={addItem}>
+              Add item
+            </Button>
+          )}
+          <div className="form-grid one" style={{ marginTop: "18px" }}>
+            <Field label="Invoice / Payment remarks (Optional)">
+              <TextInput
+                value={bill.notes ?? ""}
+                disabled={isFinalized}
+                onChange={(event) => onChange({ ...bill, notes: event.target.value })}
+                placeholder="e.g. UPI Ref / Cheque # / Insurance Pre-auth note"
+              />
+            </Field>
+          </div>
           <div className="bill-summary">
-            <div><span>Subtotal</span><strong>₹{subtotal.toLocaleString("en-IN")}</strong></div>
-            <label><span>Discount</span><div className="money-input"><IndianRupee size={13} /><input aria-label="Discount" type="number" min="0" value={bill.discount || ""} onChange={(event) => onChange({ ...bill, discount: Math.max(0, Number(event.target.value)) })} placeholder="0" /></div></label>
-            <div className="bill-total"><span>Total</span><strong>₹{total.toLocaleString("en-IN")}</strong></div>
+            <div>
+              <span>Subtotal</span>
+              <strong>₹{subtotalRupees.toLocaleString("en-IN", { minimumFractionDigits: 2 })}</strong>
+            </div>
+            <label>
+              <span>Discount</span>
+              <div className="money-input">
+                <IndianRupee size={13} />
+                <input
+                  aria-label="Discount"
+                  type="number"
+                  min="0"
+                  disabled={isFinalized}
+                  value={bill.discount || ""}
+                  onChange={(event) => onChange({ ...bill, discount: Math.max(0, Number(event.target.value)) })}
+                  placeholder="0"
+                />
+              </div>
+            </label>
+            {taxRatePercent > 0 && (
+              <div>
+                <span>Tax ({taxRatePercent}% GST)</span>
+                <strong>+ ₹{taxRupees.toLocaleString("en-IN", { minimumFractionDigits: 2 })}</strong>
+              </div>
+            )}
+            <div className="bill-total">
+              <span>Grand Total</span>
+              <strong>₹{totalRupees.toLocaleString("en-IN", { minimumFractionDigits: 2 })}</strong>
+            </div>
           </div>
         </FormSection>
-        <div className="patient-form-actions"><div><strong>Review local bill draft</strong><p>Browser printing is available. Saving, PDF generation, and WhatsApp delivery require backend services.</p></div><Button variant="ghost" onClick={() => go("patients")}>Cancel</Button><Button icon={ReceiptIndianRupee} disabled={!canPreview} onClick={() => go("bill-preview")}>Make bill</Button></div>
+        <div className="patient-form-actions">
+          <div>
+            <strong>{isFinalized ? "Finalized medical invoice" : "Review bill draft"}</strong>
+            <p>
+              {isFinalized
+                ? "This invoice is stored durably in the local encrypted database and synced to cloud."
+                : "Save draft to persist locally or finalize to lock invoice totals."}
+            </p>
+          </div>
+          <Button variant="ghost" onClick={() => go("patient-profile")}>
+            {isFinalized ? "Back to patient" : "Cancel"}
+          </Button>
+          {!isFinalized && (
+            <Button icon={ReceiptIndianRupee} disabled={!canFinalize} onClick={() => setShowFinalizeModal(true)}>
+              Finalize bill
+            </Button>
+          )}
+          <Button variant={isFinalized ? "primary" : "secondary"} disabled={!canPreview} onClick={() => go("bill-preview")}>
+            {isFinalized ? "Print bill" : "Preview"}
+          </Button>
+        </div>
       </div>
+      {showFinalizeModal && (
+        <Modal
+          title="Finalize invoice?"
+          description="Confirm that you have reviewed the service charges, quantities, discount, and tax. Once finalized, the invoice amounts and line items become immutable."
+          onClose={() => setShowFinalizeModal(false)}
+        >
+          <div className="review-checklist">
+            <p><CheckCircle2 size={18} /> Billed patient: {patient.name} ({patient.id})</p>
+            <p><CheckCircle2 size={18} /> Subtotal: ₹{subtotalRupees.toLocaleString("en-IN", { minimumFractionDigits: 2 })} (Paise: {subtotalPaise})</p>
+            {discountRupees > 0 && <p><CheckCircle2 size={18} /> Discount applied: ₹{discountRupees.toLocaleString("en-IN", { minimumFractionDigits: 2 })}</p>}
+            {taxRatePercent > 0 && <p><CheckCircle2 size={18} /> Tax ({taxRatePercent}%): ₹{taxRupees.toLocaleString("en-IN", { minimumFractionDigits: 2 })}</p>}
+            <p><CheckCircle2 size={18} /> Final payable total: ₹{totalRupees.toLocaleString("en-IN", { minimumFractionDigits: 2 })}</p>
+          </div>
+          <div className="modal-warning">
+            <LockKeyhole size={17} />
+            <p>Finalizing commits this record to the immutable billing ledger. Further changes cannot be made.</p>
+          </div>
+          <div className="modal-actions">
+            <Button variant="ghost" onClick={() => setShowFinalizeModal(false)}>Continue editing</Button>
+            <Button onClick={handleFinalizeBill} disabled={isFinalizing}>
+              {isFinalizing ? "Finalizing invoice..." : "Confirm & finalize bill"}
+            </Button>
+          </div>
+        </Modal>
+      )}
     </>
   );
 }
 
-function BillPreview({ go, patient, bill, bannerImage, signatureImage, layout, returnPage }: { go: (page: Page) => void; patient: Patient; bill: BillData; bannerImage: { src: string; name: string } | null; signatureImage: { src: string; name: string } | null; layout: BillLayoutPreferences; returnPage: "bill-form" | "settings" }) {
+function BillPreview({
+  go,
+  patient,
+  bill,
+  bannerImage,
+  signatureImage,
+  layout,
+  returnPage,
+  desktopSession,
+}: {
+  go: (page: Page) => void;
+  patient: Patient;
+  bill: BillData;
+  bannerImage: { src: string; name: string } | null;
+  signatureImage: { src: string; name: string } | null;
+  layout: BillLayoutPreferences;
+  returnPage: "bill-form" | "settings";
+  desktopSession?: DesktopSessionContext | null;
+}) {
   const [whatsapp, setWhatsapp] = useState(false);
   const [delivery, setDelivery] = useState<"confirm" | "sending" | "queued">("confirm");
-  const subtotal = bill.items.reduce((total, item) => total + item.quantity * item.rate, 0);
-  const total = Math.max(0, subtotal - bill.discount);
-  const formattedDate = bill.date ? new Date(`${bill.date}T00:00:00`).toLocaleDateString("en-IN", { day: "2-digit", month: "long", year: "numeric" }) : "—";
+
+  const {
+    subtotalRupees,
+    discountRupees,
+    taxRatePercent,
+    taxRupees,
+    totalRupees,
+  } = computeBillTotals(bill.items, bill.discount, bill.taxRatePercent);
+
+  const formattedDate = bill.date
+    ? new Date(`${bill.date}T00:00:00`).toLocaleDateString("en-IN", {
+        day: "2-digit",
+        month: "long",
+        year: "numeric",
+      })
+    : "—";
+
+  const isFinalized = bill.status === "FINALIZED";
+  const doctorName = desktopSession?.doctor_name || "Dr. Nikhil Kanade";
+
   const sendBill = () => {
     setDelivery("sending");
     window.setTimeout(() => setDelivery("queued"), 900);
   };
+
   return (
     <>
-      <AppHeader title="Bill preview" subtitle={`${bill.invoiceNumber} · ${bill.paymentStatus}`}>
-        <IconButton className="topbar-back" label={returnPage === "settings" ? "Back to bill settings" : "Back to bill"} onClick={() => go(returnPage)}><ArrowLeft size={18} /></IconButton>
-        <Button variant="secondary" icon={Printer} onClick={() => window.print()}>Print bill</Button>
-        <Button icon={MessageCircle} onClick={() => { setDelivery("confirm"); setWhatsapp(true); }}>Preview WhatsApp flow</Button>
+      <AppHeader
+        title="Bill preview"
+        subtitle={`${bill.invoiceNumber} · ${bill.paymentStatus} · ${isFinalized ? "Finalized" : "Draft"}`}
+      >
+        <IconButton
+          className="topbar-back"
+          label={returnPage === "settings" ? "Back to bill settings" : "Back to bill"}
+          onClick={() => go(returnPage)}
+        >
+          <ArrowLeft size={18} />
+        </IconButton>
+        <Button variant="secondary" icon={Printer} onClick={() => window.print()}>
+          Print bill
+        </Button>
+        <Button
+          icon={MessageCircle}
+          onClick={() => {
+            setDelivery("confirm");
+            setWhatsapp(true);
+          }}
+        >
+          Preview WhatsApp flow
+        </Button>
       </AppHeader>
       <div className="preview-page">
-        <div className="preview-note bill-preview-note"><ReceiptIndianRupee size={17} /><span>Review the bill details before printing or sharing with the patient.</span><Button size="sm" variant="ghost" onClick={() => go("bill-form")} icon={Edit3}>Edit bill</Button></div>
+        <div className="preview-note bill-preview-note">
+          <ReceiptIndianRupee size={17} />
+          <span>
+            {isFinalized
+              ? "Finalized tax invoice. Ready for patient delivery and printing."
+              : "Review the bill draft details before finalizing or printing."}
+          </span>
+          <Button size="sm" variant="ghost" onClick={() => go("bill-form")} icon={Edit3}>
+            {isFinalized ? "View invoice" : "Edit bill"}
+          </Button>
+        </div>
         <article className="prescription-paper bill-paper" id="printable-bill">
           <div className={cn("rx-banner-slot", !layout.showBanner && "rx-content-hidden")}>
-            {bannerImage ? <div className="rx-custom-banner"><img src={bannerImage.src} alt="Custom bill banner" /></div> : <header className="rx-header">
-              <div className="rx-clinic"><span className={cn("rx-logo", !layout.showClinicLogo && "rx-content-hidden")}><HeartPulse size={24} /></span><div><h2>Nishti Hospital</h2><p>14, Sea View Road, Bandra West, Mumbai 400050</p><p>+91 22 4123 8765 · <span className={cn(!layout.showClinicEmail && "rx-content-hidden")}>care@harbourclinic.in</span></p></div></div>
-              <div className="rx-doctor"><strong>Dr. Nikhil Kanade</strong><span>MBBS, MD (Internal Medicine)</span><span>Reg. No. MMC 2011/04/1842</span></div>
-            </header>}
+            {bannerImage ? (
+              <div className="rx-custom-banner">
+                <img src={bannerImage.src} alt="Custom bill banner" />
+              </div>
+            ) : (
+              <header className="rx-header">
+                <div className="rx-clinic">
+                  <span className={cn("rx-logo", !layout.showClinicLogo && "rx-content-hidden")}>
+                    <HeartPulse size={24} />
+                  </span>
+                  <div>
+                    <h2>Nishti Hospital</h2>
+                    <p>14, Sea View Road, Bandra West, Mumbai 400050</p>
+                    <p>
+                      +91 22 4123 8765 ·{" "}
+                      <span className={cn(!layout.showClinicEmail && "rx-content-hidden")}>
+                        care@harbourclinic.in
+                      </span>
+                    </p>
+                  </div>
+                </div>
+                <div className="rx-doctor">
+                  <strong>{doctorName}</strong>
+                  <span>MBBS, MD (Internal Medicine)</span>
+                  <span>Reg. No. MMC 2011/04/1842</span>
+                </div>
+              </header>
+            )}
           </div>
-          <div className="bill-title"><div><span>Tax invoice</span><h2>Patient bill</h2></div><StatusPill tone={bill.paymentStatus === "Paid" ? "success" : "warning"}>{bill.paymentStatus}</StatusPill></div>
-          <section className="rx-patient"><div><span>Billed to</span><strong>{patient.name}</strong><small>{patient.age} years · {patient.gender} · {patient.phone}</small></div><div><span>Patient ID</span><strong>{patient.id}</strong></div><div><span>Invoice date</span><strong>{formattedDate}</strong></div></section>
-          <section className="bill-document">
-            <div className="bill-number"><span>Invoice number</span><strong>{bill.invoiceNumber}</strong></div>
-            <table><thead><tr><th>Service or item</th><th>Qty</th><th>Rate</th><th>Amount</th></tr></thead><tbody>{bill.items.filter((item) => item.description.trim()).map((item) => <tr key={item.id}><td>{item.description}</td><td>{item.quantity}</td><td>₹{item.rate.toLocaleString("en-IN")}</td><td>₹{(item.quantity * item.rate).toLocaleString("en-IN")}</td></tr>)}</tbody></table>
-            <div className="bill-document-totals"><div><span>Subtotal</span><strong>₹{subtotal.toLocaleString("en-IN")}</strong></div>{bill.discount > 0 && <div><span>Discount</span><strong>− ₹{bill.discount.toLocaleString("en-IN")}</strong></div>}<div className="grand-total"><span>Total amount</span><strong>₹{total.toLocaleString("en-IN")}</strong></div></div>
+          <div className="bill-title">
+            <div>
+              <span>Tax invoice</span>
+              <h2>Patient bill</h2>
+            </div>
+            <div style={{ display: "flex", gap: "8px" }}>
+              <StatusPill tone={isFinalized ? "success" : "warning"}>
+                {isFinalized ? "Finalized" : "Draft"}
+              </StatusPill>
+              <StatusPill tone={bill.paymentStatus === "Paid" ? "success" : "neutral"}>
+                {bill.paymentStatus}
+              </StatusPill>
+            </div>
+          </div>
+          <section className="rx-patient">
+            <div>
+              <span>Billed to</span>
+              <strong>{patient.name}</strong>
+              <small>{patient.age} years · {patient.gender} · {patient.phone}</small>
+            </div>
+            <div>
+              <span>Patient ID</span>
+              <strong>{patient.id}</strong>
+            </div>
+            <div>
+              <span>Invoice date</span>
+              <strong>{formattedDate}</strong>
+            </div>
           </section>
-          <section className={cn("bill-payment-note", !layout.showPaymentNote && "rx-content-hidden")}><strong>Payment status: {bill.paymentStatus}</strong><span>Thank you for choosing Nishti Hospital. Please retain this bill for your records.</span></section>
-          <footer className="rx-footer bill-footer"><div><span>For Nishti Hospital</span><strong>Authorized medical services bill</strong></div><div className={cn("signature", !layout.showSignature && "rx-content-hidden")}>{signatureImage && <img src={signatureImage.src} alt="Dr. Nikhil Kanade’s signature" />}<span>Doctor’s signature</span><strong>Dr. Nikhil Kanade</strong></div></footer>
+          <section className="bill-document">
+            <div className="bill-number">
+              <span>Invoice number</span>
+              <strong>{bill.invoiceNumber}</strong>
+            </div>
+            <table>
+              <thead>
+                <tr>
+                  <th>Service or item</th>
+                  <th>Qty</th>
+                  <th>Rate</th>
+                  <th>Amount</th>
+                </tr>
+              </thead>
+              <tbody>
+                {bill.items
+                  .filter((item) => item.description.trim())
+                  .map((item) => (
+                    <tr key={item.id}>
+                      <td>{item.description}</td>
+                      <td>{item.quantity}</td>
+                      <td>₹{item.rate.toLocaleString("en-IN", { minimumFractionDigits: 2 })}</td>
+                      <td>₹{(item.quantity * item.rate).toLocaleString("en-IN", { minimumFractionDigits: 2 })}</td>
+                    </tr>
+                  ))}
+              </tbody>
+            </table>
+            <div className="bill-document-totals">
+              <div>
+                <span>Subtotal</span>
+                <strong>₹{subtotalRupees.toLocaleString("en-IN", { minimumFractionDigits: 2 })}</strong>
+              </div>
+              {discountRupees > 0 && (
+                <div>
+                  <span>Discount</span>
+                  <strong>− ₹{discountRupees.toLocaleString("en-IN", { minimumFractionDigits: 2 })}</strong>
+                </div>
+              )}
+              {taxRatePercent > 0 && (
+                <div>
+                  <span>GST ({taxRatePercent}%)</span>
+                  <strong>+ ₹{taxRupees.toLocaleString("en-IN", { minimumFractionDigits: 2 })}</strong>
+                </div>
+              )}
+              <div className="grand-total">
+                <span>Total amount</span>
+                <strong>₹{totalRupees.toLocaleString("en-IN", { minimumFractionDigits: 2 })}</strong>
+              </div>
+            </div>
+          </section>
+          {bill.notes && (
+            <section style={{ margin: "14px 0", padding: "10px 14px", background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: "6px", fontSize: "11px" }}>
+              <strong>Remarks:</strong> {bill.notes}
+            </section>
+          )}
+          <section className={cn("bill-payment-note", !layout.showPaymentNote && "rx-content-hidden")}>
+            <strong>Payment status: {bill.paymentStatus}</strong>
+            <span>Thank you for choosing Nishti Hospital. Please retain this bill for your records.</span>
+          </section>
+          <footer className="rx-footer bill-footer">
+            <div>
+              <span>For Nishti Hospital</span>
+              <strong>Authorized medical services bill</strong>
+            </div>
+            <div className={cn("signature", !layout.showSignature && "rx-content-hidden")}>
+              {signatureImage && <img src={signatureImage.src} alt={`${doctorName}’s signature`} />}
+              <span>Doctor’s signature</span>
+              <strong>{doctorName}</strong>
+            </div>
+          </footer>
         </article>
       </div>
-      {whatsapp && <Modal title="Bill WhatsApp flow preview" description="Frontend-only illustration; no message or PDF will be created." onClose={() => setWhatsapp(false)}>
-        {delivery === "confirm" && <><div className="send-summary"><span className="avatar">{patient.initials}</span><div><small>Patient</small><strong>{patient.name}</strong><span>{patient.phone}</span></div></div><div className="document-row"><span><ReceiptIndianRupee size={20} /></span><div><strong>Bill · {bill.invoiceNumber}</strong><small>₹{total.toLocaleString("en-IN")} · Local preview only</small></div><Paperclip size={16} /></div><div className="delivery-disclaimer"><AlertCircle size={17} /><p>No API request is sent. Real queued and delivery states require a WhatsApp provider response.</p></div><div className="modal-actions"><Button variant="ghost" onClick={() => setWhatsapp(false)}>Cancel</Button><Button icon={MessageCircle} onClick={sendBill}>Preview queued state</Button></div></>}
-        {delivery === "sending" && <div className="delivery-state"><span className="state-icon loading"><RefreshCw className="spin" size={25} /></span><h3>Preparing demo state…</h3><p>No external service is being contacted.</p></div>}
-        {delivery === "queued" && <div className="delivery-state"><span className="state-icon success"><Check size={25} /></span><h3>Demo: bill queued</h3><p>This illustrates provider acceptance; no bill was sent.</p><div className="modal-actions"><Button onClick={() => setWhatsapp(false)}>Done</Button></div></div>}
-      </Modal>}
+      {whatsapp && (
+        <Modal
+          title="Bill WhatsApp flow preview"
+          description="Frontend-only illustration; no message or PDF will be created."
+          onClose={() => setWhatsapp(false)}
+        >
+          {delivery === "confirm" && (
+            <>
+              <div className="send-summary">
+                <span className="avatar">{patient.initials}</span>
+                <div>
+                  <small>Patient</small>
+                  <strong>{patient.name}</strong>
+                  <span>{patient.phone}</span>
+                </div>
+              </div>
+              <div className="document-row">
+                <span><ReceiptIndianRupee size={20} /></span>
+                <div>
+                  <strong>Bill · {bill.invoiceNumber}</strong>
+                  <small>₹{totalRupees.toLocaleString("en-IN", { minimumFractionDigits: 2 })} · Local preview only</small>
+                </div>
+                <Paperclip size={16} />
+              </div>
+              <div className="delivery-disclaimer">
+                <AlertCircle size={17} />
+                <p>No API request is sent. Real queued and delivery states require a WhatsApp provider response.</p>
+              </div>
+              <div className="modal-actions">
+                <Button variant="ghost" onClick={() => setWhatsapp(false)}>Cancel</Button>
+                <Button icon={MessageCircle} onClick={sendBill}>Preview queued state</Button>
+              </div>
+            </>
+          )}
+          {delivery === "sending" && (
+            <div className="delivery-state">
+              <span className="state-icon loading"><RefreshCw className="spin" size={25} /></span>
+              <h3>Preparing demo state…</h3>
+              <p>No external service is being contacted.</p>
+            </div>
+          )}
+          {delivery === "queued" && (
+            <div className="delivery-state">
+              <span className="state-icon success"><Check size={25} /></span>
+              <h3>Demo: bill queued</h3>
+              <p>This illustrates provider acceptance; no bill was sent.</p>
+              <div className="modal-actions">
+                <Button onClick={() => setWhatsapp(false)}>Done</Button>
+              </div>
+            </div>
+          )}
+        </Modal>
+      )}
     </>
   );
 }
@@ -1843,28 +2685,191 @@ function SettingsPage({
   );
 }
 
-function ClinicalLibrarySettings({ library, onAdd, onAddMedicine }: { library: ClinicalLibrary; onAdd: (category: ClinicalLibraryCategory, value: string) => void; onAddMedicine: (medicine: ClinicalMedicineDefinition) => void }) {
+function ClinicalLibrarySettings({
+  library,
+  onAdd,
+  onAddMedicine,
+  desktopSession,
+}: {
+  library: ClinicalLibrary;
+  onAdd: (category: ClinicalLibraryCategory, value: string) => void;
+  onAddMedicine: (medicine: ClinicalMedicineDefinition) => void;
+  desktopSession?: DesktopSessionContext | null;
+}) {
   const [category, setCategory] = useState<ClinicalLibraryCategory>("Medicines");
   const [newItem, setNewItem] = useState("");
   const [medicineName, setMedicineName] = useState("");
   const [medicineFormulation, setMedicineFormulation] = useState("");
   const [medicineStrength, setMedicineStrength] = useState("");
+  const [activeIngredient, setActiveIngredient] = useState("");
+  const [defaultInstructions, setDefaultInstructions] = useState("");
+
   const addItem = () => {
     const value = newItem.trim();
     if (!value || library[category].some((item) => item.toLowerCase() === value.toLowerCase())) return;
     onAdd(category, value);
     setNewItem("");
   };
-  const addMedicine = () => {
+
+  const addMedicine = async () => {
     const name = medicineName.trim();
     if (!name || !medicineFormulation || !medicineStrength) return;
-    onAddMedicine({ name, formulation: medicineFormulation, strength: medicineStrength });
+
+    if (isTauriDesktop() && desktopSession?.clinic_id) {
+      try {
+        await saveLocalFormularyItem({
+          clinic_id: desktopSession.clinic_id,
+          name,
+          formulation: medicineFormulation,
+          strength: medicineStrength,
+          active_ingredient: activeIngredient.trim() || null,
+          default_instructions: defaultInstructions.trim() || null,
+        });
+      } catch (err) {
+        console.error("Failed to save formulary item to SQLite:", err);
+      }
+    }
+
+    onAddMedicine({
+      name,
+      formulation: medicineFormulation,
+      strength: medicineStrength,
+      activeIngredient: activeIngredient.trim() || undefined,
+      defaultInstructions: defaultInstructions.trim() || undefined,
+    });
+
     setMedicineName("");
     setMedicineFormulation("");
     setMedicineStrength("");
+    setActiveIngredient("");
+    setDefaultInstructions("");
   };
 
-  return <section className="settings-section"><div className="settings-title"><h2>Clinical library</h2><p>Add custom options that appear in consultation medicine fields.</p></div><div className="library-tabs" role="tablist">{clinicalLibraryCategories.map((item) => <button key={item} role="tab" aria-selected={category === item} className={category === item ? "active" : ""} onClick={() => setCategory(item)}>{item}<span>{library[item].length}</span></button>)}</div>{category === "Medicines" ? <div className="medicine-library-form"><div className="library-step"><span>1</span><Field label="Formulation" required><SelectInput id="library-formulation-select" value={medicineFormulation} onChange={(event) => setMedicineFormulation(event.target.value)}><option value="">Select formulation</option>{library.Formulations.map((item) => <option key={item}>{item}</option>)}</SelectInput></Field></div><div className={cn("library-step", !medicineFormulation && "disabled")}><span>2</span><Field label="Medicine name" required><TextInput value={medicineName} onChange={(event) => setMedicineName(event.target.value)} disabled={!medicineFormulation} placeholder="Enter medicine name" /></Field></div><div className={cn("library-step", !medicineName.trim() && "disabled")}><span>3</span><Field label="Strength" required><SelectInput id="library-strength-select" value={medicineStrength} onChange={(event) => setMedicineStrength(event.target.value)} disabled={!medicineName.trim()}><option value="">Select strength</option>{library.Strengths.map((item) => <option key={item}>{item}</option>)}</SelectInput></Field></div><div className="library-medicine-action"><Button icon={Plus} onClick={addMedicine} disabled={!medicineName.trim() || !medicineFormulation || !medicineStrength}>Add medicine</Button></div></div> : <div className="library-add"><TextInput value={newItem} onChange={(event) => setNewItem(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); addItem(); } }} placeholder={`Add custom ${category.toLowerCase().replace(/s$/, "")}`} /><Button icon={Plus} onClick={addItem} disabled={!newItem.trim()}>Add option</Button></div>}<div className="library-list">{category === "Medicines" ? library.MedicineDefinitions.map((item) => <span key={`${item.name}-${item.formulation}-${item.strength}`}><strong>{item.name}</strong><small>{item.formulation} · {item.strength}</small></span>) : library[category].map((item) => <span key={item}>{item}</span>)}</div><div className="info-callout"><ShieldCheck size={17} /><p>Library options are suggestions only. Diagnoses, medicines, strengths, and doses remain blank until the doctor explicitly selects them during a consultation.</p></div></section>;
+  return (
+    <section className="settings-section">
+      <div className="settings-title">
+        <h2>Clinical formulary & library</h2>
+        <p>Custom medicines and options are saved securely in local encrypted storage and synced.</p>
+      </div>
+      <div className="library-tabs" role="tablist">
+        {clinicalLibraryCategories.map((item) => (
+          <button
+            key={item}
+            role="tab"
+            aria-selected={category === item}
+            className={category === item ? "active" : ""}
+            onClick={() => setCategory(item)}
+          >
+            {item}
+            <span>{library[item].length}</span>
+          </button>
+        ))}
+      </div>
+      {category === "Medicines" ? (
+        <div className="medicine-library-form">
+          <div className="library-step">
+            <span>1</span>
+            <Field label="Formulation" required>
+              <SelectInput
+                id="library-formulation-select"
+                value={medicineFormulation}
+                onChange={(event) => setMedicineFormulation(event.target.value)}
+              >
+                <option value="">Select formulation</option>
+                {library.Formulations.map((item) => (
+                  <option key={item}>{item}</option>
+                ))}
+              </SelectInput>
+            </Field>
+          </div>
+          <div className={cn("library-step", !medicineFormulation && "disabled")}>
+            <span>2</span>
+            <Field label="Medicine brand / name" required>
+              <TextInput
+                value={medicineName}
+                onChange={(event) => setMedicineName(event.target.value)}
+                disabled={!medicineFormulation}
+                placeholder="e.g. Augmentin"
+              />
+            </Field>
+          </div>
+          <div className={cn("library-step", !medicineName.trim() && "disabled")}>
+            <span>3</span>
+            <Field label="Strength" required>
+              <SelectInput
+                id="library-strength-select"
+                value={medicineStrength}
+                onChange={(event) => setMedicineStrength(event.target.value)}
+                disabled={!medicineName.trim()}
+              >
+                <option value="">Select strength</option>
+                {library.Strengths.map((item) => (
+                  <option key={item}>{item}</option>
+                ))}
+              </SelectInput>
+            </Field>
+          </div>
+          <div className={cn("library-step", !medicineName.trim() && "disabled")}>
+            <span>4</span>
+            <Field label="Active ingredient (Generic)">
+              <TextInput
+                value={activeIngredient}
+                onChange={(event) => setActiveIngredient(event.target.value)}
+                disabled={!medicineName.trim()}
+                placeholder="e.g. Amoxicillin + Clavulanate"
+              />
+            </Field>
+          </div>
+          <div className="library-medicine-action">
+            <Button
+              icon={Plus}
+              onClick={addMedicine}
+              disabled={!medicineName.trim() || !medicineFormulation || !medicineStrength}
+            >
+              Add to catalogue
+            </Button>
+          </div>
+        </div>
+      ) : (
+        <div className="library-add">
+          <TextInput
+            value={newItem}
+            onChange={(event) => setNewItem(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.preventDefault();
+                addItem();
+              }
+            }}
+            placeholder={`Add custom ${category.toLowerCase().replace(/s$/, "")}`}
+          />
+          <Button icon={Plus} onClick={addItem} disabled={!newItem.trim()}>
+            Add option
+          </Button>
+        </div>
+      )}
+      <div className="library-list">
+        {category === "Medicines"
+          ? library.MedicineDefinitions.map((item) => (
+              <span key={`${item.name}-${item.formulation}-${item.strength}`}>
+                <strong>{item.name}</strong>
+                <small>
+                  {item.formulation} · {item.strength}
+                  {item.activeIngredient ? ` · (${item.activeIngredient})` : ""}
+                </small>
+              </span>
+            ))
+          : library[category].map((item) => <span key={item}>{item}</span>)}
+      </div>
+      <div className="info-callout">
+        <ShieldCheck size={17} />
+        <p>
+          Formulary entries assist prescription auto-completion. Prescriptions preserve historical snapshots
+          even if catalog entries are modified later.
+        </p>
+      </div>
+    </section>
+  );
 }
 
 function AppearanceSettings({ darkMode, onDarkModeChange }: { darkMode: boolean; onDarkModeChange: (enabled: boolean) => void }) {
@@ -2179,8 +3184,10 @@ export default function App() {
   const [billData, setBillData] = useState<BillData>({
     invoiceNumber: "INV-2025-1048",
     date: "2025-07-01",
+    status: "DRAFT",
     paymentStatus: "Unpaid",
     discount: 0,
+    taxRatePercent: 0,
     items: [{ id: 1, description: "Consultation fee", quantity: 1, rate: 800 }],
   });
   const nextPatientId = `PC-${Math.max(...patientRecords.map((patient) => Number(patient.id.replace(/\D/g, "")) || 0), 1048) + 1}`;
@@ -2383,13 +3390,52 @@ export default function App() {
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
 
-  const startBill = (patient: Patient) => {
+  const startBill = (patient: Patient, existingInvoice?: LocalInvoiceRecord) => {
     setSelectedPatient(patient);
+    if (existingInvoice) {
+      let parsedItems: BillItem[] = [];
+      try {
+        const rawItems = JSON.parse(existingInvoice.items_json);
+        if (Array.isArray(rawItems)) {
+          parsedItems = rawItems.map((it: any, idx: number) => ({
+            id: idx + 1,
+            description: it.description || "",
+            quantity: Number(it.quantity) || 1,
+            rate: Math.round(((Number(it.unit_price_paise) || 0) / 100) * 100) / 100,
+          }));
+        }
+      } catch {
+        parsedItems = [{ id: 1, description: "Consultation fee", quantity: 1, rate: 800 }];
+      }
+      setBillData({
+        id: existingInvoice.id,
+        invoiceNumber: existingInvoice.invoice_number,
+        date: existingInvoice.created_at ? existingInvoice.created_at.slice(0, 10) : new Date().toISOString().slice(0, 10),
+        status: existingInvoice.status as "DRAFT" | "FINALIZED" | "CANCELLED",
+        paymentStatus: existingInvoice.payment_status === "PAID" ? "Paid" : "Unpaid",
+        discount: Math.round(((Number(existingInvoice.discount_paise) || 0) / 100) * 100) / 100,
+        taxRatePercent: Number(existingInvoice.tax_rate_percent) || 0,
+        notes: existingInvoice.notes || "",
+        items: parsedItems.length > 0 ? parsedItems : [{ id: 1, description: "Consultation fee", quantity: 1, rate: 800 }],
+      });
+      if (existingInvoice.status === "FINALIZED") {
+        setBillPreviewReturnPage("patient-profile");
+        go("bill-preview");
+      } else {
+        go("bill-form");
+      }
+      return;
+    }
+
+    const currentYear = new Date().getFullYear();
+    const patientNum = patient.id.replace(/\D/g, "") || "1001";
     setBillData({
-      invoiceNumber: `INV-2025-${patient.id.replace(/\D/g, "")}`,
-      date: "2025-07-01",
+      invoiceNumber: `INV-${currentYear}-${patientNum}`,
+      date: new Date().toISOString().slice(0, 10),
+      status: "DRAFT",
       paymentStatus: "Unpaid",
       discount: 0,
+      taxRatePercent: 0,
       items: [{ id: Date.now(), description: "Consultation fee", quantity: 1, rate: 800 }],
     });
     go("bill-form");
@@ -2528,11 +3574,11 @@ export default function App() {
   if (page === "dashboard") content = <Dashboard go={go} patients={patientRecords} onOpenPatient={openPatient} />;
   else if (page === "patients") content = <PatientsPage go={go} patients={patientRecords} onOpenPatient={openPatient} onStartConsultation={startConsultation} onCreateBill={startBill} onEditPatient={editPatient} onDeletePatient={deletePatient} />;
   else if (page === "patient-form") content = <PatientForm go={go} onSave={savePatient} onReviewPatient={openPatient} patient={editingPatient} patients={patientRecords} nextPatientId={nextPatientId} />;
-  else if (page === "patient-profile") content = <PatientProfile go={go} patient={selectedPatient} saveFeedback={patientSaveFeedback} onDeletePatient={deletePatient} onOpenConflictResolution={handleOpenConflicts} />;
+  else if (page === "patient-profile") content = <PatientProfile go={go} patient={selectedPatient} saveFeedback={patientSaveFeedback} onDeletePatient={deletePatient} onOpenConflictResolution={handleOpenConflicts} desktopSession={desktopSession} onStartBill={startBill} />;
   else if (page === "consultation") content = <Consultation go={go} patient={selectedPatient} clinicalLibrary={clinicalLibrary} vitals={vitals} onVitalsChange={updateVital} data={consultationData} onDataChange={setConsultationData} desktopSession={desktopSession} />;
   else if (page === "preview") content = <PrescriptionPreview go={go} patient={selectedPatient} vitals={vitals} data={consultationData} bannerVisible={prescriptionBannerVisible} bannerImage={prescriptionBannerImage} signatureImage={doctorSignatureImage} showClinicLogo={showClinicLogo} showClinicEmail={showClinicEmail} showAllergyWarning={showAllergyWarning} returnPage={prescriptionPreviewReturnPage} />;
-  else if (page === "bill-form") content = <BillForm go={go} patient={selectedPatient} bill={billData} onChange={setBillData} />;
-  else if (page === "bill-preview") content = <BillPreview go={go} patient={selectedPatient} bill={billData} bannerImage={prescriptionBannerImage} signatureImage={doctorSignatureImage} layout={billLayout} returnPage={billPreviewReturnPage} />;
+  else if (page === "bill-form") content = <BillForm go={go} patient={selectedPatient} bill={billData} onChange={setBillData} desktopSession={desktopSession} onFinalized={() => { setBillPreviewReturnPage("patient-profile"); go("bill-preview"); }} />;
+  else if (page === "bill-preview") content = <BillPreview go={go} patient={selectedPatient} bill={billData} bannerImage={prescriptionBannerImage} signatureImage={doctorSignatureImage} layout={billLayout} returnPage={billPreviewReturnPage} desktopSession={desktopSession} />;
   else content = <SettingsPage key={settingsKey} go={go} logout={logout} darkMode={darkMode} onDarkModeChange={setDarkMode} clinicalLibrary={clinicalLibrary} onAddLibraryItem={addLibraryItem} onAddMedicine={addMedicineDefinition} bannerVisible={prescriptionBannerVisible} onBannerVisibleChange={setPrescriptionBannerVisible} bannerImage={prescriptionBannerImage} onBannerImageChange={setPrescriptionBannerImage} signatureImage={doctorSignatureImage} onSignatureImageChange={setDoctorSignatureImage} showClinicLogo={showClinicLogo} onShowClinicLogoChange={setShowClinicLogo} showClinicEmail={showClinicEmail} onShowClinicEmailChange={setShowClinicEmail} showAllergyWarning={showAllergyWarning} onShowAllergyWarningChange={setShowAllergyWarning} billLayout={billLayout} onBillLayoutChange={setBillLayout} initialTab={settingsInitialTab} desktopSession={desktopSession} onOpenConflictModal={() => handleOpenConflicts()} />;
 
   return (

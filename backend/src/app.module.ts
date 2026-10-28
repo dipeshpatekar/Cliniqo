@@ -8,6 +8,8 @@ import { PatientModule } from './patient/patient.module.js';
 import { ConsultationModule } from './consultation/consultation.module.js';
 import { PrescriptionModule } from './prescription/prescription.module.js';
 import { SyncModule } from './sync/sync.module.js';
+import { FormularyModule } from './formulary/formulary.module.js';
+import { BillingModule } from './billing/billing.module.js';
 
 @Module({
   imports: [
@@ -20,6 +22,8 @@ import { SyncModule } from './sync/sync.module.js';
     ConsultationModule,
     PrescriptionModule,
     SyncModule,
+    FormularyModule,
+    BillingModule,
   ],
 })
 export class AppModule {}

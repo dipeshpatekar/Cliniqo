@@ -369,3 +369,146 @@ export async function resolveSyncConflict(
     resolutionPayload: resolutionPayload ?? null,
   })
 }
+
+export interface LocalInvoiceItem {
+  name: string
+  quantity: number
+  unit_price_paise: number
+  line_total_paise: number
+}
+
+export interface SaveInvoiceArgs {
+  id?: string | null
+  clinic_id: string
+  patient_id: string
+  consultation_id?: string | null
+  invoice_number: string
+  subtotal_paise: number
+  discount_paise: number
+  tax_rate_percent: number
+  tax_paise: number
+  total_paise: number
+  items: LocalInvoiceItem[]
+  notes?: string | null
+  payment_notes?: string | null
+}
+
+export interface LocalInvoiceRecord {
+  id: string
+  server_id: string | null
+  clinic_id: string
+  patient_id: string
+  consultation_id: string | null
+  invoice_number: string
+  status: "DRAFT" | "FINALIZED" | "CANCELLED" | string
+  payment_status: "UNPAID" | "PAID" | string
+  subtotal_paise: number
+  discount_paise: number
+  tax_rate_percent: number
+  tax_paise: number
+  total_paise: number
+  items: LocalInvoiceItem[]
+  notes: string | null
+  payment_notes: string | null
+  sync_status: "PENDING" | "SYNCED" | "CONFLICT" | string
+  server_version: number
+  local_version: number
+  created_at: string
+  updated_at: string
+}
+
+export interface LocalFormularyItemRecord {
+  id: string
+  server_id: string | null
+  clinic_id: string
+  name: string
+  formulation: string
+  strength: string | null
+  active_ingredient: string | null
+  default_dosage: string | null
+  default_route: string | null
+  default_frequency: string | null
+  default_duration: string | null
+  default_instructions: string | null
+  is_active: boolean
+  sync_status: string
+  updated_at: string
+}
+
+export interface SaveFormularyArgs {
+  id?: string | null
+  clinic_id: string
+  name: string
+  formulation: string
+  strength?: string | null
+  active_ingredient?: string | null
+  default_dosage?: string | null
+  default_route?: string | null
+  default_frequency?: string | null
+  default_duration?: string | null
+  default_instructions?: string | null
+}
+
+export async function saveLocalInvoice(
+  args: SaveInvoiceArgs,
+): Promise<string | null> {
+  return invokeTauri<string>("save_local_invoice", { args })
+}
+
+export async function getLocalInvoices(
+  clinicId: string,
+  patientId?: string | null,
+): Promise<LocalInvoiceRecord[]> {
+  const result = await invokeTauri<LocalInvoiceRecord[]>("get_local_invoices", {
+    clinicId,
+    patientId: patientId ?? null,
+  })
+  return result ?? []
+}
+
+export async function getLocalInvoiceById(
+  clinicId: string,
+  invoiceId: string,
+): Promise<LocalInvoiceRecord | null> {
+  return invokeTauri<LocalInvoiceRecord | null>("get_local_invoice_by_id", {
+    clinicId,
+    invoiceId,
+  })
+}
+
+export async function finalizeLocalInvoice(
+  clinicId: string,
+  invoiceId: string,
+): Promise<LocalInvoiceRecord | null> {
+  return invokeTauri<LocalInvoiceRecord>("finalize_local_invoice", {
+    clinicId,
+    invoiceId,
+  })
+}
+
+export async function saveLocalFormularyItem(
+  args: SaveFormularyArgs,
+): Promise<string | null> {
+  return invokeTauri<string>("save_local_formulary_item", { args })
+}
+
+export async function getLocalFormulary(
+  clinicId: string,
+): Promise<LocalFormularyItemRecord[]> {
+  const result = await invokeTauri<LocalFormularyItemRecord[]>(
+    "get_local_formulary",
+    { clinicId },
+  )
+  return result ?? []
+}
+
+export async function deleteLocalFormularyItem(
+  clinicId: string,
+  id: string,
+): Promise<boolean> {
+  const result = await invokeTauri<void>("delete_local_formulary_item", {
+    clinicId,
+    id,
+  })
+  return result !== null
+}

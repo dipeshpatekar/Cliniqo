@@ -8,8 +8,8 @@ use crate::crypto::key_manager::KeyManager;
 use crate::db::DatabaseManager;
 use crate::db::operations::DbOperations;
 use crate::db::schema::{
-    ConsultationRecord, PatientRecord, PrescriptionRecord, SyncConflictRecord, SyncOutboxSummary,
-    SyncStateRecord,
+    ConsultationRecord, FormularyRecord, InvoiceRecord, PatientRecord, PrescriptionRecord,
+    SaveFormularyArgs, SaveInvoiceArgs, SyncConflictRecord, SyncOutboxSummary, SyncStateRecord,
 };
 use crate::sync::{SyncStatusInfo, SyncWorkerHandle};
 
@@ -792,6 +792,122 @@ pub fn resolve_sync_conflict(
         resolution_payload.as_deref(),
     )
     .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn save_local_invoice(
+    state: State<'_, AppState>,
+    args: SaveInvoiceArgs,
+) -> Result<String, String> {
+    let session = state
+        .session_mgr
+        .validate_session(Some(&args.clinic_id))
+        .map_err(|e| e.to_string())?;
+
+    let mut conn = state.db.get_connection();
+    let dek = state.db.get_dek();
+
+    DbOperations::save_invoice(&mut conn, dek, &session.doctor_id, args)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn get_local_invoices(
+    state: State<'_, AppState>,
+    clinic_id: String,
+    patient_id: Option<String>,
+) -> Result<Vec<InvoiceRecord>, String> {
+    let _session = state
+        .session_mgr
+        .validate_session(Some(&clinic_id))
+        .map_err(|e| e.to_string())?;
+
+    let conn = state.db.get_connection();
+    let dek = state.db.get_dek();
+
+    DbOperations::get_invoices(&conn, dek, &clinic_id, patient_id.as_deref())
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn get_local_invoice_by_id(
+    state: State<'_, AppState>,
+    clinic_id: String,
+    invoice_id: String,
+) -> Result<Option<InvoiceRecord>, String> {
+    let _session = state
+        .session_mgr
+        .validate_session(Some(&clinic_id))
+        .map_err(|e| e.to_string())?;
+
+    let conn = state.db.get_connection();
+    let dek = state.db.get_dek();
+
+    DbOperations::get_invoice_by_id(&conn, dek, &clinic_id, &invoice_id)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn finalize_local_invoice(
+    state: State<'_, AppState>,
+    clinic_id: String,
+    invoice_id: String,
+) -> Result<InvoiceRecord, String> {
+    let session = state
+        .session_mgr
+        .validate_session(Some(&clinic_id))
+        .map_err(|e| e.to_string())?;
+
+    let mut conn = state.db.get_connection();
+    let dek = state.db.get_dek();
+
+    DbOperations::finalize_invoice(&mut conn, dek, &clinic_id, &session.doctor_id, &invoice_id)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn save_local_formulary_item(
+    state: State<'_, AppState>,
+    args: SaveFormularyArgs,
+) -> Result<String, String> {
+    let _session = state
+        .session_mgr
+        .validate_session(Some(&args.clinic_id))
+        .map_err(|e| e.to_string())?;
+
+    let clinic_id = args.clinic_id.clone();
+    let mut conn = state.db.get_connection();
+    DbOperations::save_formulary_item(&mut conn, &clinic_id, args)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn get_local_formulary(
+    state: State<'_, AppState>,
+    clinic_id: String,
+) -> Result<Vec<FormularyRecord>, String> {
+    let _session = state
+        .session_mgr
+        .validate_session(Some(&clinic_id))
+        .map_err(|e| e.to_string())?;
+
+    let conn = state.db.get_connection();
+    DbOperations::get_formulary_items(&conn, &clinic_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn delete_local_formulary_item(
+    state: State<'_, AppState>,
+    clinic_id: String,
+    id: String,
+) -> Result<(), String> {
+    let _session = state
+        .session_mgr
+        .validate_session(Some(&clinic_id))
+        .map_err(|e| e.to_string())?;
+
+    let mut conn = state.db.get_connection();
+    DbOperations::delete_formulary_item(&mut conn, &clinic_id, &id).map_err(|e| e.to_string())
 }
 
 #[cfg(test)]

@@ -5,9 +5,10 @@ use thiserror::Error;
 use crate::crypto::{decrypt_payload, encrypt_payload, CryptoError};
 use crate::crypto::key_manager::DatabaseEncryptionKey;
 use super::schema::{
-    ClinicalData, ConflictStatus, ConsultationRecord, DecryptedOutboxItem, PatientDemographics,
-    PatientRecord, PrescriptionRecord, SyncConflictRecord, SyncFeedChangeItem, SyncOutboxSummary,
-    SyncStateRecord,
+    ClinicalData, ConflictStatus, ConsultationRecord, DecryptedOutboxItem, EncryptedBillingData,
+    FormularyRecord, InvoiceItem, InvoiceRecord, PatientDemographics, PatientRecord,
+    PrescriptionRecord, SaveFormularyArgs, SaveInvoiceArgs, SyncConflictRecord, SyncFeedChangeItem,
+    SyncOutboxSummary, SyncStateRecord,
 };
 
 #[derive(Error, Debug)]
@@ -27,6 +28,30 @@ pub enum DatabaseOpError {
     #[error("Conflict resolution error: {0}")]
     ConflictResolution(String),
 }
+
+pub type RawInvoiceRow = (
+    String,
+    Option<String>,
+    String,
+    String,
+    Option<String>,
+    String,
+    String,
+    String,
+    String,
+    i64,
+    i64,
+    f64,
+    i64,
+    i64,
+    Vec<u8>,
+    Vec<u8>,
+    String,
+    i32,
+    i32,
+    String,
+    String,
+);
 
 pub struct DbOperations;
 
@@ -1721,6 +1746,19 @@ impl DbOperations {
                             params![server_id, s_version, entity_id],
                         )?;
                     }
+                    "INVOICE" => {
+                        tx.execute(
+                            r#"
+                            UPDATE local_invoices_v2
+                            SET sync_status = 'SYNCED',
+                                server_id = COALESCE(?1, server_id),
+                                server_version = ?2,
+                                updated_at = CURRENT_TIMESTAMP
+                            WHERE id = ?3
+                            "#,
+                            params![server_id, s_version, entity_id],
+                        )?;
+                    }
                     _ => {}
                 }
             }
@@ -1751,6 +1789,12 @@ impl DbOperations {
                     "PRESCRIPTION" | "PRESCRIPTION_REVISION" => {
                         tx.execute(
                             "UPDATE local_prescriptions SET sync_status = 'CONFLICT', updated_at = CURRENT_TIMESTAMP WHERE id = ?1",
+                            params![entity_id],
+                        )?;
+                    }
+                    "INVOICE" => {
+                        tx.execute(
+                            "UPDATE local_invoices_v2 SET sync_status = 'CONFLICT', updated_at = CURRENT_TIMESTAMP WHERE id = ?1",
                             params![entity_id],
                         )?;
                     }
@@ -1811,6 +1855,13 @@ impl DbOperations {
                     "#,
                     params![error, outbox_id],
                 )?;
+
+                if entity_type == "INVOICE" {
+                    let _ = tx.execute(
+                        "UPDATE local_invoices_v2 SET sync_status = 'FAILED', updated_at = CURRENT_TIMESTAMP WHERE id = ?1",
+                        params![entity_id],
+                    );
+                }
             }
         }
 
@@ -1927,6 +1978,25 @@ impl DbOperations {
                             "{}".to_string()
                         }
                     }
+                    "INVOICE" => {
+                        let mut inv_stmt = tx.prepare(
+                            "SELECT encrypted_billing_data, nonce FROM local_invoices_v2 WHERE clinic_id = ?1 AND (id = ?2 OR server_id = ?3)"
+                        )?;
+                        let res: Option<(Vec<u8>, Vec<u8>)> = inv_stmt
+                            .query_map(
+                                params![clinic_id, client_ent_id, item.entity_id],
+                                |row| Ok((row.get(0)?, row.get(1)?)),
+                            )?
+                            .filter_map(Result::ok)
+                            .next();
+                        if let Some((enc, nonce)) = res {
+                            decrypt_payload(&dek.key, &enc, &nonce)
+                                .map(|b| String::from_utf8_lossy(&b).to_string())
+                                .unwrap_or_else(|_| "{}".to_string())
+                        } else {
+                            "{}".to_string()
+                        }
+                    }
                     _ => "{}".to_string(),
                 };
 
@@ -1972,6 +2042,12 @@ impl DbOperations {
                     "PRESCRIPTION" | "PRESCRIPTION_REVISION" => {
                         tx.execute(
                             "UPDATE local_prescriptions SET sync_status = 'CONFLICT', updated_at = CURRENT_TIMESTAMP WHERE clinic_id = ?1 AND (id = ?2 OR server_id = ?3)",
+                            params![clinic_id, client_ent_id, item.entity_id],
+                        )?;
+                    }
+                    "INVOICE" => {
+                        tx.execute(
+                            "UPDATE local_invoices_v2 SET sync_status = 'CONFLICT', updated_at = CURRENT_TIMESTAMP WHERE clinic_id = ?1 AND (id = ?2 OR server_id = ?3)",
                             params![clinic_id, client_ent_id, item.entity_id],
                         )?;
                     }
@@ -2178,6 +2254,97 @@ impl DbOperations {
                         )?;
                     }
                 }
+                "INVOICE" => {
+                    let invoice_number = item.payload.get("invoiceNumber").and_then(|v| v.as_str()).unwrap_or("INV-UNKNOWN");
+                    let invoice_date = item.payload.get("invoiceDate").and_then(|v| v.as_str()).unwrap_or("2026-01-01");
+                    let status = item.payload.get("status").and_then(|v| v.as_str()).unwrap_or("DRAFT");
+                    let payment_status = item.payload.get("paymentStatus").and_then(|v| v.as_str()).unwrap_or("UNPAID");
+                    let subtotal_paise = item.payload.get("subtotalPaise").and_then(|v| v.as_i64()).unwrap_or(0);
+                    let discount_paise = item.payload.get("discountPaise").and_then(|v| v.as_i64()).unwrap_or(0);
+                    let tax_rate_percent = item.payload.get("taxRatePercent").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                    let tax_paise = item.payload.get("taxPaise").and_then(|v| v.as_i64()).unwrap_or(0);
+                    let total_paise = item.payload.get("totalPaise").and_then(|v| v.as_i64()).unwrap_or(0);
+                    let patient_id = item.payload.get("patientId").and_then(|v| v.as_str()).unwrap_or("");
+                    let consultation_id = item.payload.get("consultationId").and_then(|v| v.as_str());
+                    let notes = item.payload.get("notes").and_then(|v| v.as_str()).map(|s| s.to_string());
+
+                    let items_raw = item.payload.get("items").cloned().unwrap_or(serde_json::Value::Array(Vec::new()));
+                    let items: Vec<InvoiceItem> = serde_json::from_value(items_raw).unwrap_or_default();
+                    let billing_data = EncryptedBillingData {
+                        items,
+                        notes,
+                    };
+                    let billing_bytes = serde_json::to_vec(&billing_data)?;
+                    let (enc_billing, nonce_billing) = encrypt_payload(&dek.key, &billing_bytes)?;
+
+                    let existing_id: Option<String> = {
+                        let mut check_stmt = tx.prepare(
+                            "SELECT id FROM local_invoices_v2 WHERE clinic_id = ?1 AND (server_id = ?2 OR (?3 != '' AND id = ?3)) LIMIT 1"
+                        )?;
+                        check_stmt
+                            .query_map(
+                                params![clinic_id, item.entity_id, client_ent_id],
+                                |row| row.get(0),
+                            )?
+                            .filter_map(Result::ok)
+                            .next()
+                    };
+
+                    if let Some(id) = existing_id {
+                        tx.execute(
+                            r#"
+                            UPDATE local_invoices_v2
+                            SET server_id = ?1,
+                                invoice_number = ?2,
+                                invoice_date = ?3,
+                                status = ?4,
+                                payment_status = ?5,
+                                subtotal_paise = ?6,
+                                discount_paise = ?7,
+                                tax_rate_percent = ?8,
+                                tax_paise = ?9,
+                                total_paise = ?10,
+                                encrypted_billing_data = ?11,
+                                nonce = ?12,
+                                sync_status = 'SYNCED',
+                                server_version = ?13,
+                                local_version = ?13,
+                                updated_at = CURRENT_TIMESTAMP
+                            WHERE id = ?14
+                            "#,
+                            params![
+                                item.entity_id, invoice_number, invoice_date, status, payment_status,
+                                subtotal_paise, discount_paise, tax_rate_percent, tax_paise, total_paise,
+                                enc_billing, nonce_billing, item.version, id
+                            ],
+                        )?;
+                    } else {
+                        let local_id = item.client_entity_id.clone().unwrap_or_else(|| Uuid::new_v4().to_string());
+                        tx.execute(
+                            r#"
+                            INSERT INTO local_invoices_v2 (
+                                id, server_id, clinic_id, patient_id, consultation_id,
+                                invoice_number, invoice_date, status, payment_status,
+                                subtotal_paise, discount_paise, tax_rate_percent, tax_paise, total_paise,
+                                encrypted_billing_data, nonce, sync_status, server_version, local_version,
+                                created_at, updated_at
+                            ) VALUES (
+                                ?1, ?2, ?3, ?4, ?5,
+                                ?6, ?7, ?8, ?9,
+                                ?10, ?11, ?12, ?13, ?14,
+                                ?15, ?16, 'SYNCED', ?17, ?17,
+                                CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                            )
+                            "#,
+                            params![
+                                local_id, item.entity_id, clinic_id, patient_id, consultation_id,
+                                invoice_number, invoice_date, status, payment_status,
+                                subtotal_paise, discount_paise, tax_rate_percent, tax_paise, total_paise,
+                                enc_billing, nonce_billing, item.version
+                            ],
+                        )?;
+                    }
+                }
                 _ => {}
             }
         }
@@ -2204,6 +2371,626 @@ impl DbOperations {
 
         tx.commit()?;
         Ok(final_seq)
+    }
+
+    /// Saves an invoice draft or update with encrypted billing data and outbox synchronization.
+    /// Performs strict integer minor-unit calculations and clamps discount to prevent negative totals.
+    pub fn save_invoice(
+        conn: &mut Connection,
+        dek: &DatabaseEncryptionKey,
+        doctor_id: &str,
+        args: SaveInvoiceArgs,
+    ) -> Result<String, DatabaseOpError> {
+        if args.items.is_empty() {
+            return Err(DatabaseOpError::ConflictResolution(
+                "At least one invoice item is required".to_string(),
+            ));
+        }
+
+        let mut validated_items = Vec::new();
+        let mut subtotal_paise = 0i64;
+
+        for it in args.items {
+            if it.quantity < 1 {
+                return Err(DatabaseOpError::ConflictResolution(format!(
+                    "Item '{}': quantity must be >= 1",
+                    it.description
+                )));
+            }
+            if it.unit_price_paise < 0 {
+                return Err(DatabaseOpError::ConflictResolution(format!(
+                    "Item '{}': unit price cannot be negative",
+                    it.description
+                )));
+            }
+            let item_total = it.quantity * it.unit_price_paise;
+            subtotal_paise += item_total;
+            validated_items.push(InvoiceItem {
+                description: it.description.trim().to_string(),
+                quantity: it.quantity,
+                unit_price_paise: it.unit_price_paise,
+                total_paise: item_total,
+            });
+        }
+
+        let requested_discount = args.discount_paise.unwrap_or(0);
+        if requested_discount < 0 {
+            return Err(DatabaseOpError::ConflictResolution(
+                "Discount cannot be negative".to_string(),
+            ));
+        }
+        let discount_paise = requested_discount.min(subtotal_paise);
+        let taxable_amount = subtotal_paise - discount_paise;
+
+        let tax_rate = args.tax_rate_percent.unwrap_or(0.0);
+        if tax_rate < 0.0 || tax_rate > 100.0 {
+            return Err(DatabaseOpError::ConflictResolution(
+                "Tax rate must be between 0 and 100".to_string(),
+            ));
+        }
+
+        let tax_paise = ((taxable_amount as f64) * (tax_rate / 100.0)).round() as i64;
+        let total_paise = taxable_amount + tax_paise;
+
+        if total_paise < 0 {
+            return Err(DatabaseOpError::ConflictResolution(
+                "Total amount cannot be negative".to_string(),
+            ));
+        }
+
+        let invoice_id = args.id.unwrap_or_else(|| Uuid::new_v4().to_string());
+        let status = args.status.unwrap_or_else(|| "DRAFT".to_string());
+        let payment_status = args.payment_status.unwrap_or_else(|| "UNPAID".to_string());
+
+        let billing_data = EncryptedBillingData {
+            items: validated_items.clone(),
+            notes: args.notes.clone(),
+        };
+        let billing_bytes = serde_json::to_vec(&billing_data)?;
+        let (enc_billing, nonce_billing) = encrypt_payload(&dek.key, &billing_bytes)?;
+
+        let tx = conn.transaction()?;
+
+        let existing_status: Option<String> = tx
+            .query_row(
+                "SELECT status FROM local_invoices_v2 WHERE clinic_id = ?1 AND id = ?2",
+                params![args.clinic_id, invoice_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+
+        let (is_new, new_version) = match existing_status {
+            Some(curr_status) => {
+                if curr_status == "FINALIZED" || curr_status == "CANCELLED" {
+                    return Err(DatabaseOpError::ConflictResolution(format!(
+                        "Cannot edit invoice in {} status",
+                        curr_status
+                    )));
+                }
+                let curr_version: i32 = tx.query_row(
+                    "SELECT local_version FROM local_invoices_v2 WHERE clinic_id = ?1 AND id = ?2",
+                    params![args.clinic_id, invoice_id],
+                    |row| row.get(0),
+                )?;
+                (false, curr_version + 1)
+            }
+            None => (true, 1),
+        };
+
+        if is_new {
+            tx.execute(
+                r#"
+                INSERT INTO local_invoices_v2 (
+                    id, server_id, clinic_id, patient_id, consultation_id,
+                    invoice_number, invoice_date, status, payment_status,
+                    subtotal_paise, discount_paise, tax_rate_percent, tax_paise, total_paise,
+                    encrypted_billing_data, nonce, sync_status, server_version, local_version,
+                    created_at, updated_at
+                ) VALUES (
+                    ?1, NULL, ?2, ?3, ?4,
+                    ?5, ?6, ?7, ?8,
+                    ?9, ?10, ?11, ?12, ?13,
+                    ?14, ?15, 'PENDING', 1, ?16,
+                    CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                )
+                "#,
+                params![
+                    invoice_id,
+                    args.clinic_id,
+                    args.patient_id,
+                    args.consultation_id,
+                    args.invoice_number,
+                    args.invoice_date,
+                    status,
+                    payment_status,
+                    subtotal_paise,
+                    discount_paise,
+                    tax_rate,
+                    tax_paise,
+                    total_paise,
+                    enc_billing,
+                    nonce_billing,
+                    new_version,
+                ],
+            )?;
+        } else {
+            tx.execute(
+                r#"
+                UPDATE local_invoices_v2 SET
+                    invoice_number = ?1,
+                    invoice_date = ?2,
+                    status = ?3,
+                    payment_status = ?4,
+                    subtotal_paise = ?5,
+                    discount_paise = ?6,
+                    tax_rate_percent = ?7,
+                    tax_paise = ?8,
+                    total_paise = ?9,
+                    encrypted_billing_data = ?10,
+                    nonce = ?11,
+                    local_version = ?12,
+                    sync_status = 'PENDING',
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE clinic_id = ?13 AND id = ?14
+                "#,
+                params![
+                    args.invoice_number,
+                    args.invoice_date,
+                    status,
+                    payment_status,
+                    subtotal_paise,
+                    discount_paise,
+                    tax_rate,
+                    tax_paise,
+                    total_paise,
+                    enc_billing,
+                    nonce_billing,
+                    new_version,
+                    args.clinic_id,
+                    invoice_id,
+                ],
+            )?;
+        }
+
+        // Outbox entry (encrypted payload)
+        let outbox_payload = json!({
+            "patientId": args.patient_id,
+            "consultationId": args.consultation_id,
+            "invoiceNumber": args.invoice_number,
+            "invoiceDate": args.invoice_date,
+            "status": status,
+            "paymentStatus": payment_status,
+            "subtotalPaise": subtotal_paise,
+            "discountPaise": discount_paise,
+            "taxRatePercent": tax_rate,
+            "taxPaise": tax_paise,
+            "totalPaise": total_paise,
+            "items": validated_items,
+            "notes": args.notes,
+            "doctorId": doctor_id,
+            "version": new_version,
+        });
+        let outbox_bytes = serde_json::to_vec(&outbox_payload)?;
+        let (enc_outbox, nonce_outbox) = encrypt_payload(&dek.key, &outbox_bytes)?;
+
+        let outbox_id = Uuid::new_v4().to_string();
+        let idempotency_key = format!("invoice-mutation-{}-v{}", invoice_id, new_version);
+        let action = if is_new { "CREATE" } else { "UPDATE" };
+
+        tx.execute(
+            r#"
+            INSERT INTO local_sync_outbox (
+                id, clinic_id, entity_type, entity_id, action,
+                idempotency_key, encrypted_payload, nonce, sync_status
+            ) VALUES (?1, ?2, 'INVOICE', ?3, ?4, ?5, ?6, ?7, 'PENDING')
+            "#,
+            params![
+                outbox_id,
+                args.clinic_id,
+                invoice_id,
+                action,
+                idempotency_key,
+                enc_outbox,
+                nonce_outbox,
+            ],
+        )?;
+
+        tx.commit()?;
+        Ok(invoice_id)
+    }
+
+    /// Retrieves invoices for a clinic with decrypted billing details.
+    pub fn get_invoices(
+        conn: &Connection,
+        dek: &DatabaseEncryptionKey,
+        clinic_id: &str,
+        patient_id: Option<&str>,
+    ) -> Result<Vec<InvoiceRecord>, DatabaseOpError> {
+        let mut sql = String::from(
+            r#"
+            SELECT id, server_id, clinic_id, patient_id, consultation_id,
+                   invoice_number, invoice_date, status, payment_status,
+                   subtotal_paise, discount_paise, tax_rate_percent, tax_paise, total_paise,
+                   encrypted_billing_data, nonce, sync_status, server_version, local_version,
+                   created_at, updated_at
+            FROM local_invoices_v2
+            WHERE clinic_id = ?1
+            "#,
+        );
+
+        if patient_id.is_some() {
+            sql.push_str(" AND patient_id = ?2 ORDER BY created_at DESC");
+        } else {
+            sql.push_str(" ORDER BY created_at DESC");
+        }
+
+        let mut stmt = conn.prepare(&sql)?;
+        let raw_rows: Vec<RawInvoiceRow> = if let Some(pid) = patient_id {
+            stmt.query_map(params![clinic_id, pid], Self::map_invoice_row)?
+                .collect::<rusqlite::Result<Vec<_>>>()?
+        } else {
+            stmt.query_map(params![clinic_id], Self::map_invoice_row)?
+                .collect::<rusqlite::Result<Vec<_>>>()?
+        };
+
+        let mut invoices = Vec::new();
+        for r in raw_rows {
+            let (
+                id, server_id, c_id, p_id, consult_id,
+                inv_num, inv_date, status, payment_status,
+                subtotal, discount, tax_rate, tax, total,
+                enc_data, nonce, sync_status, s_ver, l_ver,
+                created_at, updated_at,
+            ) = r;
+
+            let billing_data: EncryptedBillingData = match decrypt_payload(&dek.key, &enc_data, &nonce) {
+                Ok(plain) => serde_json::from_slice(&plain).unwrap_or(EncryptedBillingData {
+                    items: Vec::new(),
+                    notes: None,
+                }),
+                Err(_) => EncryptedBillingData {
+                    items: Vec::new(),
+                    notes: None,
+                },
+            };
+
+            invoices.push(InvoiceRecord {
+                id,
+                server_id,
+                clinic_id: c_id,
+                patient_id: p_id,
+                consultation_id: consult_id,
+                invoice_number: inv_num,
+                invoice_date: inv_date,
+                status,
+                payment_status,
+                items: billing_data.items,
+                subtotal_paise: subtotal,
+                discount_paise: discount,
+                tax_rate_percent: tax_rate,
+                tax_paise: tax,
+                total_paise: total,
+                notes: billing_data.notes,
+                sync_status,
+                server_version: s_ver,
+                local_version: l_ver,
+                created_at,
+                updated_at,
+            });
+        }
+
+        Ok(invoices)
+    }
+
+    /// Retrieves an invoice by ID with decrypted line items.
+    pub fn get_invoice_by_id(
+        conn: &Connection,
+        dek: &DatabaseEncryptionKey,
+        clinic_id: &str,
+        invoice_id: &str,
+    ) -> Result<Option<InvoiceRecord>, DatabaseOpError> {
+        let mut stmt = conn.prepare(
+            r#"
+            SELECT id, server_id, clinic_id, patient_id, consultation_id,
+                   invoice_number, invoice_date, status, payment_status,
+                   subtotal_paise, discount_paise, tax_rate_percent, tax_paise, total_paise,
+                   encrypted_billing_data, nonce, sync_status, server_version, local_version,
+                   created_at, updated_at
+            FROM local_invoices_v2
+            WHERE clinic_id = ?1 AND id = ?2
+            "#,
+        )?;
+
+        let row = stmt
+            .query_row(params![clinic_id, invoice_id], |r| Self::map_invoice_row(r))
+            .optional()?;
+
+        match row {
+            Some((
+                id, server_id, c_id, p_id, consult_id,
+                inv_num, inv_date, status, payment_status,
+                subtotal, discount, tax_rate, tax, total,
+                enc_data, nonce, sync_status, s_ver, l_ver,
+                created_at, updated_at,
+            )) => {
+                let billing_data: EncryptedBillingData = match decrypt_payload(&dek.key, &enc_data, &nonce) {
+                    Ok(plain) => serde_json::from_slice(&plain).unwrap_or(EncryptedBillingData {
+                        items: Vec::new(),
+                        notes: None,
+                    }),
+                    Err(_) => EncryptedBillingData {
+                        items: Vec::new(),
+                        notes: None,
+                    },
+                };
+
+                Ok(Some(InvoiceRecord {
+                    id,
+                    server_id,
+                    clinic_id: c_id,
+                    patient_id: p_id,
+                    consultation_id: consult_id,
+                    invoice_number: inv_num,
+                    invoice_date: inv_date,
+                    status,
+                    payment_status,
+                    items: billing_data.items,
+                    subtotal_paise: subtotal,
+                    discount_paise: discount,
+                    tax_rate_percent: tax_rate,
+                    tax_paise: tax,
+                    total_paise: total,
+                    notes: billing_data.notes,
+                    sync_status,
+                    server_version: s_ver,
+                    local_version: l_ver,
+                    created_at,
+                    updated_at,
+                }))
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// Transitions an invoice draft to FINALIZED and enqueues sync mutation.
+    pub fn finalize_invoice(
+        conn: &mut Connection,
+        dek: &DatabaseEncryptionKey,
+        clinic_id: &str,
+        doctor_id: &str,
+        invoice_id: &str,
+    ) -> Result<InvoiceRecord, DatabaseOpError> {
+        let tx = conn.transaction()?;
+
+        let current_status: String = tx
+            .query_row(
+                "SELECT status FROM local_invoices_v2 WHERE clinic_id = ?1 AND id = ?2",
+                params![clinic_id, invoice_id],
+                |row| row.get(0),
+            )
+            .optional()?
+            .ok_or_else(|| {
+                DatabaseOpError::ConflictResolution("Invoice not found in clinic".to_string())
+            })?;
+
+        if current_status == "CANCELLED" {
+            return Err(DatabaseOpError::ConflictResolution(
+                "Cannot finalize cancelled invoice".to_string(),
+            ));
+        }
+
+        if current_status == "DRAFT" {
+            let new_version: i32 = tx.query_row(
+                "SELECT local_version + 1 FROM local_invoices_v2 WHERE clinic_id = ?1 AND id = ?2",
+                params![clinic_id, invoice_id],
+                |row| row.get(0),
+            )?;
+
+            tx.execute(
+                "UPDATE local_invoices_v2 SET status = 'FINALIZED', local_version = ?1, sync_status = 'PENDING', updated_at = CURRENT_TIMESTAMP WHERE clinic_id = ?2 AND id = ?3",
+                params![new_version, clinic_id, invoice_id],
+            )?;
+
+            let outbox_payload = json!({
+                "invoiceId": invoice_id,
+                "status": "FINALIZED",
+                "finalizedBy": doctor_id,
+                "version": new_version,
+            });
+            let outbox_bytes = serde_json::to_vec(&outbox_payload)?;
+            let (enc_outbox, nonce_outbox) = encrypt_payload(&dek.key, &outbox_bytes)?;
+
+            let outbox_id = Uuid::new_v4().to_string();
+            let idempotency_key = format!("invoice-finalize-{}-v{}", invoice_id, new_version);
+
+            tx.execute(
+                r#"
+                INSERT INTO local_sync_outbox (
+                    id, clinic_id, entity_type, entity_id, action,
+                    idempotency_key, encrypted_payload, nonce, sync_status
+                ) VALUES (?1, ?2, 'INVOICE', ?3, 'FINALIZE', ?4, ?5, ?6, 'PENDING')
+                "#,
+                params![
+                    outbox_id,
+                    clinic_id,
+                    invoice_id,
+                    idempotency_key,
+                    enc_outbox,
+                    nonce_outbox,
+                ],
+            )?;
+        }
+
+        tx.commit()?;
+
+        Self::get_invoice_by_id(conn, dek, clinic_id, invoice_id)?
+            .ok_or_else(|| DatabaseOpError::ConflictResolution("Failed to load finalized invoice".to_string()))
+    }
+
+    /// Adds or updates an entry in the local clinical formulary catalogue.
+    pub fn save_formulary_item(
+        conn: &mut Connection,
+        clinic_id: &str,
+        args: SaveFormularyArgs,
+    ) -> Result<String, DatabaseOpError> {
+        let item_id = args.id.unwrap_or_else(|| Uuid::new_v4().to_string());
+        let exists: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM local_formulary_v2 WHERE clinic_id = ?1 AND id = ?2)",
+                params![clinic_id, item_id],
+                |row| row.get(0),
+            )
+            .unwrap_or(false);
+
+        if !exists {
+            conn.execute(
+                r#"
+                INSERT INTO local_formulary_v2 (
+                    id, server_id, clinic_id, name, active_ingredient,
+                    formulation, strength, default_dose, default_route,
+                    default_frequency, default_duration, default_instructions,
+                    is_active, created_at, updated_at
+                ) VALUES (
+                    ?1, NULL, ?2, ?3, ?4,
+                    ?5, ?6, ?7, ?8,
+                    ?9, ?10, ?11,
+                    1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                )
+                "#,
+                params![
+                    item_id,
+                    clinic_id,
+                    args.name.trim(),
+                    args.active_ingredient.as_deref().map(str::trim),
+                    args.formulation.trim(),
+                    args.strength.trim(),
+                    args.default_dose.as_deref().map(str::trim),
+                    args.default_route.as_deref().map(str::trim),
+                    args.default_frequency.as_deref().map(str::trim),
+                    args.default_duration.as_deref().map(str::trim),
+                    args.default_instructions.as_deref().map(str::trim),
+                ],
+            )?;
+        } else {
+            conn.execute(
+                r#"
+                UPDATE local_formulary_v2 SET
+                    name = ?1,
+                    active_ingredient = ?2,
+                    formulation = ?3,
+                    strength = ?4,
+                    default_dose = ?5,
+                    default_route = ?6,
+                    default_frequency = ?7,
+                    default_duration = ?8,
+                    default_instructions = ?9,
+                    is_active = 1,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE clinic_id = ?10 AND id = ?11
+                "#,
+                params![
+                    args.name.trim(),
+                    args.active_ingredient.as_deref().map(str::trim),
+                    args.formulation.trim(),
+                    args.strength.trim(),
+                    args.default_dose.as_deref().map(str::trim),
+                    args.default_route.as_deref().map(str::trim),
+                    args.default_frequency.as_deref().map(str::trim),
+                    args.default_duration.as_deref().map(str::trim),
+                    args.default_instructions.as_deref().map(str::trim),
+                    clinic_id,
+                    item_id,
+                ],
+            )?;
+        }
+
+        Ok(item_id)
+    }
+
+    /// Retrieves active formulary items for a clinic.
+    pub fn get_formulary_items(
+        conn: &Connection,
+        clinic_id: &str,
+    ) -> Result<Vec<FormularyRecord>, DatabaseOpError> {
+        let mut stmt = conn.prepare(
+            r#"
+            SELECT id, server_id, clinic_id, name, active_ingredient,
+                   formulation, strength, default_dose, default_route,
+                   default_frequency, default_duration, default_instructions,
+                   is_active, created_at, updated_at
+            FROM local_formulary_v2
+            WHERE clinic_id = ?1 AND is_active = 1
+            ORDER BY name ASC
+            "#,
+        )?;
+
+        let rows = stmt.query_map(params![clinic_id], |row| {
+            let is_active_int: i32 = row.get(12)?;
+            Ok(FormularyRecord {
+                id: row.get(0)?,
+                server_id: row.get(1)?,
+                clinic_id: row.get(2)?,
+                name: row.get(3)?,
+                active_ingredient: row.get(4)?,
+                formulation: row.get(5)?,
+                strength: row.get(6)?,
+                default_dose: row.get(7)?,
+                default_route: row.get(8)?,
+                default_frequency: row.get(9)?,
+                default_duration: row.get(10)?,
+                default_instructions: row.get(11)?,
+                is_active: is_active_int == 1,
+                created_at: row.get(13)?,
+                updated_at: row.get(14)?,
+            })
+        })?;
+
+        let mut items = Vec::new();
+        for r in rows {
+            items.push(r?);
+        }
+        Ok(items)
+    }
+
+    /// Soft-deletes a formulary entry.
+    pub fn delete_formulary_item(
+        conn: &mut Connection,
+        clinic_id: &str,
+        id: &str,
+    ) -> Result<(), DatabaseOpError> {
+        conn.execute(
+            "UPDATE local_formulary_v2 SET is_active = 0, updated_at = CURRENT_TIMESTAMP WHERE clinic_id = ?1 AND id = ?2",
+            params![clinic_id, id],
+        )?;
+        Ok(())
+    }
+
+    fn map_invoice_row(
+        row: &rusqlite::Row,
+    ) -> rusqlite::Result<RawInvoiceRow> {
+        Ok((
+            row.get(0)?,
+            row.get(1)?,
+            row.get(2)?,
+            row.get(3)?,
+            row.get(4)?,
+            row.get(5)?,
+            row.get(6)?,
+            row.get(7)?,
+            row.get(8)?,
+            row.get(9)?,
+            row.get(10)?,
+            row.get(11)?,
+            row.get(12)?,
+            row.get(13)?,
+            row.get(14)?,
+            row.get(15)?,
+            row.get(16)?,
+            row.get(17)?,
+            row.get(18)?,
+            row.get(19)?,
+            row.get(20)?,
+        ))
     }
 }
 
@@ -2619,16 +3406,16 @@ mod tests {
         )
         .unwrap();
 
-        // Simulate a database from a newer future application (e.g. version 4)
+        // Simulate a database from a newer future application (e.g. version 5)
         conn.execute(
-            "INSERT INTO schema_migrations (version, name, checksum) VALUES (4, 'future_v4', 'chk4')",
+            "INSERT INTO schema_migrations (version, name, checksum) VALUES (5, 'future_v5', 'chk5')",
             [],
         )
         .unwrap();
 
         let result = MigrationRunner::run_migrations(&mut conn, &dek);
         assert!(
-            matches!(result, Err(MigrationError::UnsupportedSchemaVersion(4))),
+            matches!(result, Err(MigrationError::UnsupportedSchemaVersion(5))),
             "Must fail closed when database schema version exceeds supported range"
         );
     }
@@ -3570,5 +4357,509 @@ mod tests {
             None,
         );
         assert!(duplicate_res.is_err(), "Duplicate resolution of resolved conflict must fail closed");
+    }
+
+    #[test]
+    fn test_save_invoice_minor_units_arithmetic_and_encryption() {
+        let (mut conn, dek) = setup_test_db();
+        let clinic_id = "clinic_billing_1";
+        let doctor_id = "doc_billing_1";
+        let patient_id = "pat_billing_1";
+
+        let args = SaveInvoiceArgs {
+            id: None,
+            clinic_id: clinic_id.to_string(),
+            patient_id: patient_id.to_string(),
+            consultation_id: Some("cons_1".to_string()),
+            invoice_number: "INV-2026-0001".to_string(),
+            invoice_date: "2026-10-28".to_string(),
+            status: Some("DRAFT".to_string()),
+            payment_status: Some("UNPAID".to_string()),
+            items: vec![
+                InvoiceItem {
+                    description: "Consultation".to_string(),
+                    quantity: 2,
+                    unit_price_paise: 80000,
+                    total_paise: 0,
+                },
+                InvoiceItem {
+                    description: "Injection Procedure".to_string(),
+                    quantity: 1,
+                    unit_price_paise: 25000,
+                    total_paise: 0,
+                },
+            ],
+            discount_paise: Some(10000),
+            tax_rate_percent: Some(18.0),
+            notes: Some("Confidential billing notes".to_string()),
+        };
+
+        let invoice_id = DbOperations::save_invoice(&mut conn, &dek, doctor_id, args).unwrap();
+
+        // 1. Verify in-database encryption (zero plaintext notes or line items)
+        let (_enc_bytes, _nonce_bytes): (Vec<u8>, Vec<u8>) = conn
+            .query_row(
+                "SELECT encrypted_billing_data, nonce FROM local_invoices_v2 WHERE id = ?1",
+                params![invoice_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+
+        let raw_table_text: String = conn
+            .query_row(
+                "SELECT quote(encrypted_billing_data) FROM local_invoices_v2 WHERE id = ?1",
+                params![invoice_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(!raw_table_text.contains("Consultation"));
+        assert!(!raw_table_text.contains("Confidential billing notes"));
+
+        // 2. Verify arithmetic via get_invoice_by_id
+        let inv = DbOperations::get_invoice_by_id(&conn, &dek, clinic_id, &invoice_id)
+            .unwrap()
+            .expect("invoice found");
+
+        // Subtotal = (2 * 80000) + (1 * 25000) = 185000 paise
+        assert_eq!(inv.subtotal_paise, 185000);
+        // Discount = 10000 paise
+        assert_eq!(inv.discount_paise, 10000);
+        // Taxable = 175000 paise, 18% tax = 31500 paise
+        assert_eq!(inv.tax_paise, 31500);
+        // Total = 175000 + 31500 = 206500 paise
+        assert_eq!(inv.total_paise, 206500);
+        assert_eq!(inv.items.len(), 2);
+        assert_eq!(inv.notes.as_deref(), Some("Confidential billing notes"));
+        assert_eq!(inv.status, "DRAFT");
+    }
+
+    #[test]
+    fn test_invoice_discount_clamped_and_negative_rejection() {
+        let (mut conn, dek) = setup_test_db();
+        let clinic_id = "clinic_billing_2";
+        let doctor_id = "doc_billing_2";
+
+        // Discount > subtotal is clamped
+        let args_clamped = SaveInvoiceArgs {
+            id: None,
+            clinic_id: clinic_id.to_string(),
+            patient_id: "pat_1".to_string(),
+            consultation_id: None,
+            invoice_number: "INV-2026-0002".to_string(),
+            invoice_date: "2026-10-28".to_string(),
+            status: Some("DRAFT".to_string()),
+            payment_status: Some("UNPAID".to_string()),
+            items: vec![InvoiceItem {
+                description: "Basic Checkup".to_string(),
+                quantity: 1,
+                unit_price_paise: 50000,
+                total_paise: 0,
+            }],
+            discount_paise: Some(80000), // Exceeds 50000
+            tax_rate_percent: Some(0.0),
+            notes: None,
+        };
+
+        let inv_id = DbOperations::save_invoice(&mut conn, &dek, doctor_id, args_clamped).unwrap();
+        let inv = DbOperations::get_invoice_by_id(&conn, &dek, clinic_id, &inv_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(inv.subtotal_paise, 50000);
+        assert_eq!(inv.discount_paise, 50000);
+        assert_eq!(inv.total_paise, 0);
+
+        // Negative price rejected
+        let args_neg = SaveInvoiceArgs {
+            id: None,
+            clinic_id: clinic_id.to_string(),
+            patient_id: "pat_1".to_string(),
+            consultation_id: None,
+            invoice_number: "INV-2026-0003".to_string(),
+            invoice_date: "2026-10-28".to_string(),
+            status: Some("DRAFT".to_string()),
+            payment_status: Some("UNPAID".to_string()),
+            items: vec![InvoiceItem {
+                description: "Bad item".to_string(),
+                quantity: 1,
+                unit_price_paise: -100,
+                total_paise: 0,
+            }],
+            discount_paise: None,
+            tax_rate_percent: None,
+            notes: None,
+        };
+
+        assert!(DbOperations::save_invoice(&mut conn, &dek, doctor_id, args_neg).is_err());
+    }
+
+    #[test]
+    fn test_invoice_finalize_and_immutability() {
+        let (mut conn, dek) = setup_test_db();
+        let clinic_id = "clinic_billing_3";
+        let doctor_id = "doc_billing_3";
+
+        let args = SaveInvoiceArgs {
+            id: None,
+            clinic_id: clinic_id.to_string(),
+            patient_id: "pat_3".to_string(),
+            consultation_id: None,
+            invoice_number: "INV-2026-0004".to_string(),
+            invoice_date: "2026-10-28".to_string(),
+            status: Some("DRAFT".to_string()),
+            payment_status: Some("UNPAID".to_string()),
+            items: vec![InvoiceItem {
+                description: "Procedure".to_string(),
+                quantity: 1,
+                unit_price_paise: 100000,
+                total_paise: 0,
+            }],
+            discount_paise: None,
+            tax_rate_percent: None,
+            notes: None,
+        };
+
+        let invoice_id = DbOperations::save_invoice(&mut conn, &dek, doctor_id, args.clone()).unwrap();
+
+        // Finalize invoice
+        let finalized = DbOperations::finalize_invoice(&mut conn, &dek, clinic_id, doctor_id, &invoice_id).unwrap();
+        assert_eq!(finalized.status, "FINALIZED");
+
+        // Attempting to edit finalized invoice must fail
+        let mut edit_args = args;
+        edit_args.id = Some(invoice_id.clone());
+        edit_args.discount_paise = Some(20000);
+
+        let edit_res = DbOperations::save_invoice(&mut conn, &dek, doctor_id, edit_args);
+        assert!(edit_res.is_err(), "Editing finalized invoice must be prohibited");
+    }
+
+    #[test]
+    fn test_invoice_clinic_tenancy_isolation() {
+        let (mut conn, dek) = setup_test_db();
+        let clinic_a = "clinic_alpha";
+        let clinic_b = "clinic_beta";
+        let doctor_id = "doc_1";
+
+        let args = SaveInvoiceArgs {
+            id: None,
+            clinic_id: clinic_a.to_string(),
+            patient_id: "pat_a".to_string(),
+            consultation_id: None,
+            invoice_number: "INV-ALPHA-1".to_string(),
+            invoice_date: "2026-10-28".to_string(),
+            status: Some("DRAFT".to_string()),
+            payment_status: Some("UNPAID".to_string()),
+            items: vec![InvoiceItem {
+                description: "Service A".to_string(),
+                quantity: 1,
+                unit_price_paise: 50000,
+                total_paise: 0,
+            }],
+            discount_paise: None,
+            tax_rate_percent: None,
+            notes: None,
+        };
+
+        let invoice_id = DbOperations::save_invoice(&mut conn, &dek, doctor_id, args).unwrap();
+
+        // Clinic B cannot see Clinic A's invoice
+        let res_b = DbOperations::get_invoice_by_id(&conn, &dek, clinic_b, &invoice_id).unwrap();
+        assert!(res_b.is_none());
+
+        let list_b = DbOperations::get_invoices(&conn, &dek, clinic_b, None).unwrap();
+        assert!(list_b.is_empty());
+
+        // Clinic B cannot finalize Clinic A's invoice
+        let finalize_b = DbOperations::finalize_invoice(&mut conn, &dek, clinic_b, doctor_id, &invoice_id);
+        assert!(finalize_b.is_err());
+    }
+
+    #[test]
+    fn test_formulary_crud_and_tenancy() {
+        let (mut conn, _dek) = setup_test_db();
+        let clinic_a = "clinic_form_a";
+        let clinic_b = "clinic_form_b";
+
+        let args = SaveFormularyArgs {
+            id: None,
+            clinic_id: clinic_a.to_string(),
+            name: "Paracetamol".to_string(),
+            active_ingredient: Some("Acetaminophen".to_string()),
+            formulation: "TABLET".to_string(),
+            strength: "650 mg".to_string(),
+            default_dose: Some("1 tablet".to_string()),
+            default_route: Some("ORAL".to_string()),
+            default_frequency: Some("TID".to_string()),
+            default_duration: Some("3 days".to_string()),
+            default_instructions: Some("Take after food".to_string()),
+        };
+
+        let item_id = DbOperations::save_formulary_item(&mut conn, clinic_a, args).unwrap();
+
+        // Retrieve for Clinic A
+        let items_a = DbOperations::get_formulary_items(&conn, clinic_a).unwrap();
+        assert_eq!(items_a.len(), 1);
+        assert_eq!(items_a[0].name, "Paracetamol");
+        assert_eq!(items_a[0].active_ingredient.as_deref(), Some("Acetaminophen"));
+        assert_eq!(items_a[0].formulation, "TABLET");
+
+        // Clinic B sees empty formulary
+        let items_b = DbOperations::get_formulary_items(&conn, clinic_b).unwrap();
+        assert!(items_b.is_empty());
+
+        // Delete (soft delete)
+        DbOperations::delete_formulary_item(&mut conn, clinic_a, &item_id).unwrap();
+        let items_after = DbOperations::get_formulary_items(&conn, clinic_a).unwrap();
+        assert!(items_after.is_empty());
+    }
+
+    #[test]
+    fn test_invoice_push_mutation_applied_conflict_rejected() {
+        let (mut conn, dek) = setup_test_db();
+        let clinic_id = "clinic_inv_sync";
+        let doctor_id = "doctor_inv_sync";
+
+        let args1 = SaveInvoiceArgs {
+            id: None,
+            clinic_id: clinic_id.to_string(),
+            patient_id: "pat_sync_1".to_string(),
+            consultation_id: None,
+            invoice_number: "INV-2026-0001".to_string(),
+            invoice_date: "2026-10-28".to_string(),
+            status: Some("DRAFT".to_string()),
+            payment_status: Some("UNPAID".to_string()),
+            items: vec![InvoiceItem {
+                description: "Test Consultation".to_string(),
+                quantity: 1,
+                unit_price_paise: 80000,
+                total_paise: 80000,
+            }],
+            discount_paise: Some(0),
+            tax_rate_percent: Some(18.0),
+            notes: Some("Initial draft".to_string()),
+        };
+
+        let inv_id1 = DbOperations::save_invoice(&mut conn, &dek, doctor_id, args1).unwrap();
+
+        let batch1 = DbOperations::get_pending_outbox_batch(&mut conn, &dek, clinic_id, 10).unwrap();
+        assert_eq!(batch1.len(), 1);
+        assert_eq!(batch1[0].entity_type, "INVOICE");
+        assert_eq!(batch1[0].entity_id, inv_id1);
+        let outbox_id1 = &batch1[0].id;
+
+        // 1. APPLIED: verifies sync_status transitions to SYNCED and server_id is stored
+        DbOperations::apply_push_mutation_result(
+            &mut conn,
+            outbox_id1,
+            "APPLIED",
+            "INVOICE",
+            &inv_id1,
+            Some("srv_inv_101"),
+            Some(1),
+            None,
+            None,
+        )
+        .unwrap();
+
+        let inv_rec1 = DbOperations::get_invoice_by_id(&conn, &dek, clinic_id, &inv_id1).unwrap().unwrap();
+        assert_eq!(inv_rec1.sync_status, "SYNCED");
+        assert_eq!(inv_rec1.server_id.as_deref(), Some("srv_inv_101"));
+        assert_eq!(inv_rec1.server_version, 1);
+
+        // 2. CONFLICT: second invoice marked as CONFLICT
+        let args2 = SaveInvoiceArgs {
+            id: None,
+            clinic_id: clinic_id.to_string(),
+            patient_id: "pat_sync_2".to_string(),
+            consultation_id: None,
+            invoice_number: "INV-2026-0002".to_string(),
+            invoice_date: "2026-10-28".to_string(),
+            status: Some("DRAFT".to_string()),
+            payment_status: Some("UNPAID".to_string()),
+            items: vec![InvoiceItem {
+                description: "Test Consultation 2".to_string(),
+                quantity: 1,
+                unit_price_paise: 50000,
+                total_paise: 50000,
+            }],
+            discount_paise: None,
+            tax_rate_percent: None,
+            notes: None,
+        };
+        let inv_id2 = DbOperations::save_invoice(&mut conn, &dek, doctor_id, args2).unwrap();
+        let batch2 = DbOperations::get_pending_outbox_batch(&mut conn, &dek, clinic_id, 10).unwrap();
+        assert_eq!(batch2.len(), 1);
+        let outbox_id2 = &batch2[0].id;
+
+        let conflict_details = json!({
+            "conflictReason": "STALE_VERSION",
+            "serverVersion": 3,
+            "clientVersion": 1,
+            "serverState": { "totalPaise": 60000 },
+            "clientPayload": { "totalPaise": 50000 }
+        });
+
+        DbOperations::apply_push_mutation_result(
+            &mut conn,
+            outbox_id2,
+            "CONFLICT",
+            "INVOICE",
+            &inv_id2,
+            Some("srv_inv_102"),
+            Some(3),
+            Some("Client version is stale"),
+            Some(&conflict_details),
+        )
+        .unwrap();
+
+        let inv_rec2 = DbOperations::get_invoice_by_id(&conn, &dek, clinic_id, &inv_id2).unwrap().unwrap();
+        assert_eq!(inv_rec2.sync_status, "CONFLICT");
+
+        let conflicts = DbOperations::get_conflicts(&conn, Some("OPEN")).unwrap();
+        assert_eq!(conflicts.len(), 1);
+        assert_eq!(conflicts[0].entity_type, "INVOICE");
+        assert_eq!(conflicts[0].entity_id, inv_id2);
+
+        // 3. REJECTED: third invoice fails and preserves FAILED recoverable state
+        let args3 = SaveInvoiceArgs {
+            id: None,
+            clinic_id: clinic_id.to_string(),
+            patient_id: "pat_sync_3".to_string(),
+            consultation_id: None,
+            invoice_number: "INV-2026-0003".to_string(),
+            invoice_date: "2026-10-28".to_string(),
+            status: Some("DRAFT".to_string()),
+            payment_status: Some("UNPAID".to_string()),
+            items: vec![InvoiceItem {
+                description: "Test Service 3".to_string(),
+                quantity: 1,
+                unit_price_paise: 20000,
+                total_paise: 20000,
+            }],
+            discount_paise: None,
+            tax_rate_percent: None,
+            notes: None,
+        };
+        let inv_id3 = DbOperations::save_invoice(&mut conn, &dek, doctor_id, args3).unwrap();
+        let batch3 = DbOperations::get_pending_outbox_batch(&mut conn, &dek, clinic_id, 10).unwrap();
+        assert_eq!(batch3.len(), 1);
+        let outbox_id3 = &batch3[0].id;
+
+        DbOperations::apply_push_mutation_result(
+            &mut conn,
+            outbox_id3,
+            "REJECTED",
+            "INVOICE",
+            &inv_id3,
+            None,
+            None,
+            Some("Validation failure on server"),
+            None,
+        )
+        .unwrap();
+
+        let inv_rec3 = DbOperations::get_invoice_by_id(&conn, &dek, clinic_id, &inv_id3).unwrap().unwrap();
+        assert_eq!(inv_rec3.sync_status, "FAILED");
+    }
+
+    #[test]
+    fn test_invoice_pull_feed_items_sync_and_conflict() {
+        let (mut conn, dek) = setup_test_db();
+        let clinic_id = "clinic_pull_inv";
+        let doctor_id = "doctor_pull_inv";
+
+        // 1. Pull remote invoice without local conflict
+        let remote_inv_item = SyncFeedChangeItem {
+            seq: 1,
+            entity_type: "INVOICE".to_string(),
+            entity_id: "srv_inv_5001".to_string(),
+            client_entity_id: Some("client_inv_local_1".to_string()),
+            action: "CREATE".to_string(),
+            version: 1,
+            payload: json!({
+                "invoiceNumber": "INV-2026-5001",
+                "invoiceDate": "2026-10-28",
+                "status": "FINALIZED",
+                "paymentStatus": "PAID",
+                "subtotalPaise": 100000,
+                "discountPaise": 10000,
+                "taxRatePercent": 18.0,
+                "taxPaise": 16200,
+                "totalPaise": 106200,
+                "patientId": "pat_pulled_1",
+                "consultationId": null,
+                "items": [{
+                    "description": "Pulled Consultation",
+                    "quantity": 1,
+                    "unitPricePaise": 100000,
+                    "totalPaise": 100000
+                }],
+                "notes": "Paid in full"
+            }),
+            committed_at: "2026-10-28T10:00:00Z".to_string(),
+            actor_doctor_id: doctor_id.to_string(),
+        };
+
+        let final_seq = DbOperations::apply_pull_feed_items(&mut conn, &dek, clinic_id, &[remote_inv_item], 0, false).unwrap();
+        assert_eq!(final_seq, 1);
+
+        let pulled_invoices = DbOperations::get_invoices(&conn, &dek, clinic_id, None).unwrap();
+        assert_eq!(pulled_invoices.len(), 1);
+        assert_eq!(pulled_invoices[0].invoice_number, "INV-2026-5001");
+        assert_eq!(pulled_invoices[0].status, "FINALIZED");
+        assert_eq!(pulled_invoices[0].payment_status, "PAID");
+        assert_eq!(pulled_invoices[0].total_paise, 106200);
+        assert_eq!(pulled_invoices[0].sync_status, "SYNCED");
+
+        // 2. Concurrent remote update when local invoice has PENDING outbox mutation
+        let args_local = SaveInvoiceArgs {
+            id: None,
+            clinic_id: clinic_id.to_string(),
+            patient_id: "pat_pulled_2".to_string(),
+            consultation_id: None,
+            invoice_number: "INV-2026-5002".to_string(),
+            invoice_date: "2026-10-28".to_string(),
+            status: Some("DRAFT".to_string()),
+            payment_status: Some("UNPAID".to_string()),
+            items: vec![InvoiceItem {
+                description: "Local Draft Item".to_string(),
+                quantity: 1,
+                unit_price_paise: 50000,
+                total_paise: 50000,
+            }],
+            discount_paise: None,
+            tax_rate_percent: None,
+            notes: Some("Local edit before sync".to_string()),
+        };
+        let local_inv_id = DbOperations::save_invoice(&mut conn, &dek, doctor_id, args_local).unwrap();
+
+        // Simulate incoming remote update for the same local invoice
+        let conflicting_remote = SyncFeedChangeItem {
+            seq: 2,
+            entity_type: "INVOICE".to_string(),
+            entity_id: "srv_inv_5002".to_string(),
+            client_entity_id: Some(local_inv_id.clone()),
+            action: "UPDATE".to_string(),
+            version: 2,
+            payload: json!({
+                "invoiceNumber": "INV-2026-5002",
+                "status": "FINALIZED",
+                "paymentStatus": "PAID",
+                "totalPaise": 55000
+            }),
+            committed_at: "2026-10-28T10:05:00Z".to_string(),
+            actor_doctor_id: "other_doctor".to_string(),
+        };
+
+        DbOperations::apply_pull_feed_items(&mut conn, &dek, clinic_id, &[conflicting_remote], 1, false).unwrap();
+
+        // Local data preserved and not overwritten!
+        let local_inv = DbOperations::get_invoice_by_id(&conn, &dek, clinic_id, &local_inv_id).unwrap().unwrap();
+        assert_eq!(local_inv.status, "DRAFT");
+        assert_eq!(local_inv.sync_status, "CONFLICT");
+
+        // Conflict recorded in local_sync_conflicts
+        let conflicts = DbOperations::get_conflicts(&conn, Some("OPEN")).unwrap();
+        assert!(conflicts.iter().any(|c| c.entity_type == "INVOICE" && c.entity_id == local_inv_id));
     }
 }

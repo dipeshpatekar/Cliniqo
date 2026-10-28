@@ -23,6 +23,13 @@ export enum ClinicPermission {
   PRESCRIPTION_CREATE = 'prescription:create',
   PRESCRIPTION_UPDATE = 'prescription:update',
   PRESCRIPTION_CANCEL = 'prescription:cancel',
+  BILLING_READ = 'billing:read',
+  BILLING_CREATE = 'billing:create',
+  BILLING_UPDATE = 'billing:update',
+  BILLING_FINALIZE = 'billing:finalize',
+  BILLING_CANCEL = 'billing:cancel',
+  FORMULARY_READ = 'formulary:read',
+  FORMULARY_MANAGE = 'formulary:manage',
 }
 
 export const ROLE_PERMISSIONS_MAP: Record<
@@ -52,6 +59,13 @@ export const ROLE_PERMISSIONS_MAP: Record<
     ClinicPermission.PRESCRIPTION_CREATE,
     ClinicPermission.PRESCRIPTION_UPDATE,
     ClinicPermission.PRESCRIPTION_CANCEL,
+    ClinicPermission.BILLING_READ,
+    ClinicPermission.BILLING_CREATE,
+    ClinicPermission.BILLING_UPDATE,
+    ClinicPermission.BILLING_FINALIZE,
+    ClinicPermission.BILLING_CANCEL,
+    ClinicPermission.FORMULARY_READ,
+    ClinicPermission.FORMULARY_MANAGE,
   ]),
   [ClinicRole.DOCTOR]: new Set([
     ClinicPermission.CLINIC_READ,
@@ -68,6 +82,13 @@ export const ROLE_PERMISSIONS_MAP: Record<
     ClinicPermission.PRESCRIPTION_CREATE,
     ClinicPermission.PRESCRIPTION_UPDATE,
     ClinicPermission.PRESCRIPTION_CANCEL,
+    ClinicPermission.BILLING_READ,
+    ClinicPermission.BILLING_CREATE,
+    ClinicPermission.BILLING_UPDATE,
+    ClinicPermission.BILLING_FINALIZE,
+    ClinicPermission.BILLING_CANCEL,
+    ClinicPermission.FORMULARY_READ,
+    ClinicPermission.FORMULARY_MANAGE,
   ]),
   [ClinicRole.STAFF]: new Set([
     ClinicPermission.CLINIC_READ,
@@ -76,5 +97,8 @@ export const ROLE_PERMISSIONS_MAP: Record<
     ClinicPermission.PATIENT_UPDATE,
     ClinicPermission.CONSULTATION_READ,
     ClinicPermission.PRESCRIPTION_READ,
+    ClinicPermission.BILLING_READ,
+    ClinicPermission.BILLING_CREATE,
+    ClinicPermission.FORMULARY_READ,
   ]),
 };

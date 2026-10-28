@@ -219,5 +219,124 @@ describe("Desktop Bridge (Tauri 2 Frontend Integration)", () => {
     expect((record as any).accessToken).toBeUndefined()
     expect((record as any).refreshToken).toBeUndefined()
   })
-})
 
+  it("safely handles billing operations in browser mode without errors", async () => {
+    const {
+      saveLocalInvoice,
+      getLocalInvoices,
+      getLocalInvoiceById,
+      finalizeLocalInvoice,
+    } = await import("./desktop-bridge")
+
+    const savedId = await saveLocalInvoice({
+      clinic_id: "clinic_1",
+      patient_id: "patient_1",
+      invoice_number: "INV-2026-0001",
+      subtotal_paise: 10000,
+      discount_paise: 1000,
+      tax_rate_percent: 5,
+      tax_paise: 450,
+      total_paise: 9450,
+      items: [
+        {
+          name: "Consultation",
+          quantity: 1,
+          unit_price_paise: 10000,
+          line_total_paise: 10000,
+        },
+      ],
+    })
+    expect(savedId).toBeNull()
+
+    const invoices = await getLocalInvoices("clinic_1", "patient_1")
+    expect(invoices).toEqual([])
+
+    const invoice = await getLocalInvoiceById("clinic_1", "inv_1")
+    expect(invoice).toBeNull()
+
+    const finalized = await finalizeLocalInvoice("clinic_1", "inv_1")
+    expect(finalized).toBeNull()
+  })
+
+  it("safely handles formulary operations in browser mode without errors", async () => {
+    const {
+      saveLocalFormularyItem,
+      getLocalFormulary,
+      deleteLocalFormularyItem,
+    } = await import("./desktop-bridge")
+
+    const savedId = await saveLocalFormularyItem({
+      clinic_id: "clinic_1",
+      name: "Paracetamol",
+      formulation: "TABLET",
+      strength: "500mg",
+      default_dosage: "1 tablet",
+      default_route: "Oral",
+      default_frequency: "TDS",
+      default_duration: "5 days",
+    })
+    expect(savedId).toBeNull()
+
+    const formulary = await getLocalFormulary("clinic_1")
+    expect(formulary).toEqual([])
+
+    const deleted = await deleteLocalFormularyItem("clinic_1", "med_1")
+    expect(deleted).toBe(false)
+  })
+
+  it("verifies LocalInvoiceRecord and LocalFormularyItemRecord type safety", () => {
+    const invoice: import("./desktop-bridge").LocalInvoiceRecord = {
+      id: "inv_1",
+      server_id: null,
+      clinic_id: "clinic_1",
+      patient_id: "pat_1",
+      consultation_id: "con_1",
+      invoice_number: "INV-2026-0001",
+      status: "DRAFT",
+      payment_status: "UNPAID",
+      subtotal_paise: 50000,
+      discount_paise: 5000,
+      tax_rate_percent: 18,
+      tax_paise: 8100,
+      total_paise: 53100,
+      items: [
+        {
+          name: "Consultation Fee",
+          quantity: 1,
+          unit_price_paise: 50000,
+          line_total_paise: 50000,
+        },
+      ],
+      notes: "Routine checkup",
+      payment_notes: null,
+      sync_status: "PENDING",
+      server_version: 0,
+      local_version: 1,
+      created_at: "2026-10-28T00:00:00Z",
+      updated_at: "2026-10-28T00:00:00Z",
+    }
+    expect(invoice.total_paise).toBe(53100)
+    expect(invoice.status).toBe("DRAFT")
+    expect((invoice as any).accessToken).toBeUndefined()
+
+    const formularyItem: import("./desktop-bridge").LocalFormularyItemRecord = {
+      id: "med_1",
+      server_id: null,
+      clinic_id: "clinic_1",
+      name: "Amoxicillin",
+      formulation: "CAPSULE",
+      strength: "500mg",
+      active_ingredient: "Amoxicillin Trihydrate",
+      default_dosage: "1 capsule",
+      default_route: "Oral",
+      default_frequency: "TDS",
+      default_duration: "7 days",
+      default_instructions: "Take after meals",
+      is_active: true,
+      sync_status: "PENDING",
+      updated_at: "2026-10-28T00:00:00Z",
+    }
+    expect(formularyItem.formulation).toBe("CAPSULE")
+    expect((formularyItem as any).accessToken).toBeUndefined()
+  })
+})

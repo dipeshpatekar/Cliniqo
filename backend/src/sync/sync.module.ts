@@ -46,6 +46,10 @@ import {
   Clinic,
   ClinicSchema,
 } from '../clinic/schemas/clinic.schema.js';
+import {
+  Invoice,
+  InvoiceSchema,
+} from '../billing/schemas/invoice.schema.js';
 import { SyncService } from './sync.service.js';
 import { SyncController } from './sync.controller.js';
 
@@ -63,6 +67,7 @@ import { SyncController } from './sync.controller.js';
       { name: ClinicSequenceCounter.name, schema: ClinicSequenceCounterSchema },
       { name: ClinicMembership.name, schema: ClinicMembershipSchema },
       { name: Clinic.name, schema: ClinicSchema },
+      { name: Invoice.name, schema: InvoiceSchema },
     ]),
     ClinicModule,
     AuthModule,

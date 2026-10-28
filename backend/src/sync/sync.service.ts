@@ -46,6 +46,12 @@ import {
   ClinicSequenceCounterDocument,
 } from '../patient/schemas/clinic-sequence-counter.schema.js';
 import {
+  Invoice,
+  InvoiceDocument,
+  InvoiceStatus,
+  PaymentStatus,
+} from '../billing/schemas/invoice.schema.js';
+import {
   SyncPushDto,
   SyncMutationDto,
   SyncMutationResult,
@@ -81,6 +87,8 @@ export class SyncService {
     private readonly revisionModel: Model<PrescriptionRevisionDocument>,
     @InjectModel(ClinicSequenceCounter.name)
     private readonly seqCounterModel: Model<ClinicSequenceCounterDocument>,
+    @InjectModel(Invoice.name)
+    private readonly invoiceModel: Model<InvoiceDocument>,
   ) {}
 
   /**
@@ -254,6 +262,15 @@ export class SyncService {
           case SyncEntityType.PRESCRIPTION:
           case SyncEntityType.PRESCRIPTION_REVISION:
             finalResult = await this.applyPrescriptionMutation(
+              clinicId,
+              doctorId,
+              mutation,
+              session,
+            );
+            break;
+
+          case SyncEntityType.INVOICE:
+            finalResult = await this.applyInvoiceMutation(
               clinicId,
               doctorId,
               mutation,
@@ -1059,6 +1076,469 @@ export class SyncService {
       entityId: mutation.entityId,
       error: `Unsupported prescription sync action: ${mutation.action}`,
     };
+  }
+
+  private async applyInvoiceMutation(
+    clinicId: Types.ObjectId,
+    doctorId: Types.ObjectId,
+    mutation: SyncMutationDto,
+    session: ClientSession,
+  ): Promise<SyncMutationResult> {
+    if (!mutation.payload) {
+      return {
+        outboxId: mutation.outboxId,
+        status: 'REJECTED',
+        entityType: mutation.entityType,
+        entityId: mutation.entityId,
+        error: 'Invoice mutation payload is required.',
+      };
+    }
+
+    if (mutation.action === SyncActionType.CREATE) {
+      let patientId: Types.ObjectId | null = null;
+      if (mutation.payload.patientId) {
+        if (Types.ObjectId.isValid(mutation.payload.patientId)) {
+          const p = await this.patientModel.findOne(
+            { clinicId, _id: new Types.ObjectId(mutation.payload.patientId) },
+            null,
+            { session },
+          );
+          if (p) patientId = p._id;
+        }
+        if (!patientId) {
+          const p = await this.patientModel.findOne(
+            { clinicId, patientId: mutation.payload.patientId },
+            null,
+            { session },
+          );
+          if (p) patientId = p._id;
+        }
+      }
+
+      if (!patientId) {
+        return {
+          outboxId: mutation.outboxId,
+          status: 'REJECTED',
+          entityType: mutation.entityType,
+          entityId: mutation.entityId,
+          error: 'Patient record not found in this clinic.',
+        };
+      }
+
+      let consultationId: Types.ObjectId | null = null;
+      if (mutation.payload.consultationId && Types.ObjectId.isValid(mutation.payload.consultationId)) {
+        const c = await this.consultationModel.findOne(
+          { clinicId, _id: new Types.ObjectId(mutation.payload.consultationId) },
+          null,
+          { session },
+        );
+        if (c) consultationId = c._id;
+      }
+
+      const invoiceNumber = String(
+        mutation.payload.invoiceNumber || `INV-${new Date().getFullYear()}-${Date.now().toString().slice(-4)}`,
+      ).trim();
+
+      const existing = await this.invoiceModel.findOne(
+        { clinicId, invoiceNumber },
+        null,
+        { session },
+      );
+
+      if (existing) {
+        return {
+          outboxId: mutation.outboxId,
+          status: 'APPLIED',
+          entityType: mutation.entityType,
+          entityId: mutation.entityId,
+          serverId: existing._id.toString(),
+          serverVersion: existing.version,
+        };
+      }
+
+      const subtotalPaise = Math.max(0, Math.round(Number(mutation.payload.subtotalPaise) || 0));
+      const requestedDiscount = Math.max(0, Math.round(Number(mutation.payload.discountPaise) || 0));
+      const discountPaise = Math.min(subtotalPaise, requestedDiscount);
+      const taxRatePercent = Math.max(0, Math.min(100, Number(mutation.payload.taxRatePercent) || 0));
+      const taxableAmount = subtotalPaise - discountPaise;
+      const taxPaise = Math.round(taxableAmount * (taxRatePercent / 100));
+      const totalPaise = taxableAmount + taxPaise;
+
+      const rawItems = Array.isArray(mutation.payload.items) ? mutation.payload.items : [];
+      const items = rawItems.length > 0
+        ? rawItems.map((it: any) => ({
+            description: String(it.description || it.name || 'Medical Service').trim(),
+            quantity: Math.max(1, Math.floor(Number(it.quantity) || 1)),
+            unitPricePaise: Math.max(0, Math.round(Number(it.unitPricePaise ?? it.unit_price_paise) || 0)),
+            totalPaise: Math.max(
+              0,
+              Math.round(
+                Number(it.totalPaise ?? it.total_paise ?? (Math.max(1, Math.floor(Number(it.quantity) || 1)) * Math.max(0, Math.round(Number(it.unitPricePaise ?? it.unit_price_paise) || 0)))) || 0,
+              ),
+            ),
+          }))
+        : [
+            {
+              description: 'Medical Consultation',
+              quantity: 1,
+              unitPricePaise: subtotalPaise,
+              totalPaise: subtotalPaise,
+            },
+          ];
+
+      const invoiceDate = mutation.payload.invoiceDate
+        ? new Date(mutation.payload.invoiceDate)
+        : new Date();
+
+      const [newInvoice] = await this.invoiceModel.create(
+        [
+          {
+            clinicId,
+            patientId,
+            consultationId,
+            invoiceNumber,
+            invoiceDate,
+            status: mutation.payload.status === 'FINALIZED' ? InvoiceStatus.FINALIZED : InvoiceStatus.DRAFT,
+            paymentStatus: mutation.payload.paymentStatus === 'PAID' ? PaymentStatus.PAID : PaymentStatus.UNPAID,
+            items,
+            subtotalPaise,
+            discountPaise,
+            taxRatePercent,
+            taxPaise,
+            totalPaise,
+            notes: mutation.payload.notes?.trim() || null,
+            createdBy: doctorId,
+            finalizedAt: mutation.payload.status === 'FINALIZED' ? new Date() : null,
+            finalizedBy: mutation.payload.status === 'FINALIZED' ? doctorId : null,
+            version: 1,
+          },
+        ],
+        { session },
+      );
+
+      const seq = await this.incrementClinicSeq(clinicId, session);
+
+      await this.changeFeedModel.create(
+        [
+          {
+            clinicId,
+            seq,
+            entityType: SyncEntityType.INVOICE,
+            entityId: newInvoice._id.toString(),
+            clientEntityId: mutation.entityId,
+            action: SyncActionType.CREATE,
+            version: 1,
+            payload: newInvoice.toObject(),
+            committedAt: new Date(),
+            actorDoctorId: doctorId,
+          },
+        ],
+        { session },
+      );
+
+      return {
+        outboxId: mutation.outboxId,
+        status: 'APPLIED',
+        entityType: mutation.entityType,
+        entityId: mutation.entityId,
+        serverId: newInvoice._id.toString(),
+        serverVersion: 1,
+      };
+    }
+
+    if (mutation.action === SyncActionType.UPDATE) {
+      const invoice = await this.findInvoice(clinicId, mutation, session);
+      if (!invoice) {
+        return {
+          outboxId: mutation.outboxId,
+          status: 'REJECTED',
+          entityType: mutation.entityType,
+          entityId: mutation.entityId,
+          error: 'Invoice record not found on server.',
+        };
+      }
+
+      if (invoice.status === InvoiceStatus.FINALIZED || invoice.status === InvoiceStatus.CANCELLED) {
+        return {
+          outboxId: mutation.outboxId,
+          status: 'REJECTED',
+          entityType: mutation.entityType,
+          entityId: mutation.entityId,
+          error: `Cannot modify invoice in ${invoice.status} status. Only DRAFT invoices may be updated.`,
+        };
+      }
+
+      if (mutation.clientVersion < invoice.version) {
+        await this.conflictModel.create(
+          [
+            {
+              clinicId,
+              outboxId: mutation.outboxId,
+              entityType: SyncEntityType.INVOICE,
+              entityId: invoice._id.toString(),
+              serverVersion: invoice.version,
+              clientVersion: mutation.clientVersion,
+              conflictReason: 'STALE_VERSION',
+              serverPayload: invoice.toObject(),
+              clientPayload: mutation.payload,
+              conflictFields: ['version', 'items', 'totalPaise'],
+              status: SyncConflictStatus.OPEN,
+            },
+          ],
+          { session },
+        );
+
+        return {
+          outboxId: mutation.outboxId,
+          status: 'CONFLICT',
+          entityType: mutation.entityType,
+          entityId: mutation.entityId,
+          serverId: invoice._id.toString(),
+          serverVersion: invoice.version,
+          conflictDetails: {
+            conflictReason: 'STALE_VERSION',
+            serverVersion: invoice.version,
+            clientVersion: mutation.clientVersion,
+            reason: `Client version (${mutation.clientVersion}) is older than server version (${invoice.version}).`,
+            conflictFields: ['version', 'items', 'totalPaise'],
+            serverState: invoice.toObject(),
+            clientPayload: mutation.payload,
+          },
+        };
+      }
+
+      if (mutation.payload.subtotalPaise !== undefined) {
+        const subtotalPaise = Math.max(0, Math.round(Number(mutation.payload.subtotalPaise) || 0));
+        const requestedDiscount = Math.max(0, Math.round(Number(mutation.payload.discountPaise ?? invoice.discountPaise) || 0));
+        const discountPaise = Math.min(subtotalPaise, requestedDiscount);
+        const taxRatePercent = Math.max(0, Math.min(100, Number(mutation.payload.taxRatePercent ?? invoice.taxRatePercent) || 0));
+        const taxableAmount = subtotalPaise - discountPaise;
+        const taxPaise = Math.round(taxableAmount * (taxRatePercent / 100));
+        const totalPaise = taxableAmount + taxPaise;
+
+        invoice.subtotalPaise = subtotalPaise;
+        invoice.discountPaise = discountPaise;
+        invoice.taxRatePercent = taxRatePercent;
+        invoice.taxPaise = taxPaise;
+        invoice.totalPaise = totalPaise;
+      }
+
+      if (Array.isArray(mutation.payload.items) && mutation.payload.items.length > 0) {
+        invoice.items = mutation.payload.items.map((it: any) => ({
+          description: String(it.description || it.name || 'Medical Service').trim(),
+          quantity: Math.max(1, Math.floor(Number(it.quantity) || 1)),
+          unitPricePaise: Math.max(0, Math.round(Number(it.unitPricePaise ?? it.unit_price_paise) || 0)),
+          totalPaise: Math.max(
+            0,
+            Math.round(
+              Number(it.totalPaise ?? it.total_paise ?? (Math.max(1, Math.floor(Number(it.quantity) || 1)) * Math.max(0, Math.round(Number(it.unitPricePaise ?? it.unit_price_paise) || 0)))) || 0,
+            ),
+          ),
+        }));
+      }
+
+      if (mutation.payload.paymentStatus) {
+        invoice.paymentStatus = mutation.payload.paymentStatus === 'PAID' ? PaymentStatus.PAID : PaymentStatus.UNPAID;
+      }
+      if (mutation.payload.notes !== undefined) {
+        invoice.notes = mutation.payload.notes?.trim() || null;
+      }
+
+      invoice.version += 1;
+      await invoice.save({ session });
+
+      const seq = await this.incrementClinicSeq(clinicId, session);
+
+      await this.changeFeedModel.create(
+        [
+          {
+            clinicId,
+            seq,
+            entityType: SyncEntityType.INVOICE,
+            entityId: invoice._id.toString(),
+            clientEntityId: mutation.entityId,
+            action: SyncActionType.UPDATE,
+            version: invoice.version,
+            payload: invoice.toObject(),
+            committedAt: new Date(),
+            actorDoctorId: doctorId,
+          },
+        ],
+        { session },
+      );
+
+      return {
+        outboxId: mutation.outboxId,
+        status: 'APPLIED',
+        entityType: mutation.entityType,
+        entityId: mutation.entityId,
+        serverId: invoice._id.toString(),
+        serverVersion: invoice.version,
+      };
+    }
+
+    if (mutation.action === SyncActionType.FINALIZE) {
+      const invoice = await this.findInvoice(clinicId, mutation, session);
+      if (!invoice) {
+        return {
+          outboxId: mutation.outboxId,
+          status: 'REJECTED',
+          entityType: mutation.entityType,
+          entityId: mutation.entityId,
+          error: 'Invoice record not found on server.',
+        };
+      }
+
+      if (invoice.status === InvoiceStatus.CANCELLED) {
+        return {
+          outboxId: mutation.outboxId,
+          status: 'REJECTED',
+          entityType: mutation.entityType,
+          entityId: mutation.entityId,
+          error: 'Cannot finalize a cancelled invoice.',
+        };
+      }
+
+      if (invoice.status === InvoiceStatus.FINALIZED) {
+        return {
+          outboxId: mutation.outboxId,
+          status: 'APPLIED',
+          entityType: mutation.entityType,
+          entityId: mutation.entityId,
+          serverId: invoice._id.toString(),
+          serverVersion: invoice.version,
+        };
+      }
+
+      invoice.status = InvoiceStatus.FINALIZED;
+      invoice.finalizedBy = doctorId;
+      invoice.finalizedAt = new Date();
+      invoice.version += 1;
+      await invoice.save({ session });
+
+      const seq = await this.incrementClinicSeq(clinicId, session);
+
+      await this.changeFeedModel.create(
+        [
+          {
+            clinicId,
+            seq,
+            entityType: SyncEntityType.INVOICE,
+            entityId: invoice._id.toString(),
+            clientEntityId: mutation.entityId,
+            action: SyncActionType.FINALIZE,
+            version: invoice.version,
+            payload: invoice.toObject(),
+            committedAt: new Date(),
+            actorDoctorId: doctorId,
+          },
+        ],
+        { session },
+      );
+
+      return {
+        outboxId: mutation.outboxId,
+        status: 'APPLIED',
+        entityType: mutation.entityType,
+        entityId: mutation.entityId,
+        serverId: invoice._id.toString(),
+        serverVersion: invoice.version,
+      };
+    }
+
+    if (mutation.action === SyncActionType.CANCEL) {
+      const invoice = await this.findInvoice(clinicId, mutation, session);
+      if (!invoice) {
+        return {
+          outboxId: mutation.outboxId,
+          status: 'REJECTED',
+          entityType: mutation.entityType,
+          entityId: mutation.entityId,
+          error: 'Invoice record not found on server.',
+        };
+      }
+
+      if (invoice.status === InvoiceStatus.CANCELLED) {
+        return {
+          outboxId: mutation.outboxId,
+          status: 'APPLIED',
+          entityType: mutation.entityType,
+          entityId: mutation.entityId,
+          serverId: invoice._id.toString(),
+          serverVersion: invoice.version,
+        };
+      }
+
+      invoice.status = InvoiceStatus.CANCELLED;
+      invoice.cancelledBy = doctorId;
+      invoice.cancelledAt = new Date();
+      invoice.cancellationReason = mutation.payload?.reason || 'Cancelled via sync';
+      invoice.version += 1;
+      await invoice.save({ session });
+
+      const seq = await this.incrementClinicSeq(clinicId, session);
+
+      await this.changeFeedModel.create(
+        [
+          {
+            clinicId,
+            seq,
+            entityType: SyncEntityType.INVOICE,
+            entityId: invoice._id.toString(),
+            clientEntityId: mutation.entityId,
+            action: SyncActionType.CANCEL,
+            version: invoice.version,
+            payload: invoice.toObject(),
+            committedAt: new Date(),
+            actorDoctorId: doctorId,
+          },
+        ],
+        { session },
+      );
+
+      return {
+        outboxId: mutation.outboxId,
+        status: 'APPLIED',
+        entityType: mutation.entityType,
+        entityId: mutation.entityId,
+        serverId: invoice._id.toString(),
+        serverVersion: invoice.version,
+      };
+    }
+
+    return {
+      outboxId: mutation.outboxId,
+      status: 'REJECTED',
+      entityType: mutation.entityType,
+      entityId: mutation.entityId,
+      error: `Unsupported invoice sync action: ${mutation.action}`,
+    };
+  }
+
+  private async findInvoice(
+    clinicId: Types.ObjectId,
+    mutation: SyncMutationDto,
+    session: ClientSession,
+  ): Promise<InvoiceDocument | null> {
+    const targetId = mutation.serverId || mutation.entityId;
+    if (Types.ObjectId.isValid(targetId)) {
+      const inv = await this.invoiceModel.findOne(
+        { clinicId, _id: new Types.ObjectId(targetId) },
+        null,
+        { session },
+      );
+      if (inv) return inv;
+    }
+
+    if (mutation.payload?.invoiceNumber) {
+      return this.invoiceModel.findOne(
+        { clinicId, invoiceNumber: mutation.payload.invoiceNumber },
+        null,
+        { session },
+      );
+    }
+
+    return null;
   }
 
   // -------------------------------------------------------------------------

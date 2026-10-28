@@ -98,6 +98,13 @@ pub fn run() {
             commands::get_sync_state,
             commands::get_sync_conflicts,
             commands::resolve_sync_conflict,
+            commands::save_local_invoice,
+            commands::get_local_invoices,
+            commands::get_local_invoice_by_id,
+            commands::finalize_local_invoice,
+            commands::save_local_formulary_item,
+            commands::get_local_formulary,
+            commands::delete_local_formulary_item,
         ])
         .run(tauri::generate_context!())
         .expect("error while building tauri application");

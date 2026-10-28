@@ -213,6 +213,63 @@ CREATE TABLE IF NOT EXISTS local_sync_state (
 );
 "#;
 
+/// Migration V4: Introduces encrypted local invoices and clinical medicine formulary catalogue.
+pub const MIGRATION_V4_SQL: &str = r#"
+-- 1. Encrypted Local Invoices Table
+CREATE TABLE IF NOT EXISTS local_invoices_v2 (
+    id TEXT PRIMARY KEY,
+    server_id TEXT NULL,
+    clinic_id TEXT NOT NULL,
+    patient_id TEXT NOT NULL,
+    consultation_id TEXT NULL,
+    invoice_number TEXT NOT NULL,
+    invoice_date TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'DRAFT',
+    payment_status TEXT NOT NULL DEFAULT 'UNPAID',
+    subtotal_paise INTEGER NOT NULL,
+    discount_paise INTEGER NOT NULL DEFAULT 0,
+    tax_rate_percent REAL NOT NULL DEFAULT 0.0,
+    tax_paise INTEGER NOT NULL DEFAULT 0,
+    total_paise INTEGER NOT NULL,
+    encrypted_billing_data BLOB NOT NULL,
+    nonce BLOB NOT NULL,
+    sync_status TEXT NOT NULL DEFAULT 'PENDING',
+    server_version INTEGER NOT NULL DEFAULT 1,
+    local_version INTEGER NOT NULL DEFAULT 1,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_invoices_v2_clinic ON local_invoices_v2(clinic_id);
+CREATE INDEX IF NOT EXISTS idx_invoices_v2_patient ON local_invoices_v2(clinic_id, patient_id);
+CREATE INDEX IF NOT EXISTS idx_invoices_v2_consultation ON local_invoices_v2(clinic_id, consultation_id);
+CREATE INDEX IF NOT EXISTS idx_invoices_v2_number ON local_invoices_v2(clinic_id, invoice_number);
+CREATE INDEX IF NOT EXISTS idx_invoices_v2_sync ON local_invoices_v2(sync_status);
+
+-- 2. Local Clinical Formulary Table
+CREATE TABLE IF NOT EXISTS local_formulary_v2 (
+    id TEXT PRIMARY KEY,
+    server_id TEXT NULL,
+    clinic_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    active_ingredient TEXT NULL,
+    formulation TEXT NOT NULL,
+    strength TEXT NOT NULL,
+    default_dose TEXT NULL,
+    default_route TEXT NULL,
+    default_frequency TEXT NULL,
+    default_duration TEXT NULL,
+    default_instructions TEXT NULL,
+    is_active INTEGER NOT NULL DEFAULT 1,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_formulary_v2_clinic ON local_formulary_v2(clinic_id);
+CREATE INDEX IF NOT EXISTS idx_formulary_v2_name ON local_formulary_v2(clinic_id, name);
+CREATE INDEX IF NOT EXISTS idx_formulary_v2_formulation ON local_formulary_v2(clinic_id, formulation);
+"#;
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct PatientDemographics {
     pub name: String,
@@ -379,6 +436,95 @@ pub struct SyncFeedChangeItem {
     pub committed_at: String,
     #[serde(rename = "actorDoctorId")]
     pub actor_doctor_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct InvoiceItem {
+    pub description: String,
+    pub quantity: i64,
+    pub unit_price_paise: i64,
+    pub total_paise: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EncryptedBillingData {
+    pub items: Vec<InvoiceItem>,
+    pub notes: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InvoiceRecord {
+    pub id: String,
+    pub server_id: Option<String>,
+    pub clinic_id: String,
+    pub patient_id: String,
+    pub consultation_id: Option<String>,
+    pub invoice_number: String,
+    pub invoice_date: String,
+    pub status: String,
+    pub payment_status: String,
+    pub items: Vec<InvoiceItem>,
+    pub subtotal_paise: i64,
+    pub discount_paise: i64,
+    pub tax_rate_percent: f64,
+    pub tax_paise: i64,
+    pub total_paise: i64,
+    pub notes: Option<String>,
+    pub sync_status: String,
+    pub server_version: i32,
+    pub local_version: i32,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SaveInvoiceArgs {
+    pub id: Option<String>,
+    pub clinic_id: String,
+    pub patient_id: String,
+    pub consultation_id: Option<String>,
+    pub invoice_number: String,
+    pub invoice_date: String,
+    pub status: Option<String>,
+    pub payment_status: Option<String>,
+    pub items: Vec<InvoiceItem>,
+    pub discount_paise: Option<i64>,
+    pub tax_rate_percent: Option<f64>,
+    pub notes: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FormularyRecord {
+    pub id: String,
+    pub server_id: Option<String>,
+    pub clinic_id: String,
+    pub name: String,
+    pub active_ingredient: Option<String>,
+    pub formulation: String,
+    pub strength: String,
+    pub default_dose: Option<String>,
+    pub default_route: Option<String>,
+    pub default_frequency: Option<String>,
+    pub default_duration: Option<String>,
+    pub default_instructions: Option<String>,
+    pub is_active: bool,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SaveFormularyArgs {
+    pub id: Option<String>,
+    pub clinic_id: String,
+    pub name: String,
+    pub active_ingredient: Option<String>,
+    pub formulation: String,
+    pub strength: String,
+    pub default_dose: Option<String>,
+    pub default_route: Option<String>,
+    pub default_frequency: Option<String>,
+    pub default_duration: Option<String>,
+    pub default_instructions: Option<String>,
 }
 
 

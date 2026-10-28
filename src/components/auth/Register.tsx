@@ -17,8 +17,17 @@ import {
   ShieldCheck,
   UserRound,
 } from "lucide-react"
+import {
+  registerDoctor,
+  type RegisterDoctorResult,
+} from "../../desktop/desktop-bridge"
 
-export function Register({ go }: { go: (page: Page) => void }) {
+export interface RegisterProps {
+  go: (page: Page) => void
+  onRegisterSuccess?: (result: RegisterDoctorResult) => void
+}
+
+export function Register({ go, onRegisterSuccess }: RegisterProps) {
   const [fullName, setFullName] = useState("")
   const [email, setEmail] = useState("")
   const [mobile, setMobile] = useState("")
@@ -27,6 +36,7 @@ export function Register({ go }: { go: (page: Page) => void }) {
   const [showPassword, setShowPassword] = useState(false)
   const [showConfirmPassword, setShowConfirmPassword] = useState(false)
   const [errors, setErrors] = useState<Record<string, string>>({})
+  const [errorMessage, setErrorMessage] = useState("")
   const [status, setStatus] =
     useState<"idle" | "loading" | "success" | "duplicate" | "failure">("idle")
   const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
@@ -46,11 +56,16 @@ export function Register({ go }: { go: (page: Page) => void }) {
       delete next[field]
       return next
     })
-    if (status === "duplicate" || status === "failure") setStatus("idle")
+    if (status === "duplicate" || status === "failure") {
+      setStatus("idle")
+      setErrorMessage("")
+    }
   }
 
-  const submit = (event: FormEvent) => {
+  const submit = async (event: FormEvent) => {
     event.preventDefault()
+    if (status === "loading") return
+
     const nextErrors: Record<string, string> = {}
     if (!fullName.trim()) nextErrors.fullName = "Enter your full name"
     else if (fullName.trim().length < 3)
@@ -71,17 +86,42 @@ export function Register({ go }: { go: (page: Page) => void }) {
     }
 
     setErrors({})
+    setErrorMessage("")
     setStatus("loading")
-    window.setTimeout(() => {
-      const normalizedEmail = email.trim().toLowerCase()
-      if (
-        normalizedEmail === "nikhil@nishtihospital.in" ||
-        normalizedEmail === "duplicate@cliniqo.demo"
-      )
+
+    try {
+      const result = await registerDoctor({
+        fullName: fullName.trim(),
+        email: email.trim().toLowerCase(),
+        password,
+        phone: mobile,
+      })
+
+      setStatus("success")
+      if (onRegisterSuccess) {
+        onRegisterSuccess(result)
+      }
+      go("setup")
+    } catch (err: any) {
+      const isDuplicate =
+        err?.status === 409 ||
+        err?.message?.toLowerCase().includes("already exists") ||
+        err?.message?.toLowerCase().includes("duplicate")
+
+      if (isDuplicate) {
         setStatus("duplicate")
-      else if (normalizedEmail === "error@demo.test") setStatus("failure")
-      else setStatus("success")
-    }, 900)
+        setErrorMessage(
+          "An account already exists for this email. Sign in or use a different address.",
+        )
+        setErrors({ email: "An account with this email already exists" })
+      } else {
+        setStatus("failure")
+        setErrorMessage(
+          err?.message ||
+            "The registration request could not be completed. Review your details and try again.",
+        )
+      }
+    }
   }
 
   return (
@@ -167,9 +207,10 @@ export function Register({ go }: { go: (page: Page) => void }) {
                 <div className="auth-error" role="alert">
                   <AlertCircle size={16} />
                   <span>
-                    {status === "duplicate"
-                      ? "An account already exists for this email. Sign in or use a different address."
-                      : "The demo registration request could not be completed. Review your details and try again."}
+                    {errorMessage ||
+                      (status === "duplicate"
+                        ? "An account already exists for this email. Sign in or use a different address."
+                        : "The registration request could not be completed. Review your details and try again.")}
                   </span>
                 </div>
               )}
@@ -355,10 +396,10 @@ export function Register({ go }: { go: (page: Page) => void }) {
                   loading={status === "loading"}
                 >
                   {status === "loading" ? (
-                    "Validating details…"
+                    "Creating account…"
                   ) : (
                     <>
-                      Create account <ArrowRight size={17} />
+                      Profile Setup <ArrowRight size={17} />
                     </>
                   )}
                 </Button>
@@ -369,18 +410,11 @@ export function Register({ go }: { go: (page: Page) => void }) {
                   Sign In
                 </button>
               </div>
-              <div className="prototype-codes register-demo-note">
-                <strong>Frontend demo states</strong>
-                <span>
-                  Existing account email → duplicate · error@demo.test → failure
-                  · other valid details → success UI.
-                </span>
-              </div>
             </>
           )}
         </div>
         <p className="auth-footer">
-          Frontend registration demo · No backend connection
+          Custom JWT Authentication · Cliniqo Clinical Workspace
         </p>
       </section>
     </main>

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest"
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest"
 import {
   isTauriDesktop,
   getApiBaseUrl,
@@ -205,8 +205,14 @@ describe("Desktop Bridge (Tauri 2 Frontend Integration)", () => {
       entity_id: "pt_001",
       server_version: 2,
       client_version: 1,
-      server_payload: JSON.stringify({ name: "Server Name", allergies: ["Penicillin"] }),
-      client_payload: JSON.stringify({ name: "Local Name", allergies: ["Aspirin"] }),
+      server_payload: JSON.stringify({
+        name: "Server Name",
+        allergies: ["Penicillin"],
+      }),
+      client_payload: JSON.stringify({
+        name: "Local Name",
+        allergies: ["Aspirin"],
+      }),
       conflict_reason: "DIVERGENT_CLINICAL_DATA",
       resolution_payload: null,
       status: "OPEN",
@@ -338,5 +344,144 @@ describe("Desktop Bridge (Tauri 2 Frontend Integration)", () => {
     }
     expect(formularyItem.formulation).toBe("CAPSULE")
     expect((formularyItem as any).accessToken).toBeUndefined()
+  })
+
+  describe("API Client functions (registerDoctor, createClinic, refreshAuthTokens)", () => {
+    const originalFetch = globalThis.fetch
+
+    afterEach(() => {
+      globalThis.fetch = originalFetch
+    })
+
+    it("registerDoctor posts to /auth/register and returns tokens and doctor details", async () => {
+      const mockResult = {
+        accessToken: "access-token-123",
+        refreshToken: "refresh-token-456",
+        doctor: {
+          id: "doc-1",
+          email: "dr.new@clinic.com",
+          fullName: "Dr. New Doctor",
+          phone: "9876543210",
+        },
+      }
+
+      globalThis.fetch = (vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => mockResult,
+      }) as any)
+
+      const { registerDoctor } = await import("./desktop-bridge")
+      const result = await registerDoctor({
+        fullName: "Dr. New Doctor",
+        email: "dr.new@clinic.com",
+        password: "SecurePassword123!",
+        phone: "9876543210",
+      })
+
+      expect(result).toEqual(mockResult)
+      expect(globalThis.fetch).toHaveBeenCalledWith(
+        expect.stringContaining("/auth/register"),
+        expect.objectContaining({
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            fullName: "Dr. New Doctor",
+            email: "dr.new@clinic.com",
+            password: "SecurePassword123!",
+            phone: "9876543210",
+          }),
+        }),
+      )
+    })
+
+    it("registerDoctor throws Conflict error when status is 409", async () => {
+      globalThis.fetch = (vi.fn().mockResolvedValue({
+        ok: false,
+        status: 409,
+        json: async () => ({
+          message: "An account with this email address already exists.",
+        }),
+      }) as any)
+
+      const { registerDoctor } = await import("./desktop-bridge")
+      await expect(
+        registerDoctor({
+          fullName: "Dr. Exists",
+          email: "existing@clinic.com",
+          password: "SecurePassword123!",
+        }),
+      ).rejects.toThrow("An account with this email address already exists.")
+    })
+
+    it("createClinic posts to /clinics with Bearer token", async () => {
+      const mockClinicRes = {
+        clinic: {
+          id: "clinic-1",
+          name: "Apex Healthcare",
+          slug: "apex-healthcare",
+          phone: "+91 22 1234 5678",
+          email: "care@apex.in",
+        },
+        membership: {
+          id: "mem-1",
+          role: "OWNER",
+        },
+      }
+
+      globalThis.fetch = (vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => mockClinicRes,
+      }) as any)
+
+      const { createClinic } = await import("./desktop-bridge")
+      const result = await createClinic("token-xyz", {
+        name: "Apex Healthcare",
+        phone: "+91 22 1234 5678",
+        email: "care@apex.in",
+        address: {
+          street: "123 Main St",
+          city: "Mumbai",
+          state: "Maharashtra",
+          postalCode: "400001",
+          country: "India",
+        },
+      })
+
+      expect(result).toEqual(mockClinicRes)
+      expect(globalThis.fetch).toHaveBeenCalledWith(
+        expect.stringContaining("/clinics"),
+        expect.objectContaining({
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: "Bearer token-xyz",
+          },
+        }),
+      )
+    })
+
+    it("refreshAuthTokens posts to /auth/refresh and returns new tokens", async () => {
+      const mockTokens = {
+        accessToken: "new-access-token",
+        refreshToken: "new-refresh-token",
+      }
+
+      globalThis.fetch = (vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => mockTokens,
+      }) as any)
+
+      const { refreshAuthTokens } = await import("./desktop-bridge")
+      const result = await refreshAuthTokens("old-refresh-token")
+
+      expect(result).toEqual(mockTokens)
+      expect(globalThis.fetch).toHaveBeenCalledWith(
+        expect.stringContaining("/auth/refresh"),
+        expect.objectContaining({
+          method: "POST",
+          body: JSON.stringify({ refreshToken: "old-refresh-token" }),
+        }),
+      )
+    })
   })
 })

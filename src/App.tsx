@@ -66,6 +66,14 @@ export default function App() {
   const [page, setPage] = useState<Page>("login")
   const [desktopSession, setDesktopSession] =
     useState<DesktopSessionContext | null>(null)
+  const [onboardingDoctor, setOnboardingDoctor] = useState<{
+    id: string
+    email: string
+    fullName: string
+    phone?: string
+    accessToken: string
+    refreshToken?: string
+  } | null>(null)
   const [isRestoringSession, setIsRestoringSession] =
     useState<boolean>(isTauriDesktop)
   const [sidebarOpen, setSidebarOpen] = useState(false)
@@ -312,7 +320,8 @@ export default function App() {
       isTauriDesktop() &&
       !desktopSession &&
       next !== "login" &&
-      next !== "register"
+      next !== "register" &&
+      !(next === "setup" && onboardingDoctor)
     ) {
       setPage("login")
       return
@@ -644,7 +653,8 @@ export default function App() {
     isTauriDesktop() &&
     !desktopSession &&
     page !== "login" &&
-    page !== "register"
+    page !== "register" &&
+    !(page === "setup" && onboardingDoctor)
   ) {
     return <Login go={go} onLoginSuccess={handleLoginSuccess} />
   }
@@ -652,8 +662,36 @@ export default function App() {
   if (page === "login") {
     return <Login go={go} onLoginSuccess={handleLoginSuccess} />
   }
-  if (page === "register") return <Register go={go} />
-  if (page === "setup") return <Setup go={go} />
+  if (page === "register") {
+    return (
+      <Register
+        go={go}
+        onRegisterSuccess={(result) => {
+          setOnboardingDoctor({
+            id: result.doctor.id,
+            email: result.doctor.email,
+            fullName: result.doctor.fullName,
+            phone: result.doctor.phone,
+            accessToken: result.accessToken,
+            refreshToken: result.refreshToken,
+          })
+          go("setup")
+        }}
+      />
+    )
+  }
+  if (page === "setup") {
+    return (
+      <Setup
+        go={go}
+        doctor={onboardingDoctor}
+        onSetupComplete={async (session) => {
+          setOnboardingDoctor(null)
+          await handleLoginSuccess(session)
+        }}
+      />
+    )
+  }
 
   let content: ReactNode
   if (page === "dashboard") {

@@ -6,71 +6,82 @@ import {
   HttpCode,
   HttpStatus,
   Req,
-} from '@nestjs/common';
-import type { Request } from 'express';
-import { AuthService } from './auth.service.js';
-import { TokenService } from './token.service.js';
+} from "@nestjs/common"
+import type { Request } from "express"
+import { AuthService } from "./auth.service.js"
+import { TokenService } from "./token.service.js"
 import {
   LoginDto,
+  RegisterDto,
   RefreshTokenDto,
   ForgotPasswordDto,
   ResetPasswordDto,
-} from './dto/auth.dto.js';
+} from "./dto/auth.dto.js"
 
-@Controller('auth')
+@Controller("auth")
 export class AuthController {
   constructor(
     private readonly authService: AuthService,
     private readonly tokenService: TokenService,
   ) {}
 
-  @Get('public-key')
+  @Get("public-key")
   @HttpCode(HttpStatus.OK)
   async getPublicKey() {
-    return this.tokenService.getPublicKeyInfo();
+    return this.tokenService.getPublicKeyInfo()
   }
 
-  @Post('login')
+  @Post("register")
+  @HttpCode(HttpStatus.CREATED)
+  async register(@Body() dto: RegisterDto, @Req() req: Request) {
+    const meta = {
+      ipAddress: req.ip || req.socket?.remoteAddress,
+      userAgent: req.headers["user-agent"],
+    }
+    return this.authService.register(dto, meta)
+  }
+
+  @Post("login")
   @HttpCode(HttpStatus.OK)
   async login(@Body() dto: LoginDto, @Req() req: Request) {
     const meta = {
       ipAddress: req.ip || req.socket?.remoteAddress,
-      userAgent: req.headers['user-agent'],
-    };
-    return this.authService.login(dto, meta);
+      userAgent: req.headers["user-agent"],
+    }
+    return this.authService.login(dto, meta)
   }
 
-  @Post('refresh')
+  @Post("refresh")
   @HttpCode(HttpStatus.OK)
   async refresh(@Body() dto: RefreshTokenDto, @Req() req: Request) {
     const meta = {
       ipAddress: req.ip || req.socket?.remoteAddress,
-      userAgent: req.headers['user-agent'],
-    };
-    return this.authService.refreshToken(dto, meta);
+      userAgent: req.headers["user-agent"],
+    }
+    return this.authService.refreshToken(dto, meta)
   }
 
-  @Post('logout')
+  @Post("logout")
   @HttpCode(HttpStatus.OK)
   async logout(@Body() dto: RefreshTokenDto) {
-    return this.authService.logout(dto);
+    return this.authService.logout(dto)
   }
 
-  @Post('forgot-password')
+  @Post("forgot-password")
   @HttpCode(HttpStatus.OK)
   async forgotPassword(@Body() dto: ForgotPasswordDto, @Req() req: Request) {
     const meta = {
       ipAddress: req.ip || req.socket?.remoteAddress,
-    };
-    return this.authService.forgotPassword(dto, meta);
+    }
+    return this.authService.forgotPassword(dto, meta)
   }
 
-  @Post('reset-password')
+  @Post("reset-password")
   @HttpCode(HttpStatus.OK)
   async resetPassword(@Body() dto: ResetPasswordDto, @Req() req: Request) {
     const meta = {
       ipAddress: req.ip || req.socket?.remoteAddress,
-    };
-    return this.authService.resetPassword(dto, meta);
+    }
+    return this.authService.resetPassword(dto, meta)
   }
 }

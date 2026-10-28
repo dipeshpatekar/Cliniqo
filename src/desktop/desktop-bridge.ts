@@ -5,7 +5,6 @@
  */
 import type { CatalogueItem, CatalogueSearchResult } from "../types"
 
-
 export interface DesktopInfo {
   os: string
   arch: string
@@ -48,7 +47,6 @@ export interface SyncStatusInfo {
   conflicts_count: number
   last_error: string | null
 }
-
 
 export interface LocalPatientArgs {
   id?: string | null
@@ -161,6 +159,151 @@ export function getApiBaseUrl(): string {
     return import.meta.env.VITE_API_BASE_URL
   }
   return "http://localhost:3000"
+}
+
+export const getBackendUrl = getApiBaseUrl
+
+export interface RegisterDoctorInput {
+  fullName: string
+  email: string
+  password: string
+  phone?: string
+}
+
+export interface RegisterDoctorResult {
+  accessToken: string
+  refreshToken: string
+  doctor: {
+    id: string
+    email: string
+    fullName: string
+    phone?: string
+  }
+}
+
+export interface CreateClinicInput {
+  name: string
+  slug?: string
+  phone: string
+  email: string
+  address: {
+    street: string
+    city: string
+    state: string
+    postalCode: string
+    country: string
+  }
+}
+
+export interface CreateClinicResult {
+  clinic: {
+    _id?: string
+    id?: string
+    name: string
+    slug: string
+    phone: string
+    email: string
+  }
+  membership: {
+    _id?: string
+    id?: string
+    clinicId?: string
+    doctorId?: string
+    role: string
+  }
+}
+
+export async function registerDoctor(
+  input: RegisterDoctorInput,
+): Promise<RegisterDoctorResult> {
+  const url = `${getApiBaseUrl()}/auth/register`
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(input),
+  })
+
+  const data = await res.json().catch(() => ({}))
+
+  if (!res.ok) {
+    let message = data?.message
+    if (Array.isArray(message)) {
+      message = message.join(", ")
+    }
+    if (!message) {
+      message =
+        res.status === 409
+          ? "An account with this email address already exists."
+          : `Registration failed (${res.status})`
+    }
+    const err = new Error(message)
+    ;(err as any).status = res.status
+    throw err
+  }
+
+  return data as RegisterDoctorResult
+}
+
+export async function createClinic(
+  token: string,
+  input: CreateClinicInput,
+): Promise<CreateClinicResult> {
+  const url = `${getApiBaseUrl()}/clinics`
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify(input),
+  })
+
+  const data = await res.json().catch(() => ({}))
+
+  if (!res.ok) {
+    let message = data?.message
+    if (Array.isArray(message)) {
+      message = message.join(", ")
+    }
+    if (!message) {
+      message =
+        res.status === 401
+          ? "Unauthorized session. Token has expired."
+          : `Failed to create clinic (${res.status})`
+    }
+    const err = new Error(message)
+    ;(err as any).status = res.status
+    throw err
+  }
+
+  return data as CreateClinicResult
+}
+
+export async function refreshAuthTokens(
+  refreshToken: string,
+): Promise<{ accessToken: string refreshToken: string }> {
+  const url = `${getApiBaseUrl()}/auth/refresh`
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ refreshToken }),
+  })
+
+  const data = await res.json().catch(() => ({}))
+
+  if (!res.ok) {
+    const err = new Error(
+      data?.message || "Failed to refresh authentication session",
+    )
+    ;(err as any).status = res.status
+    throw err
+  }
+
+  return data
 }
 
 /**
@@ -573,10 +716,10 @@ export async function getLocalCatalogueStrengthsCache(
   medicineName: string,
   formulation?: string,
 ): Promise<string[]> {
-  const result = await invokeTauri<string[]>(
-    "get_catalogue_strengths_cache",
-    { medicineName, formulation: formulation || null },
-  )
+  const result = await invokeTauri<string[]>("get_catalogue_strengths_cache", {
+    medicineName,
+    formulation: formulation || null,
+  })
   return result || []
 }
 
@@ -656,7 +799,11 @@ export async function getCatalogueStrengths(
   medicineName: string,
   token?: string,
   formulation?: string,
-): Promise<{ strengths: string[]; isSingleMatch: boolean; isOfflineCache?: boolean }> {
+): Promise<{
+  strengths: string[]
+  isSingleMatch: boolean
+  isOfflineCache?: boolean
+}> {
   const backendUrl = getBackendUrl()
   if (token && typeof navigator !== "undefined" && navigator.onLine) {
     try {
@@ -682,7 +829,10 @@ export async function getCatalogueStrengths(
     }
   }
 
-  const localStrengths = await getLocalCatalogueStrengthsCache(medicineName, formulation)
+  const localStrengths = await getLocalCatalogueStrengthsCache(
+    medicineName,
+    formulation,
+  )
   return {
     strengths: localStrengths,
     isSingleMatch: localStrengths.length === 1,

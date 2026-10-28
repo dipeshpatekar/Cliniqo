@@ -10,6 +10,7 @@ import { PrescriptionModule } from './prescription/prescription.module.js';
 import { SyncModule } from './sync/sync.module.js';
 import { FormularyModule } from './formulary/formulary.module.js';
 import { BillingModule } from './billing/billing.module.js';
+import { CatalogueModule } from './catalogue/catalogue.module.js';
 
 @Module({
   imports: [
@@ -24,6 +25,7 @@ import { BillingModule } from './billing/billing.module.js';
     SyncModule,
     FormularyModule,
     BillingModule,
+    CatalogueModule,
   ],
 })
 export class AppModule {}

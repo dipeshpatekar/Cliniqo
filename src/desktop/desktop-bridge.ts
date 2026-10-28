@@ -3,6 +3,8 @@
  * Provides typed Tauri 2 IPC bindings when running inside the Tauri Windows desktop shell,
  * with graceful fallback for standard web browser environments and cryptographically verified sessions.
  */
+import type { CatalogueItem, CatalogueSearchResult } from "../types"
+
 
 export interface DesktopInfo {
   os: string
@@ -511,4 +513,179 @@ export async function deleteLocalFormularyItem(
     id,
   })
   return result !== null
+}
+
+export interface LocalCatalogueCacheRecord {
+  id: string
+  item_type: string
+  name: string
+  brand_name?: string | null
+  generic_name?: string | null
+  product_name?: string | null
+  dosage_form?: string | null
+  route?: string | null
+  active_ingredients_json?: string | null
+  strengths_json: string
+  raw_strength_summary: string
+  is_combination: boolean
+  is_verified: boolean
+  source_provenance: string
+  cached_at: string
+}
+
+export async function searchLocalCatalogueCache(
+  query: string,
+  limit = 20,
+): Promise<CatalogueItem[]> {
+  const result = await invokeTauri<LocalCatalogueCacheRecord[]>(
+    "search_catalogue_cache",
+    { query, limit },
+  )
+  if (!result) return []
+  return result.map((r) => {
+    let parsedStrengths = []
+    try {
+      parsedStrengths = JSON.parse(r.strengths_json)
+    } catch {
+      // ignore
+    }
+    return {
+      id: r.id,
+      sourceIdentifier: r.id,
+      type: r.item_type as "BRAND" | "GENERIC",
+      name: r.name,
+      brandName: r.brand_name || undefined,
+      genericName: r.generic_name || undefined,
+      productName: r.product_name || undefined,
+      dosageForm: r.dosage_form || undefined,
+      route: r.route || undefined,
+      strengths: parsedStrengths,
+      rawStrengthSummary: r.raw_strength_summary,
+      isCombination: r.is_combination,
+      isStrengthVerified: r.is_verified,
+      sourceProvenance: r.source_provenance,
+      cachedAt: r.cached_at,
+    }
+  })
+}
+
+export async function getLocalCatalogueStrengthsCache(
+  medicineName: string,
+  formulation?: string,
+): Promise<string[]> {
+  const result = await invokeTauri<string[]>(
+    "get_catalogue_strengths_cache",
+    { medicineName, formulation: formulation || null },
+  )
+  return result || []
+}
+
+export async function saveCatalogueCacheItems(
+  items: CatalogueItem[],
+): Promise<number> {
+  const payload = items.map((it) => ({
+    id: it.id || it.sourceIdentifier,
+    item_type: it.type,
+    name: it.name,
+    brand_name: it.brandName || null,
+    generic_name: it.genericName || null,
+    product_name: it.productName || null,
+    dosage_form: it.dosageForm || null,
+    route: it.route || null,
+    active_ingredients_json: null,
+    strengths_json: JSON.stringify(it.strengths || []),
+    raw_strength_summary: it.rawStrengthSummary || "",
+    is_combination: Boolean(it.isCombination),
+    is_verified: Boolean(it.isStrengthVerified),
+    source_provenance: it.sourceProvenance || "CDCI_NRCES_INDIA",
+  }))
+  const result = await invokeTauri<number>("save_catalogue_cache", {
+    items: payload,
+  })
+  return result ?? 0
+}
+
+export async function searchCatalogue(
+  query: string,
+  token?: string,
+  limit = 20,
+  formulation?: string,
+): Promise<CatalogueSearchResult> {
+  const backendUrl = getBackendUrl()
+  if (token && typeof navigator !== "undefined" && navigator.onLine) {
+    try {
+      const url = new URL(`${backendUrl}/catalogue/search`)
+      url.searchParams.set("q", query)
+      url.searchParams.set("limit", String(limit))
+      if (formulation) url.searchParams.set("formulation", formulation)
+
+      const resp = await fetch(url.toString(), {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+      })
+      if (resp.ok) {
+        const data = await resp.json()
+        if (data.items && data.items.length > 0 && isTauriDesktop()) {
+          saveCatalogueCacheItems(data.items).catch(() => {})
+        }
+        return {
+          ...data,
+          isOfflineCache: false,
+        }
+      }
+    } catch {
+      // Network failure, fallback to offline SQLite cache
+    }
+  }
+
+  const localItems = await searchLocalCatalogueCache(query, limit)
+  return {
+    items: localItems,
+    total: localItems.length,
+    page: 1,
+    limit,
+    totalPages: Math.ceil(localItems.length / limit) || 1,
+    attribution: "CDCI / NRCeS India (CC BY 4.0) — Local Offline Cache",
+    isOfflineCache: true,
+  }
+}
+
+export async function getCatalogueStrengths(
+  medicineName: string,
+  token?: string,
+  formulation?: string,
+): Promise<{ strengths: string[]; isSingleMatch: boolean; isOfflineCache?: boolean }> {
+  const backendUrl = getBackendUrl()
+  if (token && typeof navigator !== "undefined" && navigator.onLine) {
+    try {
+      const url = new URL(`${backendUrl}/catalogue/strengths`)
+      url.searchParams.set("name", medicineName)
+      if (formulation) url.searchParams.set("formulation", formulation)
+
+      const resp = await fetch(url.toString(), {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+      })
+      if (resp.ok) {
+        const data = await resp.json()
+        return {
+          ...data,
+          isOfflineCache: false,
+        }
+      }
+    } catch {
+      // Fallback
+    }
+  }
+
+  const localStrengths = await getLocalCatalogueStrengthsCache(medicineName, formulation)
+  return {
+    strengths: localStrengths,
+    isSingleMatch: localStrengths.length === 1,
+    isOfflineCache: true,
+  }
 }

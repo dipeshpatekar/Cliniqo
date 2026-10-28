@@ -105,6 +105,9 @@ pub fn run() {
             commands::save_local_formulary_item,
             commands::get_local_formulary,
             commands::delete_local_formulary_item,
+            commands::search_catalogue_cache,
+            commands::get_catalogue_strengths_cache,
+            commands::save_catalogue_cache,
         ])
         .run(tauri::generate_context!())
         .expect("error while building tauri application");

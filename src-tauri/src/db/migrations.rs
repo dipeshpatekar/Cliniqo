@@ -4,7 +4,7 @@ use crate::crypto::key_manager::DatabaseEncryptionKey;
 use crate::crypto::{encrypt_payload, CryptoError};
 use super::schema::{
     ClinicalData, PatientDemographics, CREATE_MIGRATIONS_TABLE, MIGRATION_V1_SQL, MIGRATION_V2_SQL,
-    MIGRATION_V3_SQL, MIGRATION_V4_SQL,
+    MIGRATION_V3_SQL, MIGRATION_V4_SQL, MIGRATION_V5_SQL,
 };
 
 #[derive(Error, Debug)]
@@ -21,7 +21,7 @@ pub enum MigrationError {
     #[error("Migration transaction failed: {0}")]
     TransactionError(String),
 
-    #[error("Unsupported schema version: database is at version {0}, but this client only supports up to version 4. Please update the application.")]
+    #[error("Unsupported schema version: database is at version {0}, but this client only supports up to version 5. Please update the application.")]
     UnsupportedSchemaVersion(i32),
 }
 
@@ -73,7 +73,7 @@ impl MigrationRunner {
             )
             .unwrap_or(0);
 
-        if max_version > 4 {
+        if max_version > 5 {
             return Err(MigrationError::UnsupportedSchemaVersion(max_version));
         }
 
@@ -141,6 +141,21 @@ impl MigrationRunner {
             log::info!("Applying local offline SQLite migration v4 (Billing & Clinical Formulary)...");
             Self::migrate_to_v4(conn)?;
             log::info!("Migration v4 applied successfully. Billing and clinical formulary schemas active.");
+        }
+
+        // 7. Check if v5 has already been applied
+        let v5_applied: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = 5)",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or(false);
+
+        if !v5_applied {
+            log::info!("Applying local offline SQLite migration v5 (Catalogue offline cache)...");
+            Self::migrate_to_v5(conn)?;
+            log::info!("Migration v5 applied successfully. Local catalogue cache active.");
         }
 
         Ok(())
@@ -532,6 +547,17 @@ impl MigrationRunner {
         tx.commit()?;
         Ok(())
     }
+
+    fn migrate_to_v5(conn: &mut Connection) -> Result<(), MigrationError> {
+        let tx = conn.transaction()?;
+        tx.execute_batch(MIGRATION_V5_SQL)?;
+        tx.execute(
+            "INSERT INTO schema_migrations (version, name, checksum) VALUES (?1, ?2, ?3)",
+            params![5, "catalogue_offline_cache_v5", "v5_cliniqo_catalogue_cache_schema"],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -597,5 +623,30 @@ mod tests {
             1,
             "foreign_keys pragma must remain ON after successful migrations"
         );
+    }
+
+    #[test]
+    fn test_migration_v5_creates_catalogue_cache() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        let dek = DatabaseEncryptionKey::new([0x77u8; 32]);
+        MigrationRunner::run_migrations(&mut conn, &dek).expect("migrations succeed");
+
+        let max_version: i32 = conn
+            .query_row(
+                "SELECT MAX(version) FROM schema_migrations",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(max_version, 5);
+
+        let table_exists: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='local_catalogue_cache_v1')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(table_exists, "local_catalogue_cache_v1 table must exist after v5 migration");
     }
 }

@@ -6,8 +6,8 @@ use crate::crypto::{decrypt_payload, encrypt_payload, CryptoError};
 use crate::crypto::key_manager::DatabaseEncryptionKey;
 use super::schema::{
     ClinicalData, ConflictStatus, ConsultationRecord, DecryptedOutboxItem, EncryptedBillingData,
-    FormularyRecord, InvoiceItem, InvoiceRecord, PatientDemographics, PatientRecord,
-    PrescriptionRecord, SaveFormularyArgs, SaveInvoiceArgs, SyncConflictRecord, SyncFeedChangeItem,
+    FormularyRecord, InvoiceItem, InvoiceRecord, LocalCatalogueItem, PatientDemographics, PatientRecord,
+    PrescriptionRecord, SaveCatalogueCacheItemArgs, SaveFormularyArgs, SaveInvoiceArgs, SyncConflictRecord, SyncFeedChangeItem,
     SyncOutboxSummary, SyncStateRecord,
 };
 
@@ -2965,6 +2965,177 @@ impl DbOperations {
         Ok(())
     }
 
+    /// Caches reference medicine catalogue items into local SQLite for offline access.
+    pub fn cache_catalogue_items(
+        conn: &mut Connection,
+        items: &[SaveCatalogueCacheItemArgs],
+    ) -> Result<usize, DatabaseOpError> {
+        let tx = conn.transaction()?;
+        let mut count = 0;
+        {
+            let mut stmt = tx.prepare(
+                r#"
+                INSERT INTO local_catalogue_cache_v1 (
+                    id, item_type, name, brand_name, generic_name, product_name,
+                    dosage_form, route, active_ingredients_json, strengths_json,
+                    raw_strength_summary, is_combination, is_verified, source_provenance,
+                    cached_at
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, CURRENT_TIMESTAMP)
+                ON CONFLICT(id) DO UPDATE SET
+                    item_type = excluded.item_type,
+                    name = excluded.name,
+                    brand_name = excluded.brand_name,
+                    generic_name = excluded.generic_name,
+                    product_name = excluded.product_name,
+                    dosage_form = excluded.dosage_form,
+                    route = excluded.route,
+                    active_ingredients_json = excluded.active_ingredients_json,
+                    strengths_json = excluded.strengths_json,
+                    raw_strength_summary = excluded.raw_strength_summary,
+                    is_combination = excluded.is_combination,
+                    is_verified = excluded.is_verified,
+                    source_provenance = excluded.source_provenance,
+                    cached_at = CURRENT_TIMESTAMP
+                "#,
+            )?;
+
+            for item in items {
+                stmt.execute(params![
+                    item.id.trim(),
+                    item.item_type.trim(),
+                    item.name.trim(),
+                    item.brand_name.as_deref().map(str::trim),
+                    item.generic_name.as_deref().map(str::trim),
+                    item.product_name.as_deref().map(str::trim),
+                    item.dosage_form.as_deref().map(str::trim),
+                    item.route.as_deref().map(str::trim),
+                    item.active_ingredients_json.as_deref().map(str::trim),
+                    item.strengths_json.trim(),
+                    item.raw_strength_summary.trim(),
+                    if item.is_combination { 1 } else { 0 },
+                    if item.is_verified { 1 } else { 0 },
+                    item.source_provenance.as_deref().unwrap_or("CDCI_NRCES_INDIA").trim(),
+                ])?;
+                count += 1;
+            }
+        }
+        tx.commit()?;
+        Ok(count)
+    }
+
+    /// Searches the local reference catalogue cache for offline prescription assistance.
+    pub fn search_local_catalogue(
+        conn: &Connection,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<LocalCatalogueItem>, DatabaseOpError> {
+        let raw_q = query.trim();
+        if raw_q.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let limit = if limit == 0 { 20 } else { limit.min(100) };
+        let pattern = format!("%{}%", raw_q);
+        let prefix_pattern = format!("{}%", raw_q);
+
+        let mut stmt = conn.prepare(
+            r#"
+            SELECT id, item_type, name, brand_name, generic_name, product_name,
+                   dosage_form, route, active_ingredients_json, strengths_json,
+                   raw_strength_summary, is_combination, is_verified, source_provenance,
+                   cached_at
+            FROM local_catalogue_cache_v1
+            WHERE name LIKE ?1
+               OR generic_name LIKE ?1
+               OR brand_name LIKE ?1
+               OR product_name LIKE ?1
+            ORDER BY
+               CASE WHEN name LIKE ?2 THEN 0 ELSE 1 END,
+               name ASC
+            LIMIT ?3
+            "#,
+        )?;
+
+        let rows = stmt.query_map(params![pattern, prefix_pattern, limit as i64], |row| {
+            let is_comb: i32 = row.get(11)?;
+            let is_ver: i32 = row.get(12)?;
+            Ok(LocalCatalogueItem {
+                id: row.get(0)?,
+                item_type: row.get(1)?,
+                name: row.get(2)?,
+                brand_name: row.get(3)?,
+                generic_name: row.get(4)?,
+                product_name: row.get(5)?,
+                dosage_form: row.get(6)?,
+                route: row.get(7)?,
+                active_ingredients_json: row.get(8)?,
+                strengths_json: row.get(9)?,
+                raw_strength_summary: row.get(10)?,
+                is_combination: is_comb == 1,
+                is_verified: is_ver == 1,
+                source_provenance: row.get(13)?,
+                cached_at: row.get(14)?,
+            })
+        })?;
+
+        let mut items = Vec::new();
+        for item in rows {
+            items.push(item?);
+        }
+        Ok(items)
+    }
+
+    /// Retrieves verified strength strings from the offline catalogue cache for auto-population.
+    pub fn get_local_catalogue_strengths(
+        conn: &Connection,
+        medicine_name: &str,
+        formulation: Option<&str>,
+    ) -> Result<Vec<String>, DatabaseOpError> {
+        let raw_name = medicine_name.trim();
+        if raw_name.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut query_sql = String::from(
+            r#"
+            SELECT DISTINCT raw_strength_summary
+            FROM local_catalogue_cache_v1
+            WHERE (name = ?1 OR generic_name = ?1 OR brand_name = ?1 OR product_name = ?1)
+              AND is_verified = 1
+              AND raw_strength_summary != ''
+              AND raw_strength_summary != 'Unspecified'
+            "#,
+        );
+
+        if formulation.is_some() {
+            query_sql.push_str(" AND dosage_form = ?2");
+        }
+        query_sql.push_str(" ORDER BY raw_strength_summary ASC");
+
+        let mut stmt = conn.prepare(&query_sql)?;
+        let mut list = Vec::new();
+
+        if let Some(form) = formulation {
+            let mut rows = stmt.query(params![raw_name, form.trim()])?;
+            while let Some(row) = rows.next()? {
+                let s: String = row.get(0)?;
+                if !s.trim().is_empty() {
+                    list.push(s);
+                }
+            }
+        } else {
+            let mut rows = stmt.query(params![raw_name])?;
+            while let Some(row) = rows.next()? {
+                let s: String = row.get(0)?;
+                if !s.trim().is_empty() {
+                    list.push(s);
+                }
+            }
+        }
+        Ok(list)
+    }
+
+
     fn map_invoice_row(
         row: &rusqlite::Row,
     ) -> rusqlite::Result<RawInvoiceRow> {
@@ -3406,16 +3577,16 @@ mod tests {
         )
         .unwrap();
 
-        // Simulate a database from a newer future application (e.g. version 5)
+        // Simulate a database from a newer future application (e.g. version 6)
         conn.execute(
-            "INSERT INTO schema_migrations (version, name, checksum) VALUES (5, 'future_v5', 'chk5')",
+            "INSERT INTO schema_migrations (version, name, checksum) VALUES (6, 'future_v6', 'chk6')",
             [],
         )
         .unwrap();
 
         let result = MigrationRunner::run_migrations(&mut conn, &dek);
         assert!(
-            matches!(result, Err(MigrationError::UnsupportedSchemaVersion(5))),
+            matches!(result, Err(MigrationError::UnsupportedSchemaVersion(6))),
             "Must fail closed when database schema version exceeds supported range"
         );
     }
@@ -4861,5 +5032,106 @@ mod tests {
         // Conflict recorded in local_sync_conflicts
         let conflicts = DbOperations::get_conflicts(&conn, Some("OPEN")).unwrap();
         assert!(conflicts.iter().any(|c| c.entity_type == "INVOICE" && c.entity_id == local_inv_id));
+    }
+
+    #[test]
+    fn test_catalogue_cache_and_offline_search() {
+        let (mut conn, _dek) = setup_test_db();
+
+        let items = vec![
+            SaveCatalogueCacheItemArgs {
+                id: "B1001".to_string(),
+                item_type: "BRAND".to_string(),
+                name: "Dolo 650".to_string(),
+                brand_name: Some("Dolo 650".to_string()),
+                generic_name: Some("Paracetamol".to_string()),
+                product_name: Some("Dolo 650 Tablet".to_string()),
+                dosage_form: Some("Tablet".to_string()),
+                route: Some("Oral".to_string()),
+                active_ingredients_json: Some(r#"["Paracetamol"]"#.to_string()),
+                strengths_json: r#"[{"raw_strength":"650 mg","value":650,"unit":"mg"}]"#.to_string(),
+                raw_strength_summary: "650 mg".to_string(),
+                is_combination: false,
+                is_verified: true,
+                source_provenance: Some("CDCI_NRCES_INDIA".to_string()),
+            },
+            SaveCatalogueCacheItemArgs {
+                id: "B1002".to_string(),
+                item_type: "BRAND".to_string(),
+                name: "Calpol 500".to_string(),
+                brand_name: Some("Calpol 500".to_string()),
+                generic_name: Some("Paracetamol".to_string()),
+                product_name: Some("Calpol 500 Tablet".to_string()),
+                dosage_form: Some("Tablet".to_string()),
+                route: Some("Oral".to_string()),
+                active_ingredients_json: Some(r#"["Paracetamol"]"#.to_string()),
+                strengths_json: r#"[{"raw_strength":"500 mg","value":500,"unit":"mg"}]"#.to_string(),
+                raw_strength_summary: "500 mg".to_string(),
+                is_combination: false,
+                is_verified: true,
+                source_provenance: Some("CDCI_NRCES_INDIA".to_string()),
+            },
+            SaveCatalogueCacheItemArgs {
+                id: "B1003".to_string(),
+                item_type: "BRAND".to_string(),
+                name: "Calpol 250 Syrup".to_string(),
+                brand_name: Some("Calpol 250 Syrup".to_string()),
+                generic_name: Some("Paracetamol".to_string()),
+                product_name: Some("Calpol 250 Syrup".to_string()),
+                dosage_form: Some("Syrup".to_string()),
+                route: Some("Oral".to_string()),
+                active_ingredients_json: Some(r#"["Paracetamol"]"#.to_string()),
+                strengths_json: r#"[{"raw_strength":"250 mg/5 mL","value":250,"unit":"mg/5 mL"}]"#.to_string(),
+                raw_strength_summary: "250 mg/5 mL".to_string(),
+                is_combination: false,
+                is_verified: true,
+                source_provenance: Some("CDCI_NRCES_INDIA".to_string()),
+            },
+            SaveCatalogueCacheItemArgs {
+                id: "B1004".to_string(),
+                item_type: "BRAND".to_string(),
+                name: "Unverified Herb".to_string(),
+                brand_name: Some("Unverified Herb".to_string()),
+                generic_name: None,
+                product_name: None,
+                dosage_form: Some("Ointment".to_string()),
+                route: Some("Topical".to_string()),
+                active_ingredients_json: None,
+                strengths_json: "[]".to_string(),
+                raw_strength_summary: "Unspecified".to_string(),
+                is_combination: false,
+                is_verified: false,
+                source_provenance: Some("CDCI_NRCES_INDIA".to_string()),
+            },
+        ];
+
+        // 1. Cache items
+        let count = DbOperations::cache_catalogue_items(&mut conn, &items).unwrap();
+        assert_eq!(count, 4);
+
+        // 2. Search prefix matches first
+        let search_results = DbOperations::search_local_catalogue(&conn, "Calpol", 10).unwrap();
+        assert_eq!(search_results.len(), 2);
+        assert_eq!(search_results[0].name, "Calpol 250 Syrup");
+        assert_eq!(search_results[1].name, "Calpol 500");
+
+        // 3. Search substring/generic name
+        let para_results = DbOperations::search_local_catalogue(&conn, "Paracetamol", 10).unwrap();
+        assert_eq!(para_results.len(), 3);
+
+        // 4. Extract verified strengths for medicine
+        let calpol_strengths = DbOperations::get_local_catalogue_strengths(&conn, "Calpol 500", None).unwrap();
+        assert_eq!(calpol_strengths, vec!["500 mg"]);
+
+        let tablet_strengths = DbOperations::get_local_catalogue_strengths(&conn, "Paracetamol", Some("Tablet")).unwrap();
+        assert_eq!(tablet_strengths, vec!["500 mg", "650 mg"]);
+
+        // 5. Unverified strengths are not extracted
+        let herb_strengths = DbOperations::get_local_catalogue_strengths(&conn, "Unverified Herb", None).unwrap();
+        assert!(herb_strengths.is_empty());
+
+        // 6. Safe idempotency on rerun
+        let count2 = DbOperations::cache_catalogue_items(&mut conn, &items).unwrap();
+        assert_eq!(count2, 4);
     }
 }

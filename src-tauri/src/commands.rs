@@ -8,8 +8,8 @@ use crate::crypto::key_manager::KeyManager;
 use crate::db::DatabaseManager;
 use crate::db::operations::DbOperations;
 use crate::db::schema::{
-    ConsultationRecord, FormularyRecord, InvoiceRecord, PatientRecord, PrescriptionRecord,
-    SaveFormularyArgs, SaveInvoiceArgs, SyncConflictRecord, SyncOutboxSummary, SyncStateRecord,
+    ConsultationRecord, FormularyRecord, InvoiceRecord, LocalCatalogueItem, PatientRecord, PrescriptionRecord,
+    SaveCatalogueCacheItemArgs, SaveFormularyArgs, SaveInvoiceArgs, SyncConflictRecord, SyncOutboxSummary, SyncStateRecord,
 };
 use crate::sync::{SyncStatusInfo, SyncWorkerHandle};
 
@@ -909,6 +909,54 @@ pub fn delete_local_formulary_item(
     let mut conn = state.db.get_connection();
     DbOperations::delete_formulary_item(&mut conn, &clinic_id, &id).map_err(|e| e.to_string())
 }
+
+#[tauri::command]
+pub fn search_catalogue_cache(
+    state: State<'_, AppState>,
+    query: String,
+    limit: Option<usize>,
+) -> Result<Vec<LocalCatalogueItem>, String> {
+    let _session = state
+        .session_mgr
+        .validate_session(None)
+        .map_err(|e| e.to_string())?;
+
+    let conn = state.db.get_connection();
+    DbOperations::search_local_catalogue(&conn, &query, limit.unwrap_or(20))
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn get_catalogue_strengths_cache(
+    state: State<'_, AppState>,
+    medicine_name: String,
+    formulation: Option<String>,
+) -> Result<Vec<String>, String> {
+    let _session = state
+        .session_mgr
+        .validate_session(None)
+        .map_err(|e| e.to_string())?;
+
+    let conn = state.db.get_connection();
+    DbOperations::get_local_catalogue_strengths(&conn, &medicine_name, formulation.as_deref())
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn save_catalogue_cache(
+    state: State<'_, AppState>,
+    items: Vec<SaveCatalogueCacheItemArgs>,
+) -> Result<usize, String> {
+    let _session = state
+        .session_mgr
+        .validate_session(None)
+        .map_err(|e| e.to_string())?;
+
+    let mut conn = state.db.get_connection();
+    DbOperations::cache_catalogue_items(&mut conn, &items)
+        .map_err(|e| e.to_string())
+}
+
 
 #[cfg(test)]
 mod tests {

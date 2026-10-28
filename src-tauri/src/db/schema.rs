@@ -270,6 +270,32 @@ CREATE INDEX IF NOT EXISTS idx_formulary_v2_name ON local_formulary_v2(clinic_id
 CREATE INDEX IF NOT EXISTS idx_formulary_v2_formulation ON local_formulary_v2(clinic_id, formulation);
 "#;
 
+/// Migration V5: Introduces offline reference catalogue cache for CDCI medicines and search acceleration.
+pub const MIGRATION_V5_SQL: &str = r#"
+CREATE TABLE IF NOT EXISTS local_catalogue_cache_v1 (
+    id TEXT PRIMARY KEY,
+    item_type TEXT NOT NULL,
+    name TEXT NOT NULL,
+    brand_name TEXT NULL,
+    generic_name TEXT NULL,
+    product_name TEXT NULL,
+    dosage_form TEXT NULL,
+    route TEXT NULL,
+    active_ingredients_json TEXT NULL,
+    strengths_json TEXT NOT NULL,
+    raw_strength_summary TEXT NOT NULL DEFAULT '',
+    is_combination INTEGER NOT NULL DEFAULT 0,
+    is_verified INTEGER NOT NULL DEFAULT 1,
+    source_provenance TEXT NOT NULL DEFAULT 'CDCI_NRCES_INDIA',
+    cached_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_cat_cache_name ON local_catalogue_cache_v1(name);
+CREATE INDEX IF NOT EXISTS idx_cat_cache_generic ON local_catalogue_cache_v1(generic_name);
+CREATE INDEX IF NOT EXISTS idx_cat_cache_form ON local_catalogue_cache_v1(dosage_form);
+"#;
+
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct PatientDemographics {
     pub name: String,
@@ -525,6 +551,51 @@ pub struct SaveFormularyArgs {
     pub default_frequency: Option<String>,
     pub default_duration: Option<String>,
     pub default_instructions: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LocalCatalogueStrength {
+    pub ingredient: Option<String>,
+    pub raw_strength: String,
+    pub value: Option<f64>,
+    pub unit: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LocalCatalogueItem {
+    pub id: String,
+    pub item_type: String, // "BRAND" | "GENERIC"
+    pub name: String,
+    pub brand_name: Option<String>,
+    pub generic_name: Option<String>,
+    pub product_name: Option<String>,
+    pub dosage_form: Option<String>,
+    pub route: Option<String>,
+    pub active_ingredients_json: Option<String>,
+    pub strengths_json: String,
+    pub raw_strength_summary: String,
+    pub is_combination: bool,
+    pub is_verified: bool,
+    pub source_provenance: String,
+    pub cached_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SaveCatalogueCacheItemArgs {
+    pub id: String,
+    pub item_type: String,
+    pub name: String,
+    pub brand_name: Option<String>,
+    pub generic_name: Option<String>,
+    pub product_name: Option<String>,
+    pub dosage_form: Option<String>,
+    pub route: Option<String>,
+    pub active_ingredients_json: Option<String>,
+    pub strengths_json: String,
+    pub raw_strength_summary: String,
+    pub is_combination: bool,
+    pub is_verified: bool,
+    pub source_provenance: Option<String>,
 }
 
 

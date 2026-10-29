@@ -88,7 +88,8 @@ jobs:
 
       - name: Build Web Application
         env:
-          VITE_API_BASE_URL: https://api.cliniqo.app
+          VITE_API_BASE_URL: https://cliniqo-backend-68x3.onrender.com
+          CLINIQO_BACKEND_URL: https://cliniqo-backend-68x3.onrender.com
         run: pnpm build
 
       - name: Build Backend Application
@@ -97,7 +98,8 @@ jobs:
       - name: Build Tauri Windows Desktop Shell & NSIS Installer
         # Generates production NSIS setup installer (.exe) for Windows distribution.
         env:
-          VITE_API_BASE_URL: https://api.cliniqo.app
+          VITE_API_BASE_URL: https://cliniqo-backend-68x3.onrender.com
+          CLINIQO_BACKEND_URL: https://cliniqo-backend-68x3.onrender.com
         run: pnpm tauri build --bundles nsis
 
       - name: Archive Windows NSIS Installer Artifact

@@ -6,6 +6,7 @@ import {
   TokenService,
   hashOpaqueToken,
   parseDurationMs,
+  normalizePemKey,
 } from './token.service.js';
 import { ConfigService } from '../config/config.service.js';
 import { DoctorStatus } from './auth.constants.js';
@@ -277,6 +278,28 @@ describe('TokenService', () => {
           $set: expect.objectContaining({ isRevoked: true }),
         }),
       );
+    });
+  });
+
+  describe('normalizePemKey', () => {
+    it('should format raw base64 key into valid PEM block with headers', () => {
+      const rawBase64 = 'MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA3CxRzNxFJV/qUjkRPgXG';
+      const result = normalizePemKey(rawBase64, 'PUBLIC KEY');
+      expect(result).toContain('-----BEGIN PUBLIC KEY-----');
+      expect(result).toContain('-----END PUBLIC KEY-----');
+      expect(result).toContain(rawBase64);
+    });
+
+    it('should preserve already formatted PEM key', () => {
+      const pem = '-----BEGIN PUBLIC KEY-----\nMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8A\n-----END PUBLIC KEY-----\n';
+      const result = normalizePemKey(pem, 'PUBLIC KEY');
+      expect(result).toBe(pem);
+    });
+
+    it('should replace literal escaped \\n with actual newlines', () => {
+      const escaped = '-----BEGIN PRIVATE KEY-----\\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC\\n-----END PRIVATE KEY-----';
+      const result = normalizePemKey(escaped, 'PRIVATE KEY');
+      expect(result).toBe('-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC\n-----END PRIVATE KEY-----\n');
     });
   });
 });

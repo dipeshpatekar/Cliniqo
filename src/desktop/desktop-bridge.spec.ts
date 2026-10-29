@@ -51,7 +51,7 @@ describe("Desktop Bridge (Tauri 2 Frontend Integration)", () => {
   })
 
   it("enforces explicit production and dev API constants without credentials", () => {
-    expect(PRODUCTION_API_URL).toBe("https://api.cliniqo.app")
+    expect(PRODUCTION_API_URL).toBe("https://cliniqo-backend-68x3.onrender.com")
     expect(DEFAULT_DEV_API_URL).toBe("http://localhost:3000")
     expect(PRODUCTION_API_URL).not.toContain("mongodb")
     expect(PRODUCTION_API_URL).not.toContain("password")

@@ -151,7 +151,7 @@ export function isTauriDesktop(): boolean {
  * Production and development backend API URLs.
  * In production desktop and web builds, never points at localhost.
  */
-export const PRODUCTION_API_URL = "https://api.cliniqo.app"
+export const PRODUCTION_API_URL = "https://cliniqo-backend-68x3.onrender.com"
 export const DEFAULT_DEV_API_URL = "http://localhost:3000"
 
 /**

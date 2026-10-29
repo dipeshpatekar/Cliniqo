@@ -53,6 +53,19 @@ export interface PublicKeyInfo {
   audience: string;
 }
 
+export function normalizePemKey(
+  key: string,
+  type: 'PRIVATE KEY' | 'PUBLIC KEY',
+): string {
+  let cleaned = key.trim().replace(/\\n/g, '\n');
+  if (!cleaned.includes(`-----BEGIN ${type}-----`)) {
+    const raw = cleaned.replace(/-----.*?-----|\s/g, '');
+    const chunked = raw.match(/.{1,64}/g)?.join('\n') || raw;
+    return `-----BEGIN ${type}-----\n${chunked}\n-----END ${type}-----\n`;
+  }
+  return cleaned.endsWith('\n') ? cleaned : `${cleaned}\n`;
+}
+
 @Injectable()
 export class TokenService {
   private readonly logger = new Logger(TokenService.name);
@@ -68,8 +81,14 @@ export class TokenService {
   ) {
     if (this.configService.jwtPrivateKey && this.configService.jwtPublicKey) {
       this.rsaKeyPair = {
-        privateKey: this.configService.jwtPrivateKey,
-        publicKey: this.configService.jwtPublicKey,
+        privateKey: normalizePemKey(
+          this.configService.jwtPrivateKey,
+          'PRIVATE KEY',
+        ),
+        publicKey: normalizePemKey(
+          this.configService.jwtPublicKey,
+          'PUBLIC KEY',
+        ),
       };
     } else {
       if (this.configService.isProduction) {

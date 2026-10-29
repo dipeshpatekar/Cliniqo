@@ -2,7 +2,7 @@ services:
   - type: web
     name: cliniqo-backend
     runtime: node
-    plan: starter
+    plan: free
     rootDir: backend
     buildCommand: pnpm install --frozen-lockfile && pnpm run build
     startCommand: pnpm run start:prod

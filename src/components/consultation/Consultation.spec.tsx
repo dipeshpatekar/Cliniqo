@@ -113,7 +113,7 @@ describe("Consultation Components & UX", () => {
   })
 
   describe("PrescriptionPreview", () => {
-    it("renders printable prescription paper with doctor signature, medicines and instructions", () => {
+    it("renders printable prescription paper with authenticated doctor and clinic identity", () => {
       const rawHtml = renderToString(
         <PrescriptionPreview
           go={() => {}}
@@ -127,20 +127,55 @@ describe("Consultation Components & UX", () => {
           showClinicEmail={true}
           showAllergyWarning={true}
           returnPage="consultation"
+          desktopSession={{
+            doctor_id: "doc-sarah-1",
+            clinic_id: "clinic-apollo-99",
+            doctor_name: "Dr. Sarah Jenkins",
+            doctor_email: "sarah@apollocare.in",
+            role: "OWNER",
+            expires_at: 9999999999,
+          }}
         />,
       )
       const html = rawHtml.replace(/<!-- -->/g, "")
 
       expect(html).toContain("Prescription preview")
       expect(html).toContain("printable-prescription")
-      expect(html).toContain("Nishti Hospital")
-      expect(html).toContain("Dr. Nikhil Kanade")
+      expect(html).toContain("Dr. Sarah Jenkins")
+      expect(html).toContain("Clinic clinic-apollo-99")
+      expect(html).not.toContain("Dr. Nikhil Kanade")
+      expect(html).not.toContain("Nishti Hospital")
       expect(html).toContain("Paracetamol")
       expect(html).toContain("125/82 mmHg")
       expect(html).toContain("Allergy alert")
       expect(html).toContain("Amoxicillin")
       expect(html).toContain("Print prescription")
       expect(html).toContain("Send on WhatsApp")
+    })
+
+    it("displays clean incomplete-profile state without session and never leaks another doctor's profile", () => {
+      const rawHtml = renderToString(
+        <PrescriptionPreview
+          go={() => {}}
+          patient={samplePatient}
+          vitals={sampleVitals}
+          data={sampleData}
+          bannerVisible={true}
+          bannerImage={null}
+          signatureImage={null}
+          showClinicLogo={true}
+          showClinicEmail={true}
+          showAllergyWarning={true}
+          returnPage="consultation"
+          desktopSession={null}
+        />,
+      )
+      const html = rawHtml.replace(/<!-- -->/g, "")
+
+      expect(html).toContain("Medical Clinic")
+      expect(html).toContain("Local Clinic Workspace")
+      expect(html).not.toContain("Dr. Nikhil Kanade")
+      expect(html).not.toContain("Nishti Hospital")
     })
   })
 })

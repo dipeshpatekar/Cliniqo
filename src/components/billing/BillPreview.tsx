@@ -66,7 +66,7 @@ export function BillPreview({
     : "—"
 
   const isFinalized = bill.status === "FINALIZED"
-  const doctorName = desktopSession?.doctor_name || "Dr. Nikhil Kanade"
+  const doctorName = desktopSession?.doctor_name || "Doctor"
 
   const sendBill = () => {
     setDelivery("sending")
@@ -149,24 +149,25 @@ export function BillPreview({
                     <HeartPulse size={24} />
                   </span>
                   <div>
-                    <h2>Nishti Hospital</h2>
-                    <p>14, Sea View Road, Bandra West, Mumbai 400050</p>
-                    <p>
-                      +91 22 4123 8765 ·{" "}
-                      <span
-                        className={cn(
-                          !layout.showClinicEmail && "rx-content-hidden",
-                        )}
-                      >
-                        care@harbourclinic.in
-                      </span>
-                    </p>
+                    <h2>{desktopSession?.clinic_id ? `Clinic ${desktopSession.clinic_id}` : "Medical Clinic"}</h2>
+                    <p>{desktopSession?.clinic_id ? `Registered Clinic (${desktopSession.clinic_id})` : "Local Clinic Workspace"}</p>
+                    {desktopSession?.doctor_email && (
+                      <p>
+                        <span
+                          className={cn(
+                            !layout.showClinicEmail && "rx-content-hidden",
+                          )}
+                        >
+                          {desktopSession.doctor_email}
+                        </span>
+                      </p>
+                    )}
                   </div>
                 </div>
                 <div className="rx-doctor">
                   <strong>{doctorName}</strong>
-                  <span>MBBS, MD (Internal Medicine)</span>
-                  <span>Reg. No. MMC 2011/04/1842</span>
+                  <span>{desktopSession ? "Authorized Medical Practitioner" : "Medical Practitioner"}</span>
+                  <span>{desktopSession?.doctor_id ? `Doctor ID: ${desktopSession.doctor_id}` : "Profile Incomplete"}</span>
                 </div>
               </header>
             )}
@@ -311,14 +312,14 @@ export function BillPreview({
           >
             <strong>Payment status: {bill.paymentStatus}</strong>
             <span>
-              Thank you for choosing Nishti Hospital. Please retain this bill
+              Thank you for choosing {desktopSession?.clinic_id ? `Clinic ${desktopSession.clinic_id}` : "our clinic"}. Please retain this bill
               for your records.
             </span>
           </section>
 
           <footer className="rx-footer bill-footer">
             <div>
-              <span>For Nishti Hospital</span>
+              <span>For {desktopSession?.clinic_id ? `Clinic ${desktopSession.clinic_id}` : "Authorized Clinic"}</span>
               <strong>Authorized medical services bill</strong>
             </div>
             <div

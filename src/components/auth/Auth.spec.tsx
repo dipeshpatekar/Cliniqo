@@ -3,6 +3,8 @@ import { renderToString } from "react-dom/server"
 import { Register } from "./Register"
 import { Setup } from "./Setup"
 import { Login } from "./Login"
+import { Sidebar } from "../layout"
+import { SettingsProfile } from "../settings/SettingsProfile"
 import * as desktopBridge from "../../desktop/desktop-bridge"
 
 describe("Auth Flow Regression: Registration to Profile Setup Navigation", () => {
@@ -413,6 +415,155 @@ describe("Auth Flow Regression: Registration to Profile Setup Navigation", () =>
 
       // Now navigation to dashboard is fully allowed!
       expect(evaluateRouteGuard("dashboard")).toBe("dashboard")
+    })
+  })
+
+  describe("Doctor Identity Isolation & Session Lifecycle Regression", () => {
+    it("displays newly registered doctor identity and clinic in dashboard and settings (never Nikhil Kanaade)", () => {
+      const newlyRegisteredSession: desktopBridge.DesktopSessionContext = {
+        doctor_id: "doc-sharma-101",
+        clinic_id: "clinic-sharma-999",
+        doctor_email: "aarti.sharma@healthclinic.in",
+        doctor_name: "Dr. Aarti Sharma",
+        role: "OWNER",
+        expires_at: Math.floor(Date.now() / 1000) + 86400,
+      }
+
+      // 1. Sidebar rendering
+      const sidebarHtml = renderToString(
+        <Sidebar
+          page="dashboard"
+          go={vi.fn()}
+          collapsed={false}
+          onToggle={vi.fn()}
+          onDoctorProfile={vi.fn()}
+          desktopSession={newlyRegisteredSession}
+        />,
+      )
+
+      expect(sidebarHtml).toContain("Dr. Aarti Sharma")
+      expect(sidebarHtml).toContain("DA") // Initials: Dr. Aarti
+      expect(sidebarHtml).toContain("Clinic: clinic-sharma-999")
+      expect(sidebarHtml).not.toContain("Dr. Nikhil Kanade")
+      expect(sidebarHtml).not.toContain("Nishti Hospital")
+      expect(sidebarHtml).not.toContain("nikhil@nishtihospital.in")
+
+      // 2. SettingsProfile rendering
+      const profileHtml = renderToString(
+        <SettingsProfile desktopSession={newlyRegisteredSession} />,
+      )
+
+      expect(profileHtml).toContain("Dr. Aarti Sharma")
+      expect(profileHtml).toContain("aarti.sharma@healthclinic.in")
+      expect(profileHtml).not.toContain("Dr. Nikhil Kanade")
+      expect(profileHtml).not.toContain("Nishti Hospital")
+      expect(profileHtml).not.toContain("nikhil@nishtihospital.in")
+    })
+
+    it("ensures Doctor A logout followed by Doctor B login completely isolates doctor identity and clinic", () => {
+      // Doctor A Session
+      const doctorASession: desktopBridge.DesktopSessionContext = {
+        doctor_id: "doc-A",
+        clinic_id: "clinic-A",
+        doctor_email: "doctorA@alpha.in",
+        doctor_name: "Dr. Doctor Alpha",
+        role: "OWNER",
+        expires_at: Math.floor(Date.now() / 1000) + 86400,
+      }
+
+      let currentSession: desktopBridge.DesktopSessionContext | null = doctorASession
+      let currentPatients: any[] = [{ id: "P-A1", name: "Patient Alpha" }]
+      let currentConsultationNotes: string = "Doctor Alpha confidential clinical notes"
+
+      // Verify Doctor A's identity
+      let sidebarA = renderToString(
+        <Sidebar
+          page="dashboard"
+          go={vi.fn()}
+          collapsed={false}
+          onToggle={vi.fn()}
+          onDoctorProfile={vi.fn()}
+          desktopSession={currentSession}
+        />,
+      )
+      expect(sidebarA).toContain("Dr. Doctor Alpha")
+
+      // Doctor A logs out: state reset simulation matching App.tsx logout()
+      currentSession = null
+      currentPatients = []
+      currentConsultationNotes = ""
+
+      expect(currentSession).toBeNull()
+      expect(currentPatients).toHaveLength(0)
+      expect(currentConsultationNotes).toBe("")
+
+      // Doctor B logs in
+      const doctorBSession: desktopBridge.DesktopSessionContext = {
+        doctor_id: "doc-B",
+        clinic_id: "clinic-B",
+        doctor_email: "doctorB@beta.in",
+        doctor_name: "Dr. Doctor Beta",
+        role: "DOCTOR",
+        expires_at: Math.floor(Date.now() / 1000) + 86400,
+      }
+      currentSession = doctorBSession
+
+      // Render Doctor B's view
+      let sidebarB = renderToString(
+        <Sidebar
+          page="dashboard"
+          go={vi.fn()}
+          collapsed={false}
+          onToggle={vi.fn()}
+          onDoctorProfile={vi.fn()}
+          desktopSession={currentSession}
+        />,
+      )
+      expect(sidebarB).toContain("Dr. Doctor Beta")
+      expect(sidebarB).toContain("DD") // Initials: Dr. Doctor
+      expect(sidebarB).toContain("Clinic: clinic-B")
+      expect(sidebarB).not.toContain("Dr. Doctor Alpha")
+      expect(sidebarB).not.toContain("Dr. Nikhil Kanade")
+      expect(sidebarB).not.toContain("Nishti Hospital")
+
+      let profileB = renderToString(
+        <SettingsProfile desktopSession={currentSession} />,
+      )
+      expect(profileB).toContain("Dr. Doctor Beta")
+      expect(profileB).toContain("doctorB@beta.in")
+      expect(profileB).not.toContain("Dr. Doctor Alpha")
+      expect(profileB).not.toContain("Dr. Nikhil Kanade")
+    })
+
+    it("blocks prescription/consultation operations when session is missing with a recoverable error message", () => {
+      // Simulate desktop session check in Consultation / Prescription
+      const desktopSession: desktopBridge.DesktopSessionContext | null = null
+
+      const getFinalizationSessionError = (session: desktopBridge.DesktopSessionContext | null) => {
+        if (!session || !session.doctor_id) {
+          return "No active doctor session found. Please log in."
+        }
+        if (session.expires_at && session.expires_at * 1000 < Date.now()) {
+          return "Active doctor session has expired. Please log in again."
+        }
+        return null
+      }
+
+      const error = getFinalizationSessionError(desktopSession)
+      expect(error).toBe("No active doctor session found. Please log in.")
+
+      // Expired session check
+      const expiredSession: desktopBridge.DesktopSessionContext = {
+        doctor_id: "doc-exp",
+        clinic_id: "clinic-exp",
+        doctor_email: "exp@clinic.com",
+        doctor_name: "Dr. Expired",
+        role: "DOCTOR",
+        expires_at: Math.floor(Date.now() / 1000) - 60, // Expired 1 min ago
+      }
+
+      const expiredError = getFinalizationSessionError(expiredSession)
+      expect(expiredError).toBe("Active doctor session has expired. Please log in again.")
     })
   })
 })

@@ -100,20 +100,21 @@ export function Sidebar({
             {desktopSession?.doctor_name
               ? desktopSession.doctor_name
                   .split(" ")
+                  .filter(Boolean)
                   .map((n) => n[0])
                   .slice(0, 2)
                   .join("")
                   .toUpperCase()
-              : "NK"}
+              : "DR"}
           </span>
           <button onClick={onDoctorProfile}>
             <strong>
-              {desktopSession?.doctor_name || "Dr. Nikhil Kanade"}
+              {desktopSession?.doctor_name || "Doctor"}
             </strong>
             <small>
-              {desktopSession
+              {desktopSession?.clinic_id
                 ? `Clinic: ${desktopSession.clinic_id}`
-                : "Nishti Hospital"}
+                : "No active clinic"}
             </small>
           </button>
         </div>

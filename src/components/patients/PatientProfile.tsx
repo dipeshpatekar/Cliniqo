@@ -217,7 +217,11 @@ export function PatientProfile({
         )}
         {tab === "Medical History" && <HistoryTab patient={patient} />}
         {tab === "Consultations" && (
-          <ConsultationsTab go={go} hasHistory={hasHistory} />
+          <ConsultationsTab
+            go={go}
+            hasHistory={hasHistory}
+            desktopSession={desktopSession}
+          />
         )}
         {tab === "Prescriptions" && (
           <PrescriptionsTab go={go} hasHistory={hasHistory} />

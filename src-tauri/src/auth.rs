@@ -18,9 +18,19 @@ rsUP0IbNhum1SmkagfVh1FrgfqaziuZa6kq9hM+aKOmG+AOcXJN3dms9LTPMul5h
 2QIDAQAB
 -----END PUBLIC KEY-----"#;
 
-/// Pinned default RSA 2048-bit SPKI Public Key for verifying access tokens issued by the backend.
-/// Used exclusively for JWT access token verification.
-pub const DEFAULT_BACKEND_PUBLIC_KEY_PEM: &str = r#"-----BEGIN PUBLIC KEY-----
+/// Active production RSA 2048-bit SPKI Public Key for verifying access tokens issued by the backend on Render.
+pub const PRODUCTION_BACKEND_PUBLIC_KEY_PEM: &str = r#"-----BEGIN PUBLIC KEY-----
+MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA3CxRzNxFJV/qUjkRPgXG
+4CGtzLN53PPSHkuimhoegD1CnEZN3Z+iae2WMPuxBFAoE8jyGyspPie/WBqYu+EL
+X6e+365ttLAR47FW6ZK/qOXd86goCbzk15r3pNimhYmfUxbfS3NzEuk+JRxOPizl
+N/TWhn1iLisYzpvx4isV5dWr6hAb0yJDz+B2gOsJX6zFz7MNkOdMaQVzSciz/IKE
+CyjNLf4RcbUYiOwgYi9+/9GJLoBajt9r5RSHjrlWecrcDoGQ8/O2hO1y7q/3DoVK
+ukK+CzwjKtDcVrGaDNYhUgsQD//Xe3JGXiH34AGjc+liz8CcqKv+bLk9rBkiCq32
+ywIDAQAB
+-----END PUBLIC KEY-----"#;
+
+/// Default RSA 2048-bit SPKI Public Key for local test fixtures and development.
+pub const DEFAULT_DEV_BACKEND_PUBLIC_KEY_PEM: &str = r#"-----BEGIN PUBLIC KEY-----
 MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA6H0/RnxIqA3027qq8Nxm
 spcypXGFIAvnZsRQm6NM+aIldAdTN+Tc96HHCmk/Pq5PiB4zu1HBdtmtpZLP0cHy
 oWwxT2OY2+9L6nR5xhQ3vF0B2lJbvi/y06g8+UV4IJ3QMXUn3KkWqqCSPLVjbCcd
@@ -29,6 +39,12 @@ t5fmmY8T7bJMNStJpYRWPLsU+PDkAlawH2moiL3Abg8o9TEAxU4u4f7WJwwEZOTj
 XfXFNUdG/M39n8RiFlRT46iNzW0HbfoEavjK+eQmuTCtJId6DAfMlZGMiISZnF+S
 qwIDAQAB
 -----END PUBLIC KEY-----"#;
+
+#[cfg(not(debug_assertions))]
+pub const DEFAULT_BACKEND_PUBLIC_KEY_PEM: &str = PRODUCTION_BACKEND_PUBLIC_KEY_PEM;
+
+#[cfg(debug_assertions)]
+pub const DEFAULT_BACKEND_PUBLIC_KEY_PEM: &str = DEFAULT_DEV_BACKEND_PUBLIC_KEY_PEM;
 
 #[derive(Error, Debug, PartialEq, Eq)]
 pub enum AuthError {
@@ -619,6 +635,33 @@ gGFyMNydps1kewu3VAWSkgUH
         encode(&Header::new(Algorithm::RS256), &payload, &key).unwrap()
     }
 
+    pub fn generate_test_rs256_jwt_with_name(
+        private_key_pem: &str,
+        sub: &str,
+        email: &str,
+        full_name: Option<&str>,
+        expires_in_secs: i64,
+    ) -> String {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+
+        let payload = JwtPayload {
+            sub: sub.to_string(),
+            email: email.to_string(),
+            full_name: full_name.map(|s| s.to_string()),
+            token_type: Some("access".to_string()),
+            iss: Some("cliniqo-backend".to_string()),
+            aud: Some("cliniqo-client".to_string()),
+            exp: Some(now + expires_in_secs),
+            iat: Some(now),
+        };
+
+        let key = EncodingKey::from_rsa_pem(private_key_pem.as_bytes()).unwrap();
+        encode(&Header::new(Algorithm::RS256), &payload, &key).unwrap()
+    }
+
     #[test]
     fn test_valid_rs256_jwt_and_session_lifecycle() {
         let manager = SessionManager::with_default_public_key().expect("init succeeds");
@@ -1110,6 +1153,114 @@ T3hekm0XS7FminNIflwhv/xFRbGtN9RdFGWbOZx87J1yecSiqPhBx0+19bu/0M1A
 
         let result = manager.verify_jwt(&token);
         assert!(matches!(result, Err(AuthError::InvalidToken(_))));
+    }
+
+    #[test]
+    fn test_doctor_a_logout_then_doctor_b_login_isolates_session() {
+        let manager = SessionManager::with_default_public_key().unwrap();
+
+        // 1. Doctor A logs in
+        let token_a = generate_test_rs256_jwt_with_name(
+            TEST_BACKEND_PRIVATE_KEY_PEM,
+            "doc_A",
+            "doctorA@clinic.com",
+            Some("Dr. Doctor A"),
+            3600,
+        );
+        manager.login(&token_a, "clinic_A", "DOCTOR").unwrap();
+        let session_a = manager.validate_session(Some("clinic_A")).unwrap();
+        assert_eq!(session_a.doctor_id, "doc_A");
+        assert_eq!(session_a.doctor_name, "Dr. Doctor A");
+        assert_eq!(session_a.clinic_id, "clinic_A");
+
+        // 2. Doctor A logs out
+        manager.logout();
+        assert_eq!(
+            manager.validate_session(Some("clinic_A")),
+            Err(AuthError::Unauthenticated)
+        );
+        assert_eq!(manager.get_session(), None);
+
+        // 3. Doctor B logs in with their own clinic
+        let token_b = generate_test_rs256_jwt_with_name(
+            TEST_BACKEND_PRIVATE_KEY_PEM,
+            "doc_B",
+            "doctorB@clinic.com",
+            Some("Dr. Doctor B"),
+            3600,
+        );
+        manager.login(&token_b, "clinic_B", "DOCTOR").unwrap();
+        let session_b = manager.validate_session(Some("clinic_B")).unwrap();
+        assert_eq!(session_b.doctor_id, "doc_B");
+        assert_eq!(session_b.doctor_name, "Dr. Doctor B");
+        assert_eq!(session_b.clinic_id, "clinic_B");
+
+        // 4. Doctor B cannot access clinic A (tenant isolation)
+        let cross_res = manager.validate_session(Some("clinic_A"));
+        assert_eq!(
+            cross_res,
+            Err(AuthError::CrossClinicForbidden {
+                attempted_clinic: "clinic_A".to_string(),
+                session_clinic: "clinic_B".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn test_missing_or_expired_session_blocks_validation() {
+        let manager = SessionManager::with_default_public_key().unwrap();
+
+        // 1. Unauthenticated state blocks finalization
+        let unauth_err = manager.validate_session(Some("clinic_001"));
+        assert_eq!(unauth_err, Err(AuthError::Unauthenticated));
+        assert_eq!(
+            unauth_err.unwrap_err().to_string(),
+            "No active doctor session found. Please log in."
+        );
+
+        // 2. Expired session blocks finalization
+        let expired_token = generate_test_rs256_jwt_with_name(
+            TEST_BACKEND_PRIVATE_KEY_PEM,
+            "doc_exp",
+            "exp@clinic.com",
+            Some("Dr. Expired"),
+            -10, // Expired 10 seconds ago
+        );
+        // Login with expired token is rejected during JWT verification
+        let login_err = manager.login(&expired_token, "clinic_001", "DOCTOR");
+        assert_eq!(login_err, Err(AuthError::SessionExpired));
+        assert_eq!(
+            login_err.unwrap_err().to_string(),
+            "Doctor session has expired. Please log in again."
+        );
+    }
+
+    #[test]
+    fn test_authenticated_doctor_can_validate_prescription_session() {
+        let manager = SessionManager::with_default_public_key().unwrap();
+        let token = generate_test_rs256_jwt_with_name(
+            TEST_BACKEND_PRIVATE_KEY_PEM,
+            "doc_real_456",
+            "aarti@sharmaclinic.in",
+            Some("Dr. Aarti Sharma"),
+            3600,
+        );
+
+        manager.login(&token, "clinic_sharma_01", "OWNER").unwrap();
+        let validated = manager.validate_session(Some("clinic_sharma_01")).unwrap();
+
+        // Must bind prescription strictly to verified session identity
+        assert_eq!(validated.doctor_id, "doc_real_456");
+        assert_eq!(validated.doctor_name, "Dr. Aarti Sharma");
+        assert_eq!(validated.clinic_id, "clinic_sharma_01");
+        assert_eq!(validated.role, "OWNER");
+    }
+
+    #[test]
+    fn test_production_backend_public_key_strength() {
+        assert!(validate_rsa_key_strength(PRODUCTION_BACKEND_PUBLIC_KEY_PEM, 2048).is_ok());
+        let decoding_key = DecodingKey::from_rsa_pem(PRODUCTION_BACKEND_PUBLIC_KEY_PEM.as_bytes());
+        assert!(decoding_key.is_ok(), "Production backend public key must be valid SPKI PEM");
     }
 }
 

@@ -141,6 +141,7 @@ export function SettingsPage({
               title="Doctor profile"
               description="Details shown on prescriptions and clinic records."
               clinic={false}
+              desktopSession={desktopSession}
             />
           )}
           {tab === "Clinic profile" && (
@@ -148,6 +149,7 @@ export function SettingsPage({
               title="Clinic profile"
               description="Contact information visible to your patients."
               clinic
+              desktopSession={desktopSession}
             />
           )}
           {tab === "Prescription layout" && (

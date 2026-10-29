@@ -53,27 +53,20 @@ export function Setup({ go, doctor, onSetupComplete }: SetupProps) {
   // Step 1: Doctor Profile State
   const [fullName, setFullName] = useState(doctor?.fullName || "")
   const [gender, setGender] = useState("Male")
-  const [qualifications, setQualifications] = useState(
-    "MBBS, MD (Internal Medicine)",
-  )
-  const [registrationNumber, setRegistrationNumber] =
-    useState("MMC 2011/04/1842")
+  const [qualifications, setQualifications] = useState("")
+  const [registrationNumber, setRegistrationNumber] = useState("")
   const [mobile, setMobile] = useState(doctor?.phone || "")
   const [email, setEmail] = useState(doctor?.email || "")
 
   // Step 2: Clinic Profile State
-  const [clinicName, setClinicName] = useState("Nishti Hospital")
-  const [clinicPhone, setClinicPhone] = useState(
-    doctor?.phone || "+91 22 4123 8765",
-  )
-  const [address, setAddress] = useState("14, Sea View Road, Bandra West")
-  const [city, setCity] = useState("Mumbai")
-  const [state, setState] = useState("Maharashtra")
-  const [postalCode, setPostalCode] = useState("400050")
+  const [clinicName, setClinicName] = useState("")
+  const [clinicPhone, setClinicPhone] = useState(doctor?.phone || "")
+  const [address, setAddress] = useState("")
+  const [city, setCity] = useState("")
+  const [state, setState] = useState("")
+  const [postalCode, setPostalCode] = useState("")
   const [mapsLocation, setMapsLocation] = useState("")
-  const [clinicEmail, setClinicEmail] = useState(
-    doctor?.email || "care@harbourclinic.in",
-  )
+  const [clinicEmail, setClinicEmail] = useState(doctor?.email || "")
 
   // Re-auth modal state for session expiry
   const [reauthPassword, setReauthPassword] = useState("")
@@ -170,21 +163,14 @@ export function Setup({ go, doctor, onSetupComplete }: SetupProps) {
       }
 
       if (isTauriDesktop() && token) {
-        try {
-          const tauriSession = await loginDesktopSession(
-            token,
-            clinicId,
-            "OWNER",
-            doctor?.refreshToken,
-          )
-          if (tauriSession) {
-            session = tauriSession
-          }
-        } catch (tauriErr) {
-          console.warn(
-            "[Setup] Tauri desktop session initialization fallback:",
-            tauriErr,
-          )
+        const tauriSession = await loginDesktopSession(
+          token,
+          clinicId,
+          "OWNER",
+          doctor?.refreshToken,
+        )
+        if (tauriSession) {
+          session = tauriSession
         }
       }
 
@@ -483,6 +469,7 @@ export function Setup({ go, doctor, onSetupComplete }: SetupProps) {
                 <Field label="Clinic or hospital name" required>
                   <TextInput
                     required
+                    placeholder="e.g. City Health Clinic"
                     value={clinicName}
                     onChange={(e) => setClinicName(e.target.value)}
                   />
@@ -490,6 +477,7 @@ export function Setup({ go, doctor, onSetupComplete }: SetupProps) {
                 <Field label="Clinic phone" required>
                   <TextInput
                     required
+                    placeholder="+91 00000 00000"
                     value={clinicPhone}
                     onChange={(e) => setClinicPhone(e.target.value)}
                     type="tel"
@@ -498,6 +486,7 @@ export function Setup({ go, doctor, onSetupComplete }: SetupProps) {
                 <Field label="Address" required className="full">
                   <TextInput
                     required
+                    placeholder="e.g. 123 Healthcare Avenue, Suite 4"
                     value={address}
                     onChange={(e) => setAddress(e.target.value)}
                   />
@@ -505,6 +494,7 @@ export function Setup({ go, doctor, onSetupComplete }: SetupProps) {
                 <Field label="City" required>
                   <TextInput
                     required
+                    placeholder="e.g. Mumbai"
                     value={city}
                     onChange={(e) => setCity(e.target.value)}
                   />
@@ -512,6 +502,7 @@ export function Setup({ go, doctor, onSetupComplete }: SetupProps) {
                 <Field label="State" required>
                   <TextInput
                     required
+                    placeholder="e.g. Maharashtra"
                     value={state}
                     onChange={(e) => setState(e.target.value)}
                   />
@@ -519,6 +510,7 @@ export function Setup({ go, doctor, onSetupComplete }: SetupProps) {
                 <Field label="Postal code" required>
                   <TextInput
                     required
+                    placeholder="e.g. 400001"
                     value={postalCode}
                     onChange={(e) => setPostalCode(e.target.value)}
                   />
@@ -532,6 +524,7 @@ export function Setup({ go, doctor, onSetupComplete }: SetupProps) {
                 </Field>
                 <Field label="Clinic email" hint="Optional">
                   <TextInput
+                    placeholder="care@clinic.com"
                     value={clinicEmail}
                     onChange={(e) => setClinicEmail(e.target.value)}
                     type="email"

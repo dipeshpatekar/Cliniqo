@@ -1,17 +1,32 @@
 import { Building2, Upload } from "lucide-react"
 import { Button, Field, TextInput, SelectInput } from "../common"
 
+import type { DesktopSessionContext } from "../../desktop/desktop-bridge"
+
 export interface SettingsProfileProps {
   title: string
   description: string
   clinic: boolean
+  desktopSession?: DesktopSessionContext | null
 }
 
 export function SettingsProfile({
   title,
   description,
   clinic,
+  desktopSession,
 }: SettingsProfileProps) {
+  const doctorName = desktopSession?.doctor_name || ""
+  const doctorInitials = doctorName
+    ? doctorName
+        .split(" ")
+        .filter(Boolean)
+        .map((n) => n[0])
+        .slice(0, 2)
+        .join("")
+        .toUpperCase()
+    : "DR"
+
   return (
     <section className="settings-section">
       <div className="settings-title">
@@ -22,7 +37,7 @@ export function SettingsProfile({
         <span
           className={clinic ? "clinic-logo-placeholder" : "photo-placeholder"}
         >
-          {clinic ? <Building2 size={24} /> : "NK"}
+          {clinic ? <Building2 size={24} /> : doctorInitials}
         </span>
         <div>
           <strong>{clinic ? "Clinic logo" : "Profile photo"}</strong>
@@ -43,16 +58,28 @@ export function SettingsProfile({
         {clinic ? (
           <>
             <Field label="Clinic name">
-              <TextInput defaultValue="Nishti Hospital" />
+              <TextInput
+                defaultValue={desktopSession?.clinic_id ? `Clinic ${desktopSession.clinic_id}` : ""}
+                placeholder="Enter clinic or hospital name"
+              />
             </Field>
             <Field label="Clinic phone">
-              <TextInput defaultValue="+91 22 4123 8765" />
+              <TextInput
+                defaultValue=""
+                placeholder="+91 00000 00000"
+              />
             </Field>
             <Field label="Address" className="full">
-              <TextInput defaultValue="14, Sea View Road, Bandra West, Mumbai 400050" />
+              <TextInput
+                defaultValue=""
+                placeholder="Enter clinic address, street, city, pin code"
+              />
             </Field>
             <Field label="Email">
-              <TextInput defaultValue="care@harbourclinic.in" />
+              <TextInput
+                defaultValue={desktopSession?.doctor_email || ""}
+                placeholder="care@clinic.com"
+              />
             </Field>
             <Field label="Location link">
               <TextInput placeholder="Add Google Maps link" />
@@ -61,25 +88,42 @@ export function SettingsProfile({
         ) : (
           <>
             <Field label="Full name">
-              <TextInput defaultValue="Dr. Nikhil Kanade" />
+              <TextInput
+                defaultValue={doctorName}
+                placeholder="Enter your full name"
+              />
             </Field>
             <Field label="Gender">
               <SelectInput defaultValue="Male" style={{ height: "40px" }}>
                 <option>Female</option>
                 <option>Male</option>
+                <option>Non-binary</option>
+                <option>Prefer not to say</option>
               </SelectInput>
             </Field>
             <Field label="Qualifications">
-              <TextInput defaultValue="MBBS, MD (Internal Medicine)" />
+              <TextInput
+                defaultValue=""
+                placeholder="e.g. MBBS, MD"
+              />
             </Field>
             <Field label="Registration number">
-              <TextInput defaultValue="MMC 2011/04/1842" />
+              <TextInput
+                defaultValue=""
+                placeholder="e.g. MMC 2024/01/1234"
+              />
             </Field>
             <Field label="Mobile number">
-              <TextInput defaultValue="+91 98200 76421" />
+              <TextInput
+                defaultValue=""
+                placeholder="+91 00000 00000"
+              />
             </Field>
             <Field label="Email">
-              <TextInput defaultValue="nikhil@nishtihospital.in" />
+              <TextInput
+                defaultValue={desktopSession?.doctor_email || ""}
+                placeholder="doctor@clinic.com"
+              />
             </Field>
           </>
         )}

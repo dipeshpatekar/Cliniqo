@@ -32,7 +32,7 @@ export function Login({
 }) {
   const [view, setView] =
     useState<"login" | "forgot" | "otp" | "reset" | "success">("login")
-  const [email, setEmail] = useState("nikhil@nishtihospital.in")
+  const [email, setEmail] = useState("")
   const [password, setPassword] = useState("")
   const [newPassword, setNewPassword] = useState("")
   const [confirmPassword, setConfirmPassword] = useState("")

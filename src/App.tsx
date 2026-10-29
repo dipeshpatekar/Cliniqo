@@ -361,9 +361,31 @@ export default function App() {
       } catch (err) {
         console.warn("[Cliniqo Desktop] Error during logout:", err)
       }
-      setDesktopSession(null)
-      setPatientRecords([])
     }
+    setDesktopSession(null)
+    setOnboardingDoctor(null)
+    setPatientRecords([])
+    setSelectedPatient({
+      id: "PT-INIT",
+      name: "No patient selected",
+      initials: "--",
+      age: 0,
+      gender: "Other",
+      phone: "",
+      lastVisit: "No visits yet",
+      allergies: [],
+      conditions: [],
+    })
+    setConsultationData(createEmptyConsultationData())
+    setVitals({
+      systolic: "",
+      diastolic: "",
+      heartRate: "",
+      spo2: "",
+      temperature: "",
+      height: "",
+      weight: "",
+    })
     go("login")
   }
 
@@ -764,6 +786,7 @@ export default function App() {
         showClinicEmail={showClinicEmail}
         showAllergyWarning={showAllergyWarning}
         returnPage={prescriptionPreviewReturnPage}
+        desktopSession={desktopSession}
       />
     )
   } else if (page === "bill-form") {

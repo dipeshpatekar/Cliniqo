@@ -1,6 +1,7 @@
 import { Button, StatusPill } from "../common"
 import { cn } from "../../utils/cn"
 import type { Page, Patient } from "../../types"
+import type { DesktopSessionContext } from "../../desktop/desktop-bridge"
 import {
   ClipboardList,
   FileText,
@@ -190,9 +191,11 @@ export function HistoryTab({ patient }: { patient: Patient }) {
 export function ConsultationsTab({
   go,
   hasHistory,
+  desktopSession,
 }: {
   go: (page: Page) => void
   hasHistory: boolean
+  desktopSession?: DesktopSessionContext | null
 }) {
   return (
     <section className="panel record-list">
@@ -220,7 +223,7 @@ export function ConsultationsTab({
             </span>
             <span>
               <strong>{r[2]}</strong>
-              <small>Dr. Nikhil Kanade · {r[0]}</small>
+              <small>{desktopSession?.doctor_name || "Doctor"} · {r[0]}</small>
             </span>
             <StatusPill tone={r[1] === "Draft" ? "warning" : "success"}>
               {r[1]}

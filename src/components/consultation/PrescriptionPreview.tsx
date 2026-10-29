@@ -17,6 +17,7 @@ import { formatMedicineDose } from "../../types"
 import { cn } from "../../utils/cn"
 import { Button, IconButton, Modal } from "../common"
 import { AppHeader } from "../layout"
+import type { DesktopSessionContext } from "../../desktop/desktop-bridge"
 
 export interface PrescriptionPreviewProps {
   go: (page: Page) => void
@@ -24,12 +25,13 @@ export interface PrescriptionPreviewProps {
   vitals: Vitals
   data: ConsultationData
   bannerVisible: boolean
-  bannerImage: { src: string name: string } | null
-  signatureImage: { src: string name: string } | null
+  bannerImage: { src: string; name: string } | null
+  signatureImage: { src: string; name: string } | null
   showClinicLogo: boolean
   showClinicEmail: boolean
   showAllergyWarning: boolean
   returnPage: "consultation" | "settings"
+  desktopSession?: DesktopSessionContext | null
 }
 
 export function PrescriptionPreview({
@@ -44,6 +46,7 @@ export function PrescriptionPreview({
   showClinicEmail,
   showAllergyWarning,
   returnPage,
+  desktopSession,
 }: PrescriptionPreviewProps) {
   const [whatsapp, setWhatsapp] = useState(false)
   const [delivery, setDelivery] =
@@ -129,22 +132,23 @@ export function PrescriptionPreview({
                     <HeartPulse size={24} />
                   </span>
                   <div>
-                    <h2>Nishti Hospital</h2>
-                    <p>14, Sea View Road, Bandra West, Mumbai 400050</p>
-                    <p>
-                      +91 22 4123 8765 ·{" "}
-                      <span
-                        className={cn(!showClinicEmail && "rx-content-hidden")}
-                      >
-                        care@harbourclinic.in
-                      </span>
-                    </p>
+                    <h2>{desktopSession?.clinic_id ? `Clinic ${desktopSession.clinic_id}` : "Medical Clinic"}</h2>
+                    <p>{desktopSession?.clinic_id ? `Registered Clinic (${desktopSession.clinic_id})` : "Local Clinic Workspace"}</p>
+                    {desktopSession?.doctor_email && (
+                      <p>
+                        <span
+                          className={cn(!showClinicEmail && "rx-content-hidden")}
+                        >
+                          {desktopSession.doctor_email}
+                        </span>
+                      </p>
+                    )}
                   </div>
                 </div>
                 <div className="rx-doctor">
-                  <strong>Dr. Nikhil Kanade</strong>
-                  <span>MBBS, MD (Internal Medicine)</span>
-                  <span>Reg. No. MMC 2011/04/1842</span>
+                  <strong>{desktopSession?.doctor_name || "Doctor"}</strong>
+                  <span>{desktopSession ? "Registered Medical Practitioner" : "Medical Practitioner"}</span>
+                  <span>{desktopSession?.doctor_id ? `Doctor ID: ${desktopSession.doctor_id}` : "Profile Incomplete"}</span>
                 </div>
               </header>
             )}
@@ -310,11 +314,11 @@ export function PrescriptionPreview({
               {signatureImage && (
                 <img
                   src={signatureImage.src}
-                  alt="Dr. Nikhil Kanade’s signature"
+                  alt={`${desktopSession?.doctor_name || "Doctor"}’s signature`}
                 />
               )}
               <span>Doctor’s signature</span>
-              <strong>Dr. Nikhil Kanade</strong>
+              <strong>{desktopSession?.doctor_name || "Doctor"}</strong>
             </div>
           </footer>
         </article>

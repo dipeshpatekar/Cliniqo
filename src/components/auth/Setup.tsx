@@ -5,8 +5,10 @@ import {
   isTauriDesktop,
   loginDesktop,
   loginDesktopSession,
+  getDesktopSession,
   createClinic,
   refreshAuthTokens,
+  getApiBaseUrl,
   type DesktopSessionContext,
   type CreateClinicInput,
   type CreateClinicResult,
@@ -36,10 +38,16 @@ export interface SetupDoctorData {
 export interface SetupProps {
   go: (page: Page) => void
   doctor?: SetupDoctorData | null
+  session?: DesktopSessionContext | null
   onSetupComplete?: (session: DesktopSessionContext) => void
 }
 
-export function Setup({ go, doctor, onSetupComplete }: SetupProps) {
+export function Setup({
+  go,
+  doctor,
+  session: sessionProp,
+  onSetupComplete,
+}: SetupProps) {
   const [step, setStep] = useState(1)
   const [error, setError] = useState(false)
   const [status, setStatus] = useState<"idle" | "saving" | "expired" | "error">(
@@ -51,13 +59,17 @@ export function Setup({ go, doctor, onSetupComplete }: SetupProps) {
   )
   const [createdClinicId, setCreatedClinicId] = useState<string | null>(null)
 
-  // Step 1: Doctor Profile State
-  const [fullName, setFullName] = useState(doctor?.fullName || "")
+  // Step 1: Doctor Profile State (prepopulate from doctor data or verified sessionProp)
+  const [fullName, setFullName] = useState(
+    doctor?.fullName || sessionProp?.doctor_name || "",
+  )
   const [gender, setGender] = useState("Male")
   const [qualifications, setQualifications] = useState("")
   const [registrationNumber, setRegistrationNumber] = useState("")
   const [mobile, setMobile] = useState(doctor?.phone || "")
-  const [email, setEmail] = useState(doctor?.email || "")
+  const [email, setEmail] = useState(
+    doctor?.email || sessionProp?.doctor_email || "",
+  )
 
   // Step 2: Clinic Profile State
   const [clinicName, setClinicName] = useState("")
@@ -67,7 +79,9 @@ export function Setup({ go, doctor, onSetupComplete }: SetupProps) {
   const [state, setState] = useState("")
   const [postalCode, setPostalCode] = useState("")
   const [mapsLocation, setMapsLocation] = useState("")
-  const [clinicEmail, setClinicEmail] = useState(doctor?.email || "")
+  const [clinicEmail, setClinicEmail] = useState(
+    doctor?.email || sessionProp?.doctor_email || "",
+  )
 
   // Re-auth modal state for session expiry
   const [reauthPassword, setReauthPassword] = useState("")
@@ -75,12 +89,17 @@ export function Setup({ go, doctor, onSetupComplete }: SetupProps) {
   const [reauthError, setReauthError] = useState<string | null>(null)
 
   useEffect(() => {
-    if (doctor?.fullName && !fullName) setFullName(doctor.fullName)
-    if (doctor?.email && !email) setEmail(doctor.email)
-    if (doctor?.phone && !mobile) setMobile(doctor.phone)
-    if (doctor?.accessToken && !currentAccessToken)
-      setCurrentAccessToken(doctor.accessToken)
-  }, [doctor])
+    const verifiedFullName = doctor?.fullName || sessionProp?.doctor_name
+    const verifiedEmail = doctor?.email || sessionProp?.doctor_email
+    const verifiedPhone = doctor?.phone
+    const verifiedAccessToken = doctor?.accessToken
+
+    if (verifiedFullName && !fullName) setFullName(verifiedFullName)
+    if (verifiedEmail && !email) setEmail(verifiedEmail)
+    if (verifiedPhone && !mobile) setMobile(verifiedPhone)
+    if (verifiedAccessToken && !currentAccessToken)
+      setCurrentAccessToken(verifiedAccessToken)
+  }, [doctor, sessionProp])
 
   const next = async (event: FormEvent) => {
     event.preventDefault()
@@ -188,13 +207,19 @@ export function Setup({ go, doctor, onSetupComplete }: SetupProps) {
       }
 
       const effectiveClinicId = clinicId || "clinic-1"
-      const doctorId = doctor?.id || "doc-1"
+      const doctorId = doctor?.id || sessionProp?.doctor_id || ""
 
       let session: DesktopSessionContext | null = null
       if (isTauriDesktop()) {
         const desktopSession = await getDesktopSession()
         if (desktopSession && desktopSession.clinic_id === effectiveClinicId) {
           session = desktopSession
+        } else if (desktopSession && effectiveClinicId) {
+          session = {
+            ...desktopSession,
+            clinic_id: effectiveClinicId,
+            role: "OWNER",
+          }
         } else if (token) {
           const tauriSession = await loginDesktopSession(
             token,
@@ -208,12 +233,29 @@ export function Setup({ go, doctor, onSetupComplete }: SetupProps) {
         }
       }
 
-      if (!session) {
+      if (!session && sessionProp) {
         session = {
-          doctor_id: doctorId,
+          ...sessionProp,
           clinic_id: effectiveClinicId,
-          doctor_email: email || doctor?.email || "",
-          doctor_name: fullName || doctor?.fullName || "Doctor",
+          role: "OWNER",
+        }
+      }
+
+      if (!session) {
+        if (isTauriDesktop() && !doctorId && !token) {
+          setStatus("error")
+          setErrorMessage(
+            "No active doctor session found. Please log in to complete clinic setup.",
+          )
+          return
+        }
+
+        session = {
+          doctor_id: doctorId || "doc-1",
+          clinic_id: effectiveClinicId,
+          doctor_email: email || doctor?.email || sessionProp?.doctor_email || "",
+          doctor_name:
+            fullName || doctor?.fullName || sessionProp?.doctor_name || "Doctor",
           role: "OWNER",
           expires_at: Math.floor(Date.now() / 1000) + 3600 * 24,
         }
@@ -261,7 +303,8 @@ export function Setup({ go, doctor, onSetupComplete }: SetupProps) {
       }
 
       // Web/API fallback login
-      const res = await fetch("http://localhost:3000/auth/login", {
+      const baseUrl = getApiBaseUrl()
+      const res = await fetch(`${baseUrl}/auth/login`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email, password: reauthPassword }),

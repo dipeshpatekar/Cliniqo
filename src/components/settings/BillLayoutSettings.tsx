@@ -6,8 +6,8 @@ export interface BillLayoutSettingsProps {
   go: (page: Page) => void
   layout: BillLayoutPreferences
   onChange: (layout: BillLayoutPreferences) => void
-  bannerImage: { src: string name: string } | null
-  signatureImage: { src: string name: string } | null
+  bannerImage: { src: string; name: string } | null
+  signatureImage: { src: string; name: string } | null
 }
 
 export function BillLayoutSettings({

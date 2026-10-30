@@ -5,6 +5,7 @@ import {
   Check,
   CheckCircle2,
   ChevronRight,
+  ClipboardList,
   Clock,
   Copy,
   Download,

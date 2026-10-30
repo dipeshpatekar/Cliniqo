@@ -82,7 +82,7 @@ export function Sidebar({
           )
         })}
       </nav>
-      {Boolean(conflictsCount && conflictsCount > 0) && (
+      {conflictsCount !== undefined && conflictsCount > 0 && (
         <button
           className="mx-3 mb-2.5 p-2 rounded-lg bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800 text-amber-700 dark:text-amber-400 text-xs font-semibold flex items-center gap-1.5 cursor-pointer text-left transition hover:bg-amber-100 dark:hover:bg-amber-900/60"
           onClick={onOpenConflicts}
@@ -153,7 +153,7 @@ export function AppHeader({
         <div>
           <div className="flex items-center gap-2.5">
             <h1>{title}</h1>
-            {Boolean(conflictsCount && conflictsCount > 0) && (
+            {conflictsCount !== undefined && conflictsCount > 0 && (
               <button
                 className="btn btn-sm inline-flex items-center gap-1.5 bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300 border border-amber-300 dark:border-amber-700 rounded-full px-2 py-0.5 text-xs font-semibold cursor-pointer"
                 onClick={onOpenConflicts}

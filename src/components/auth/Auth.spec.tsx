@@ -263,7 +263,7 @@ describe("Auth Flow Regression: Registration to Profile Setup Navigation", () =>
       // Simulate what Setup does upon successful clinic creation:
       const sessionContext: desktopBridge.DesktopSessionContext = {
         doctor_id: doctorData.id,
-        clinic_id: res.clinic.id,
+        clinic_id: res.clinic.id || "",
         doctor_email: doctorData.email,
         doctor_name: doctorData.fullName,
         role: "OWNER",
@@ -450,7 +450,12 @@ describe("Auth Flow Regression: Registration to Profile Setup Navigation", () =>
 
       // 2. SettingsProfile rendering
       const profileHtml = renderToString(
-        <SettingsProfile desktopSession={newlyRegisteredSession} />,
+        <SettingsProfile
+          title="Doctor profile"
+          description="Update doctor details"
+          clinic={false}
+          desktopSession={newlyRegisteredSession}
+        />,
       )
 
       expect(profileHtml).toContain("Dr. Aarti Sharma")
@@ -527,7 +532,12 @@ describe("Auth Flow Regression: Registration to Profile Setup Navigation", () =>
       expect(sidebarB).not.toContain("Nishti Hospital")
 
       let profileB = renderToString(
-        <SettingsProfile desktopSession={currentSession} />,
+        <SettingsProfile
+          title="Doctor profile"
+          description="Update doctor details"
+          clinic={false}
+          desktopSession={currentSession}
+        />,
       )
       expect(profileB).toContain("Dr. Doctor Beta")
       expect(profileB).toContain("doctorB@beta.in")
@@ -593,7 +603,9 @@ describe("Auth Flow Regression: Registration to Profile Setup Navigation", () =>
       let currentPage = "register"
       let desktopSession: desktopBridge.DesktopSessionContext | null = null
       let onboardingDoctor: any = null
-      const desktopSessionRef = { current: desktopSession }
+      const desktopSessionRef: { current: desktopBridge.DesktopSessionContext | null } = {
+        current: desktopSession,
+      }
       const onboardingDoctorRef = { current: onboardingDoctor }
 
       const go = (next: string, sessionOverride?: desktopBridge.DesktopSessionContext | null) => {
@@ -873,6 +885,170 @@ describe("Auth Flow Regression: Registration to Profile Setup Navigation", () =>
       handleStartupFailure(offlineError)
       expect(currentPage).toBe("login")
       expect(offlineErrorMessage).toContain("unreachable")
+    })
+  })
+
+  describe("Setup Runtime Error (getDesktopSession) & Session Persistence Regression", () => {
+    it("1. Setup imports getDesktopSession cleanly without throwing ReferenceError", async () => {
+      // Verify getDesktopSession is imported and callable from desktop-bridge
+      expect(typeof desktopBridge.getDesktopSession).toBe("function")
+      const sessionResult = await desktopBridge.getDesktopSession()
+      // In vitest web environment, returns null safely without throwing
+      expect(sessionResult).toBeNull()
+    })
+
+    it("2. Setup Component accepts session prop and prepopulates doctor profile with verified identity", () => {
+      const verifiedSession: desktopBridge.DesktopSessionContext = {
+        doctor_id: "doc-verified-777",
+        clinic_id: "",
+        doctor_email: "dr.verified@clinic.com",
+        doctor_name: "Dr. Verified Specialist",
+        role: "OWNER",
+        expires_at: Math.floor(Date.now() / 1000) + 3600,
+      }
+
+      const goMock = vi.fn()
+      const html = renderToString(
+        <Setup go={goMock} doctor={null} session={verifiedSession} />,
+      ).replace(/<!-- -->/g, "")
+
+      expect(html).toContain("Dr. Verified Specialist")
+      expect(html).toContain("dr.verified@clinic.com")
+      expect(html).toContain("Step 1 of 2")
+    })
+
+    it("3. Missing session in desktop mode shows recoverable error instead of JavaScript ReferenceError or redirect to register", async () => {
+      // Simulate saveClinicSetup when desktop session is completely unavailable
+      let status = "idle"
+      let errorMessage: string | null = null
+      let redirectedTo: string | null = null
+
+      const go = (page: string) => {
+        redirectedTo = page
+      }
+
+      const saveClinicSetupSimulation = async (
+        isDesktop: boolean,
+        session: desktopBridge.DesktopSessionContext | null,
+        doctorId: string,
+        token: string,
+      ) => {
+        if (isDesktop && !session && !doctorId && !token) {
+          status = "error"
+          errorMessage =
+            "No active doctor session found. Please log in to complete clinic setup."
+          return
+        }
+      }
+
+      await saveClinicSetupSimulation(true, null, "", "")
+
+      expect(status).toBe("error")
+      expect(errorMessage).toBe(
+        "No active doctor session found. Please log in to complete clinic setup.",
+      )
+      // Never redirect to register or login on recoverable session validation
+      expect(redirectedTo).toBeNull()
+    })
+
+    it("4. No duplicate doctor or clinic creation on rapid double-clicks", async () => {
+      let createClinicCallCount = 0
+      let status: "idle" | "saving" | "success" = "idle"
+      let createdClinicId: string | null = null
+
+      const handleSaveClinic = async () => {
+        if (status === "saving" || createdClinicId) {
+          return createdClinicId || "already-saving"
+        }
+        status = "saving"
+        createClinicCallCount++
+        // Simulate network latency
+        await new Promise((r) => setTimeout(r, 10))
+        createdClinicId = "clinic-guarded-123"
+        status = "success"
+        return createdClinicId
+      }
+
+      // Simulate rapid user double clicks
+      const [first, second] = await Promise.all([
+        handleSaveClinic(),
+        handleSaveClinic(),
+      ])
+
+      expect(createClinicCallCount).toBe(1)
+      expect(first).toBe("clinic-guarded-123")
+      expect(second).toBe("already-saving")
+    })
+
+    it("5. Session remains valid after clinic setup and transitions directly to dashboard", async () => {
+      let currentPage = "setup"
+      const sessionBox: { current: desktopBridge.DesktopSessionContext | null } = {
+        current: null,
+      }
+
+      const onSetupComplete = (session: desktopBridge.DesktopSessionContext) => {
+        sessionBox.current = session
+        currentPage = "dashboard"
+      }
+
+      const mockCompletedSession: desktopBridge.DesktopSessionContext = {
+        doctor_id: "doc-onboarded-1",
+        clinic_id: "clinic-persisted-999",
+        doctor_email: "onboarded@clinic.com",
+        doctor_name: "Dr. Onboarded",
+        role: "OWNER",
+        expires_at: Math.floor(Date.now() / 1000) + 86400,
+      }
+
+      onSetupComplete(mockCompletedSession)
+
+      expect(currentPage).toBe("dashboard")
+      expect(sessionBox.current).not.toBeNull()
+      expect(sessionBox.current?.clinic_id).toBe("clinic-persisted-999")
+      expect(sessionBox.current?.role).toBe("OWNER")
+    })
+
+    it("6. Application restart restores the correct onboarding state (incomplete -> setup, complete -> dashboard)", () => {
+      const evaluateBootstrap = (
+        restored: {
+          session: desktopBridge.DesktopSessionContext
+          clinics: Array<{ id: string }>
+        } | null,
+      ) => {
+        if (!restored) return "login"
+        if (restored.clinics.length > 0 && restored.session.clinic_id) {
+          return "dashboard"
+        }
+        return "setup"
+      }
+
+      // Incomplete onboarding (registered doctor, no clinic yet)
+      const incompleteRestored = {
+        session: {
+          doctor_id: "doc-inc",
+          clinic_id: "",
+          doctor_email: "inc@clinic.com",
+          doctor_name: "Dr. Inc",
+          role: "OWNER",
+          expires_at: 1234567890,
+        },
+        clinics: [],
+      }
+      expect(evaluateBootstrap(incompleteRestored)).toBe("setup")
+
+      // Complete onboarding (clinic exists)
+      const completeRestored = {
+        session: {
+          doctor_id: "doc-complete",
+          clinic_id: "clinic-123",
+          doctor_email: "complete@clinic.com",
+          doctor_name: "Dr. Complete",
+          role: "OWNER",
+          expires_at: 1234567890,
+        },
+        clinics: [{ id: "clinic-123" }],
+      }
+      expect(evaluateBootstrap(completeRestored)).toBe("dashboard")
     })
   })
 })

@@ -27,10 +27,10 @@ export interface BillPreviewProps {
   go: (page: Page) => void
   patient: Patient
   bill: BillData
-  bannerImage: { src: string name: string } | null
-  signatureImage: { src: string name: string } | null
+  bannerImage: { src: string; name: string } | null
+  signatureImage: { src: string; name: string } | null
   layout: BillLayoutPreferences
-  returnPage: "bill-form" | "settings"
+  returnPage: "bill-form" | "settings" | "patient-profile"
   desktopSession?: DesktopSessionContext | null
 }
 

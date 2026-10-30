@@ -1,7 +1,7 @@
 import type { Medicine } from "../types"
 
 export function computeBillTotals(
-  items: Array<{ quantity: number rate: number }>,
+  items: Array<{ quantity: number; rate: number }>,
   discountRupees: number = 0,
   taxRatePercent: number = 0,
 ) {
@@ -36,7 +36,7 @@ export function computeBillTotals(
 
 export function validateMedicineFormulation(
   med: Partial<Medicine>,
-): { valid: boolean error?: string } {
+): { valid: boolean; error?: string } {
   if (!med.formulation) {
     return { valid: false, error: "Formulation is required" }
   }

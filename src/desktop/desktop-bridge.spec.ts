@@ -604,6 +604,13 @@ describe("Desktop Bridge (Tauri 2 Frontend Integration)", () => {
         name: "Metro Polyclinic",
         phone: "9876543210",
         email: "metro@clinic.com",
+        address: {
+          street: "123 Main St",
+          city: "Pune",
+          state: "Maharashtra",
+          postalCode: "411001",
+          country: "India",
+        },
       }
       const mockResult = {
         clinic: {

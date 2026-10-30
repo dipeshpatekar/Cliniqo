@@ -43,10 +43,10 @@ export interface SettingsPageProps {
   onAddMedicine: (medicine: ClinicalMedicineDefinition) => void
   bannerVisible: boolean
   onBannerVisibleChange: (visible: boolean) => void
-  bannerImage: { src: string name: string } | null
-  onBannerImageChange: (image: { src: string name: string } | null) => void
-  signatureImage: { src: string name: string } | null
-  onSignatureImageChange: (image: { src: string name: string } | null) => void
+  bannerImage: { src: string; name: string } | null
+  onBannerImageChange: (image: { src: string; name: string } | null) => void
+  signatureImage: { src: string; name: string } | null
+  onSignatureImageChange: (image: { src: string; name: string } | null) => void
   showClinicLogo: boolean
   onShowClinicLogoChange: (visible: boolean) => void
   showClinicEmail: boolean

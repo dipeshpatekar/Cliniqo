@@ -147,9 +147,7 @@ describe("Patient Components & UX", () => {
       const rawHtml = renderToString(
         <InvoicesTab
           patient={samplePatients[0]}
-          invoices={[]}
-          onCreateBill={() => {}}
-          onViewInvoice={() => {}}
+          onStartBill={() => {}}
         />,
       )
       const html = rawHtml.replace(/<!-- -->/g, "")

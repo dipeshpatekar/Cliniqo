@@ -21,7 +21,7 @@ export function Button({
 }: React.ButtonHTMLAttributes<HTMLButtonElement> & {
   variant?: "primary" | "secondary" | "ghost" | "danger"
   size?: "sm" | "md" | "lg"
-  icon?: ComponentType<{ size?: number strokeWidth?: number }>
+  icon?: ComponentType<{ size?: number; strokeWidth?: number }>
   loading?: boolean
 }) {
   return (

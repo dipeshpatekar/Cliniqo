@@ -113,7 +113,7 @@ export default function App() {
   const [prescriptionPreviewReturnPage, setPrescriptionPreviewReturnPage] =
     useState<"consultation" | "settings">("consultation")
   const [billPreviewReturnPage, setBillPreviewReturnPage] =
-    useState<"bill-form" | "settings">("bill-form")
+    useState<"bill-form" | "settings" | "patient-profile">("bill-form")
   const [vitals, setVitals] = useState<Vitals>({
     systolic: "",
     diastolic: "",
@@ -490,7 +490,11 @@ export default function App() {
     if (existingInvoice) {
       let parsedItems: BillItem[] = []
       try {
-        const rawItems = JSON.parse(existingInvoice.items_json)
+        const rawItems = Array.isArray(existingInvoice.items)
+          ? existingInvoice.items
+          : typeof (existingInvoice as any).items_json === "string"
+            ? JSON.parse((existingInvoice as any).items_json)
+            : []
         if (Array.isArray(rawItems)) {
           parsedItems = rawItems.map(
             (
@@ -782,6 +786,7 @@ export default function App() {
       <Setup
         go={go}
         doctor={onboardingDoctor}
+        session={desktopSessionRef.current || desktopSession}
         onSetupComplete={async (session) => {
           onboardingDoctorRef.current = null
           setOnboardingDoctor(null)

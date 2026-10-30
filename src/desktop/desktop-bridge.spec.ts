@@ -597,5 +597,41 @@ describe("Desktop Bridge (Tauri 2 Frontend Integration)", () => {
 
       vi.doUnmock("@tauri-apps/api/core")
     })
+
+    it("delegates createClinic to native create_clinic_desktop IPC when in Tauri desktop mode", async () => {
+      win.__TAURI_INTERNALS__ = {}
+      const mockClinicPayload = {
+        name: "Metro Polyclinic",
+        phone: "9876543210",
+        email: "metro@clinic.com",
+      }
+      const mockResult = {
+        clinic: {
+          id: "clinic-native-1",
+          name: "Metro Polyclinic",
+          slug: "metro-polyclinic",
+        },
+        membership: {
+          id: "mem-1",
+          role: "OWNER",
+        },
+      }
+
+      vi.doMock("@tauri-apps/api/core", () => ({
+        invoke: vi.fn().mockImplementation((cmd: string, args: any) => {
+          if (cmd === "create_clinic_desktop") {
+            expect(args.input).toEqual(mockClinicPayload)
+            return Promise.resolve(mockResult)
+          }
+          return Promise.resolve(null)
+        }),
+      }))
+
+      const { createClinic } = await import("./desktop-bridge")
+      const result = await createClinic("test-token", mockClinicPayload)
+      expect(result).toEqual(mockResult)
+
+      vi.doUnmock("@tauri-apps/api/core")
+    })
   })
 })

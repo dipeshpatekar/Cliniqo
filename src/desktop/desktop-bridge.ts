@@ -211,6 +211,7 @@ export interface RegisterDoctorResult {
     fullName: string
     phone?: string
   }
+  session?: DesktopSessionContext | null
 }
 
 export interface CreateClinicInput {
@@ -345,6 +346,16 @@ export async function createClinic(
   token: string,
   input: CreateClinicInput,
 ): Promise<CreateClinicResult> {
+  if (isTauriDesktop()) {
+    const desktopResult = await invokeTauri<CreateClinicResult>(
+      "create_clinic_desktop",
+      { input },
+    )
+    if (desktopResult) {
+      return desktopResult
+    }
+  }
+
   const baseUrl = getApiBaseUrl()
   const url = `${baseUrl}/clinics`
   let res: Response

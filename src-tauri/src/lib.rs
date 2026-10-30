@@ -81,6 +81,7 @@ pub fn run() {
             commands::get_desktop_info,
             commands::get_trusted_api_url,
             commands::register_desktop,
+            commands::create_clinic_desktop,
             commands::login_desktop,
             commands::login_desktop_session,
             commands::refresh_desktop_session,

@@ -101,8 +101,9 @@ export function Register({ go, onRegisterSuccess }: RegisterProps) {
       setStatus("success")
       if (onRegisterSuccess) {
         onRegisterSuccess(result)
+      } else {
+        go("setup")
       }
-      go("setup")
     } catch (err: any) {
       const rawMessage =
         typeof err === "string"

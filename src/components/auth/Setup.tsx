@@ -49,6 +49,7 @@ export function Setup({ go, doctor, onSetupComplete }: SetupProps) {
   const [currentAccessToken, setCurrentAccessToken] = useState(
     doctor?.accessToken || "",
   )
+  const [createdClinicId, setCreatedClinicId] = useState<string | null>(null)
 
   // Step 1: Doctor Profile State
   const [fullName, setFullName] = useState(doctor?.fullName || "")
@@ -83,6 +84,7 @@ export function Setup({ go, doctor, onSetupComplete }: SetupProps) {
 
   const next = async (event: FormEvent) => {
     event.preventDefault()
+    if (status === "saving") return
     const form = event.currentTarget as HTMLFormElement
     if (!form.checkValidity()) {
       setError(true)
@@ -100,6 +102,7 @@ export function Setup({ go, doctor, onSetupComplete }: SetupProps) {
   }
 
   const saveClinicSetup = async (tokenOverride?: string) => {
+    if (status === "saving") return
     setStatus("saving")
     setErrorMessage(null)
 
@@ -119,58 +122,100 @@ export function Setup({ go, doctor, onSetupComplete }: SetupProps) {
 
     try {
       let clinicRes: CreateClinicResult | null = null
+      let clinicId = createdClinicId
 
-      if (token) {
-        try {
-          clinicRes = await createClinic(token, clinicPayload)
-        } catch (err: any) {
-          if (err?.status === 401 && doctor?.refreshToken) {
-            try {
-              const refreshed = await refreshAuthTokens(doctor.refreshToken)
-              token = refreshed.accessToken
-              setCurrentAccessToken(token)
-              clinicRes = await createClinic(token, clinicPayload)
-            } catch {
+      if (!clinicId) {
+        if (isTauriDesktop()) {
+          try {
+            clinicRes = await createClinic(token, clinicPayload)
+          } catch (err: any) {
+            if (err?.status === 401 && doctor?.refreshToken) {
+              try {
+                const refreshed = await refreshAuthTokens(doctor.refreshToken)
+                token = refreshed.accessToken
+                setCurrentAccessToken(token)
+                clinicRes = await createClinic(token, clinicPayload)
+              } catch {
+                setStatus("expired")
+                setErrorMessage(
+                  "Your authentication session has expired. Re-authenticate below to save your clinic setup without losing your entered information.",
+                )
+                return
+              }
+            } else if (err?.status === 401) {
               setStatus("expired")
               setErrorMessage(
                 "Your authentication session has expired. Re-authenticate below to save your clinic setup without losing your entered information.",
               )
               return
+            } else {
+              throw err
             }
-          } else if (err?.status === 401) {
-            setStatus("expired")
-            setErrorMessage(
-              "Your authentication session has expired. Re-authenticate below to save your clinic setup without losing your entered information.",
-            )
-            return
-          } else {
-            throw err
+          }
+        } else if (token) {
+          try {
+            clinicRes = await createClinic(token, clinicPayload)
+          } catch (err: any) {
+            if (err?.status === 401 && doctor?.refreshToken) {
+              try {
+                const refreshed = await refreshAuthTokens(doctor.refreshToken)
+                token = refreshed.accessToken
+                setCurrentAccessToken(token)
+                clinicRes = await createClinic(token, clinicPayload)
+              } catch {
+                setStatus("expired")
+                setErrorMessage(
+                  "Your authentication session has expired. Re-authenticate below to save your clinic setup without losing your entered information.",
+                )
+                return
+              }
+            } else if (err?.status === 401) {
+              setStatus("expired")
+              setErrorMessage(
+                "Your authentication session has expired. Re-authenticate below to save your clinic setup without losing your entered information.",
+              )
+              return
+            } else {
+              throw err
+            }
+          }
+        }
+
+        clinicId = clinicRes?.clinic?._id || clinicRes?.clinic?.id || null
+        if (clinicId) {
+          setCreatedClinicId(clinicId)
+        }
+      }
+
+      const effectiveClinicId = clinicId || "clinic-1"
+      const doctorId = doctor?.id || "doc-1"
+
+      let session: DesktopSessionContext | null = null
+      if (isTauriDesktop()) {
+        const desktopSession = await getDesktopSession()
+        if (desktopSession && desktopSession.clinic_id === effectiveClinicId) {
+          session = desktopSession
+        } else if (token) {
+          const tauriSession = await loginDesktopSession(
+            token,
+            effectiveClinicId,
+            "OWNER",
+            doctor?.refreshToken,
+          )
+          if (tauriSession) {
+            session = tauriSession
           }
         }
       }
 
-      const clinicId =
-        clinicRes?.clinic?._id || clinicRes?.clinic?.id || "clinic-1"
-      const doctorId = doctor?.id || "doc-1"
-
-      let session: DesktopSessionContext = {
-        doctor_id: doctorId,
-        clinic_id: clinicId,
-        doctor_email: email || doctor?.email || "",
-        doctor_name: fullName || doctor?.fullName || "Doctor",
-        role: "OWNER",
-        expires_at: Math.floor(Date.now() / 1000) + 3600 * 24,
-      }
-
-      if (isTauriDesktop() && token) {
-        const tauriSession = await loginDesktopSession(
-          token,
-          clinicId,
-          "OWNER",
-          doctor?.refreshToken,
-        )
-        if (tauriSession) {
-          session = tauriSession
+      if (!session) {
+        session = {
+          doctor_id: doctorId,
+          clinic_id: effectiveClinicId,
+          doctor_email: email || doctor?.email || "",
+          doctor_name: fullName || doctor?.fullName || "Doctor",
+          role: "OWNER",
+          expires_at: Math.floor(Date.now() / 1000) + 3600 * 24,
         }
       }
 

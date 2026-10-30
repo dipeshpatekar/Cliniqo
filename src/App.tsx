@@ -1,4 +1,4 @@
-import { useState, useEffect, type ReactNode } from "react"
+import { useState, useEffect, useRef, type ReactNode } from "react"
 import { Menu, RefreshCw } from "lucide-react"
 
 // Re-export utility functions for backward compatibility with existing tests
@@ -66,7 +66,16 @@ export default function App() {
   const [page, setPage] = useState<Page>("login")
   const [desktopSession, setDesktopSession] =
     useState<DesktopSessionContext | null>(null)
+  const desktopSessionRef = useRef<DesktopSessionContext | null>(null)
   const [onboardingDoctor, setOnboardingDoctor] = useState<{
+    id: string
+    email: string
+    fullName: string
+    phone?: string
+    accessToken: string
+    refreshToken?: string
+  } | null>(null)
+  const onboardingDoctorRef = useRef<{
     id: string
     email: string
     fullName: string
@@ -226,25 +235,39 @@ export default function App() {
         const nowSec = Math.floor(Date.now() / 1000)
         if (active && active.expires_at > nowSec) {
           if (mounted) {
+            desktopSessionRef.current = active
             setDesktopSession(active)
-            try {
-              const localPatients = await getLocalPatients(active.clinic_id)
-              if (localPatients && localPatients.length > 0) {
-                const mapped = localPatients.map(mapLocalRecordToPatient)
-                setPatientRecords(mapped)
-                setSelectedPatient(mapped[0])
-              } else {
-                setPatientRecords([])
+            if (active.clinic_id) {
+              try {
+                const localPatients = await getLocalPatients(active.clinic_id)
+                if (localPatients && localPatients.length > 0) {
+                  const mapped = localPatients.map(mapLocalRecordToPatient)
+                  setPatientRecords(mapped)
+                  setSelectedPatient(mapped[0])
+                } else {
+                  setPatientRecords([])
+                }
+              } catch (err) {
+                console.warn(
+                  "[Cliniqo Desktop] Failed to load local patients:",
+                  err,
+                )
               }
-            } catch (err) {
-              console.warn(
-                "[Cliniqo Desktop] Failed to load local patients:",
-                err,
+              setPage((curr) =>
+                curr === "login" || curr === "register" ? "dashboard" : curr,
               )
+            } else {
+              // Incomplete onboarding: session established but clinic not created yet
+              const doctorData = {
+                id: active.doctor_id,
+                email: active.doctor_email,
+                fullName: active.doctor_name,
+                accessToken: "",
+              }
+              onboardingDoctorRef.current = doctorData
+              setOnboardingDoctor(doctorData)
+              setPage("setup")
             }
-            setPage((curr) =>
-              curr === "login" || curr === "register" ? "dashboard" : curr,
-            )
             setIsRestoringSession(false)
           }
           return
@@ -254,41 +277,61 @@ export default function App() {
         if (hasToken) {
           const restored = await refreshDesktopSession()
           if (restored && mounted) {
+            desktopSessionRef.current = restored.session
             setDesktopSession(restored.session)
-            try {
-              const localPatients = await getLocalPatients(
-                restored.session.clinic_id,
-              )
-              if (localPatients && localPatients.length > 0) {
-                const mapped = localPatients.map(mapLocalRecordToPatient)
-                setPatientRecords(mapped)
-                setSelectedPatient(mapped[0])
-              } else {
-                setPatientRecords([])
+            if (restored.clinics.length > 0 && restored.session.clinic_id) {
+              try {
+                const localPatients = await getLocalPatients(
+                  restored.session.clinic_id,
+                )
+                if (localPatients && localPatients.length > 0) {
+                  const mapped = localPatients.map(mapLocalRecordToPatient)
+                  setPatientRecords(mapped)
+                  setSelectedPatient(mapped[0])
+                } else {
+                  setPatientRecords([])
+                }
+              } catch (err) {
+                console.warn(
+                  "[Cliniqo Desktop] Failed to load local patients:",
+                  err,
+                )
               }
-            } catch (err) {
-              console.warn(
-                "[Cliniqo Desktop] Failed to load local patients:",
-                err,
+              setPage((curr) =>
+                curr === "login" || curr === "register" ? "dashboard" : curr,
               )
+            } else {
+              // Incomplete onboarding: restored refresh token valid, but 0 clinics -> resume setup!
+              const doctorData = {
+                id: restored.session.doctor_id,
+                email: restored.session.doctor_email,
+                fullName: restored.session.doctor_name,
+                accessToken: "",
+              }
+              onboardingDoctorRef.current = doctorData
+              setOnboardingDoctor(doctorData)
+              setPage("setup")
             }
-            setPage((curr) =>
-              curr === "login" || curr === "register" ? "dashboard" : curr,
-            )
             setIsRestoringSession(false)
             return
           }
         }
 
         if (mounted) {
+          desktopSessionRef.current = null
           setDesktopSession(null)
+          onboardingDoctorRef.current = null
+          setOnboardingDoctor(null)
           setPage("login")
           setIsRestoringSession(false)
         }
       } catch (err) {
         console.warn("[Cliniqo Desktop] Session bootstrap error:", err)
         if (mounted) {
+          desktopSessionRef.current = null
           setDesktopSession(null)
+          onboardingDoctorRef.current = null
+          setOnboardingDoctor(null)
           setPage("login")
           setIsRestoringSession(false)
         }
@@ -313,15 +356,22 @@ export default function App() {
     )
   }, [clinicalLibrary])
 
-  const go = (next: Page) => {
+  const go = (next: Page, sessionOverride?: DesktopSessionContext | null) => {
+    const effectiveSession =
+      sessionOverride !== undefined
+        ? sessionOverride
+        : (desktopSessionRef.current || desktopSession)
+    const effectiveOnboarding =
+      onboardingDoctorRef.current || onboardingDoctor
+
     // Desktop Route Guard:
     // When running inside Tauri desktop container, do not allow navigation to protected pages without verified session
     if (
       isTauriDesktop() &&
-      !desktopSession &&
+      !effectiveSession &&
       next !== "login" &&
       next !== "register" &&
-      !(next === "setup" && onboardingDoctor)
+      !(next === "setup" && effectiveOnboarding)
     ) {
       setPage("login")
       return
@@ -362,7 +412,9 @@ export default function App() {
         console.warn("[Cliniqo Desktop] Error during logout:", err)
       }
     }
+    desktopSessionRef.current = null
     setDesktopSession(null)
+    onboardingDoctorRef.current = null
     setOnboardingDoctor(null)
     setPatientRecords([])
     setSelectedPatient({
@@ -386,7 +438,7 @@ export default function App() {
       height: "",
       weight: "",
     })
-    go("login")
+    go("login", null)
   }
 
   const openPatient = (patient: Patient) => {
@@ -601,7 +653,21 @@ export default function App() {
   }
 
   const handleLoginSuccess = async (session: DesktopSessionContext) => {
+    desktopSessionRef.current = session
     setDesktopSession(session)
+    if (!session.clinic_id) {
+      const doctorData = {
+        id: session.doctor_id,
+        email: session.doctor_email,
+        fullName: session.doctor_name,
+        accessToken: "",
+      }
+      onboardingDoctorRef.current = doctorData
+      setOnboardingDoctor(doctorData)
+      go("setup", session)
+      return
+    }
+
     try {
       const localPatients = await getLocalPatients(session.clinic_id)
       if (localPatients && localPatients.length > 0) {
@@ -617,7 +683,7 @@ export default function App() {
         err,
       )
     }
-    go("dashboard")
+    go("dashboard", session)
   }
 
   const addLibraryItem = (category: ClinicalLibraryCategory, value: string) => {
@@ -671,12 +737,15 @@ export default function App() {
   }
 
   // Desktop unauthenticated route guard fallback
+  const activeSession = desktopSessionRef.current || desktopSession
+  const activeOnboarding = onboardingDoctorRef.current || onboardingDoctor
+
   if (
     isTauriDesktop() &&
-    !desktopSession &&
+    !activeSession &&
     page !== "login" &&
     page !== "register" &&
-    !(page === "setup" && onboardingDoctor)
+    !(page === "setup" && activeOnboarding)
   ) {
     return <Login go={go} onLoginSuccess={handleLoginSuccess} />
   }
@@ -689,15 +758,21 @@ export default function App() {
       <Register
         go={go}
         onRegisterSuccess={(result) => {
-          setOnboardingDoctor({
+          const doctorData = {
             id: result.doctor.id,
             email: result.doctor.email,
             fullName: result.doctor.fullName,
             phone: result.doctor.phone,
             accessToken: result.accessToken,
             refreshToken: result.refreshToken,
-          })
-          go("setup")
+          }
+          onboardingDoctorRef.current = doctorData
+          setOnboardingDoctor(doctorData)
+          if (result.session) {
+            desktopSessionRef.current = result.session
+            setDesktopSession(result.session)
+          }
+          go("setup", result.session)
         }}
       />
     )
@@ -708,7 +783,10 @@ export default function App() {
         go={go}
         doctor={onboardingDoctor}
         onSetupComplete={async (session) => {
+          onboardingDoctorRef.current = null
           setOnboardingDoctor(null)
+          desktopSessionRef.current = session
+          setDesktopSession(session)
           await handleLoginSuccess(session)
         }}
       />

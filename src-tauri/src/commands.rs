@@ -141,7 +141,7 @@ pub async fn login_desktop(
     password: String,
 ) -> Result<DesktopLoginResult, String> {
     let base_url = crate::config::get_trusted_backend_url()?;
-    let client = crate::config::create_secure_http_client(Duration::from_secs(10))?;
+    let client = crate::config::create_secure_http_client(Duration::from_secs(35))?;
 
     let login_url = format!("{base_url}/auth/login");
     let resp = client
@@ -193,37 +193,40 @@ pub async fn login_desktop(
         .await
         .map_err(|e| format!("Failed to parse clinic memberships: {e}"))?;
 
-    if clinics.is_empty() {
-        return Err("No active clinic memberships found for this account.".to_string());
-    }
+    let (selected_clinic_id, selected_role) = if clinics.is_empty() {
+        ("".to_string(), "OWNER".to_string())
+    } else {
+        let prev_clinic_id = state.key_mgr.load_active_clinic_id().ok().flatten();
+        let selected_clinic = prev_clinic_id
+            .as_ref()
+            .and_then(|id| clinics.iter().find(|c| &c.id == id))
+            .unwrap_or(&clinics[0])
+            .clone();
 
-    let prev_clinic_id = state.key_mgr.load_active_clinic_id().ok().flatten();
-    let selected_clinic = prev_clinic_id
-        .as_ref()
-        .and_then(|id| clinics.iter().find(|c| &c.id == id))
-        .unwrap_or(&clinics[0])
-        .clone();
-
-    let _ = state.key_mgr.save_active_clinic_id(&selected_clinic.id);
+        let _ = state.key_mgr.save_active_clinic_id(&selected_clinic.id);
+        (selected_clinic.id, selected_clinic.role)
+    };
 
     // 3. Establish session with authoritative clinic & role
     let session = state.session_mgr
-        .login(&login_data.access_token, &selected_clinic.id, &selected_clinic.role)
+        .login(&login_data.access_token, &selected_clinic_id, &selected_role)
         .map_err(|e| format!("Failed to validate session token: {e}"))?;
 
-    // 4. Start native background sync worker for this clinic
-    state.sync_handle.start(
-        selected_clinic.id.clone(),
-        state.db.clone(),
-        state.session_mgr.clone(),
-        state.key_mgr.clone(),
-        state.refresh_coordinator.clone(),
-    ).await;
+    // 4. Start native background sync worker for this clinic if clinic exists
+    if !selected_clinic_id.is_empty() {
+        state.sync_handle.start(
+            selected_clinic_id.clone(),
+            state.db.clone(),
+            state.session_mgr.clone(),
+            state.key_mgr.clone(),
+            state.refresh_coordinator.clone(),
+        ).await;
+    }
 
     Ok(DesktopLoginResult {
         session,
         clinics,
-        active_clinic_id: selected_clinic.id.clone(),
+        active_clinic_id: selected_clinic_id,
     })
 }
 
@@ -253,6 +256,7 @@ pub struct RegisterDesktopResult {
     #[serde(rename = "refreshToken")]
     pub refresh_token: Option<String>,
     pub doctor: RegisteredDoctorInfo,
+    pub session: Option<SessionContext>,
 }
 
 #[tauri::command]
@@ -266,7 +270,7 @@ pub async fn register_desktop(
     input: RegisterDesktopInput,
 ) -> Result<RegisterDesktopResult, String> {
     let base_url = crate::config::get_trusted_backend_url()?;
-    let client = crate::config::create_secure_http_client(Duration::from_secs(10))?;
+    let client = crate::config::create_secure_http_client(Duration::from_secs(35))?;
 
     let register_url = format!("{base_url}/auth/register");
     let resp = client
@@ -301,7 +305,17 @@ pub async fn register_desktop(
         }
     }
 
-    Ok(reg_data)
+    // Immediately establish the native session for the newly registered doctor
+    let session = state.session_mgr
+        .login(&reg_data.access_token, "", "OWNER")
+        .ok();
+
+    Ok(RegisterDesktopResult {
+        access_token: reg_data.access_token,
+        refresh_token: reg_data.refresh_token,
+        doctor: reg_data.doctor,
+        session,
+    })
 }
 
 #[tauri::command]
@@ -378,7 +392,7 @@ async fn do_actual_refresh_session(
     let base_url = crate::config::get_trusted_backend_url()?;
     let refresh_url = format!("{base_url}/auth/refresh");
 
-    let client = crate::config::create_secure_http_client(Duration::from_secs(10))?;
+    let client = crate::config::create_secure_http_client(Duration::from_secs(35))?;
 
     let resp = client
         .post(&refresh_url)
@@ -434,27 +448,28 @@ async fn do_actual_refresh_session(
         .await
         .map_err(|e| format!("Failed to parse clinic memberships: {e}"))?;
 
-    if clinics.is_empty() {
-        return Err("No active clinic memberships found for this account.".to_string());
-    }
+    let (selected_clinic_id, selected_role) = if clinics.is_empty() {
+        ("".to_string(), "OWNER".to_string())
+    } else {
+        let prev_clinic_id = key_mgr.load_active_clinic_id().ok().flatten();
+        let selected_clinic = prev_clinic_id
+            .as_ref()
+            .and_then(|id| clinics.iter().find(|c| &c.id == id))
+            .unwrap_or(&clinics[0])
+            .clone();
 
-    let prev_clinic_id = key_mgr.load_active_clinic_id().ok().flatten();
-    let selected_clinic = prev_clinic_id
-        .as_ref()
-        .and_then(|id| clinics.iter().find(|c| &c.id == id))
-        .unwrap_or(&clinics[0])
-        .clone();
-
-    let _ = key_mgr.save_active_clinic_id(&selected_clinic.id);
+        let _ = key_mgr.save_active_clinic_id(&selected_clinic.id);
+        (selected_clinic.id, selected_clinic.role)
+    };
 
     let session = session_mgr
-        .login(&refresh_data.access_token, &selected_clinic.id, &selected_clinic.role)
+        .login(&refresh_data.access_token, &selected_clinic_id, &selected_role)
         .map_err(|e| format!("Failed to validate refreshed access token: {e}"))?;
 
     Ok(DesktopLoginResult {
         session,
         clinics,
-        active_clinic_id: selected_clinic.id.clone(),
+        active_clinic_id: selected_clinic_id,
     })
 }
 
@@ -501,13 +516,15 @@ pub async fn refresh_desktop_session(
     )
     .await?;
 
-    state.sync_handle.start(
-        result.active_clinic_id.clone(),
-        state.db.clone(),
-        state.session_mgr.clone(),
-        state.key_mgr.clone(),
-        state.refresh_coordinator.clone(),
-    ).await;
+    if !result.active_clinic_id.is_empty() {
+        state.sync_handle.start(
+            result.active_clinic_id.clone(),
+            state.db.clone(),
+            state.session_mgr.clone(),
+            state.key_mgr.clone(),
+            state.refresh_coordinator.clone(),
+        ).await;
+    }
 
     Ok(result)
 }
@@ -550,6 +567,114 @@ pub async fn switch_active_clinic(
     ).await;
 
     Ok(session)
+}
+
+#[derive(Deserialize)]
+pub struct CreateClinicDesktopInput {
+    pub name: String,
+    pub slug: Option<String>,
+    pub phone: String,
+    pub email: String,
+    pub address: ClinicAddressInput,
+}
+
+#[derive(Deserialize, Serialize)]
+pub struct ClinicAddressInput {
+    pub street: String,
+    pub city: String,
+    pub state: String,
+    #[serde(rename = "postalCode")]
+    pub postal_code: String,
+    pub country: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct CreatedClinicInfo {
+    pub _id: Option<String>,
+    pub id: Option<String>,
+    pub name: String,
+    pub slug: Option<String>,
+    pub phone: Option<String>,
+    pub email: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct CreatedMembershipInfo {
+    pub _id: Option<String>,
+    pub id: Option<String>,
+    #[serde(rename = "clinicId")]
+    pub clinic_id: Option<String>,
+    #[serde(rename = "doctorId")]
+    pub doctor_id: Option<String>,
+    pub role: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct CreateClinicResult {
+    pub clinic: CreatedClinicInfo,
+    pub membership: CreatedMembershipInfo,
+}
+
+#[tauri::command]
+pub async fn create_clinic_desktop(
+    state: State<'_, AppState>,
+    input: CreateClinicDesktopInput,
+) -> Result<CreateClinicResult, String> {
+    let token = state.session_mgr.get_access_token()
+        .ok_or_else(|| "No active authenticated session found. Please log in or register.".to_string())?;
+
+    let base_url = crate::config::get_trusted_backend_url()?;
+    let client = crate::config::create_secure_http_client(Duration::from_secs(35))?;
+    let clinic_url = format!("{base_url}/clinics");
+
+    let resp = client
+        .post(&clinic_url)
+        .bearer_auth(&token)
+        .json(&serde_json::json!({
+            "name": input.name.trim(),
+            "phone": input.phone.trim(),
+            "email": input.email.trim(),
+            "address": {
+                "street": input.address.street.trim(),
+                "city": input.address.city.trim(),
+                "state": input.address.state.trim(),
+                "postalCode": input.address.postal_code.trim(),
+                "country": input.address.country.trim(),
+            }
+        }))
+        .send()
+        .await
+        .map_err(|e| format!("Failed to connect to Cliniqo server ({base_url}): {e}"))?;
+
+    let status = resp.status();
+    if !status.is_success() {
+        let body = resp.text().await.unwrap_or_default();
+        return Err(format!("Failed to create clinic (HTTP {status}): {body}"));
+    }
+
+    let clinic_result = resp
+        .json::<CreateClinicResult>()
+        .await
+        .map_err(|e| format!("Invalid clinic creation response from server: {e}"))?;
+
+    let clinic_id = clinic_result.clinic.id.as_deref()
+        .or(clinic_result.clinic._id.as_deref())
+        .unwrap_or_default();
+
+    if !clinic_id.is_empty() {
+        let _ = state.session_mgr.login(&token, clinic_id, "OWNER");
+        let _ = state.key_mgr.save_active_clinic_id(clinic_id);
+
+        state.sync_handle.start(
+            clinic_id.to_string(),
+            state.db.clone(),
+            state.session_mgr.clone(),
+            state.key_mgr.clone(),
+            state.refresh_coordinator.clone(),
+        ).await;
+    }
+
+    Ok(clinic_result)
 }
 
 #[tauri::command]
@@ -1174,6 +1299,37 @@ mod tests {
         let trusted = crate::config::get_trusted_backend_url().expect("valid trusted url");
         assert!(trusted.starts_with("http://") || trusted.starts_with("https://"));
         assert!(!trusted.contains("attacker"));
+    }
+
+    #[test]
+    fn test_incomplete_onboarding_session_allows_onboarding_without_clinic() {
+        let session_mgr = SessionManager::with_default_public_key().unwrap();
+        let token = crate::auth::tests::generate_test_rs256_jwt_with_name(
+            crate::auth::tests::TEST_BACKEND_PRIVATE_KEY_PEM,
+            "doc_onboarding_1",
+            "newdoctor@cliniqo.test",
+            Some("Dr. New Doctor"),
+            3600,
+        );
+
+        // When a doctor registers or logs in with 0 clinics, session is established with empty clinic_id
+        let session = session_mgr.login(&token, "", "OWNER").expect("session succeeds for incomplete onboarding");
+        assert_eq!(session.doctor_id, "doc_onboarding_1");
+        assert_eq!(session.clinic_id, "");
+        assert_eq!(session.doctor_name, "Dr. New Doctor");
+
+        // General session verification passes (user is authenticated doctor)
+        let general_check = session_mgr.validate_session(None);
+        assert!(general_check.is_ok());
+
+        // But patient / clinic operations requiring a specific clinic are safely blocked until clinic creation
+        let clinic_check = session_mgr.validate_session(Some("clinic_real_1"));
+        assert!(clinic_check.is_err());
+
+        // Once clinic is created, session updates to the authoritative clinic
+        let updated_session = session_mgr.login(&token, "clinic_real_1", "OWNER").expect("update succeeds");
+        assert_eq!(updated_session.clinic_id, "clinic_real_1");
+        assert!(session_mgr.validate_session(Some("clinic_real_1")).is_ok());
     }
 }
 

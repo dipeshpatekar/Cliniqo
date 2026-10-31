@@ -13,6 +13,7 @@ import { redactString } from '../common/logging/app-logger.service.js';
 export class DatabaseDiagnostics {
   static readyState = 0;
   static isConnected = false;
+  static dbName: string | null = null;
   static lastError: string | null = null;
   static lastErrorTime: string | null = null;
   static reconnectAttempts = 0;
@@ -27,6 +28,7 @@ export class DatabaseDiagnostics {
       inject: [ConfigService],
       useFactory: (configService: ConfigService) => {
         const { uri, dbName } = configService.validateDatabaseConfig();
+        DatabaseDiagnostics.dbName = dbName;
         return {
           uri,
           dbName,

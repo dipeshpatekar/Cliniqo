@@ -70,10 +70,16 @@ export class HealthService {
       status: readyState === 1 ? 'ok' : 'degraded',
       timestamp: new Date().toISOString(),
       uptime: Math.floor((Date.now() - this.startTime) / 1000),
+      runtime: {
+        nodeVersion: process.version,
+        platform: process.platform,
+        arch: process.arch,
+      },
       database: {
         readyState,
         readyStateText: stateMap[readyState] || 'unknown',
         isConnected: readyState === 1,
+        dbName: DatabaseDiagnostics.dbName,
         lastError: DatabaseDiagnostics.lastError,
         lastErrorTime: DatabaseDiagnostics.lastErrorTime,
         reconnectAttempts: DatabaseDiagnostics.reconnectAttempts,

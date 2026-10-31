@@ -881,6 +881,16 @@ export async function saveCatalogueCacheItems(
   return result ?? 0
 }
 
+export async function seedCatalogueCache(): Promise<number> {
+  if (!isTauriDesktop()) return 0
+  try {
+    const result = await invokeTauri<number>("seed_catalogue_cache")
+    return result ?? 0
+  } catch {
+    return 0
+  }
+}
+
 export async function searchCatalogue(
   query: string,
   token?: string,
@@ -888,8 +898,33 @@ export async function searchCatalogue(
   formulation?: string,
   releaseType?: string,
 ): Promise<CatalogueSearchResult> {
+  const isDesktop = isTauriDesktop()
+
+  // In desktop mode, SQLite cache is high-speed, local, encrypted, and offline-first
+  if (isDesktop) {
+    try {
+      const localItems = await searchLocalCatalogueCache(query, limit, formulation)
+      if (localItems && localItems.length > 0) {
+        return {
+          items: localItems,
+          total: localItems.length,
+          page: 1,
+          limit,
+          totalPages: Math.ceil(localItems.length / limit) || 1,
+          attribution: "CDCI / NRCeS India (CC BY 4.0) — Local Offline Cache",
+          isOfflineCache: true,
+        }
+      }
+    } catch {
+      // Fall through to online search if local query failed
+    }
+  }
+
+  // Online search when valid token is provided (web mode or desktop cache miss)
   const backendUrl = getBackendUrl()
-  if (token && typeof navigator !== "undefined" && navigator.onLine) {
+  const validToken =
+    token && !token.startsWith("doc_") && token.length > 20 ? token : undefined
+  if (validToken && typeof navigator !== "undefined" && navigator.onLine) {
     try {
       const url = new URL(`${backendUrl}/catalogue/search`)
       url.searchParams.set("q", query)
@@ -899,13 +934,13 @@ export async function searchCatalogue(
 
       const resp = await fetch(url.toString(), {
         headers: {
-          Authorization: `Bearer ${token}`,
+          Authorization: `Bearer ${validToken}`,
           "Content-Type": "application/json",
         },
       })
       if (resp.ok) {
         const data = await resp.json()
-        if (data.items && data.items.length > 0 && isTauriDesktop()) {
+        if (data.items && data.items.length > 0 && isDesktop) {
           saveCatalogueCacheItems(data.items).catch(() => {})
         }
         return {
@@ -939,8 +974,30 @@ export async function getCatalogueStrengths(
   isSingleMatch: boolean
   isOfflineCache?: boolean
 }> {
+  const isDesktop = isTauriDesktop()
+
+  if (isDesktop) {
+    try {
+      const localStrengths = await getLocalCatalogueStrengthsCache(
+        medicineName,
+        formulation,
+      )
+      if (localStrengths && localStrengths.length > 0) {
+        return {
+          strengths: localStrengths,
+          isSingleMatch: localStrengths.length === 1,
+          isOfflineCache: true,
+        }
+      }
+    } catch {
+      // Fall through to online search
+    }
+  }
+
   const backendUrl = getBackendUrl()
-  if (token && typeof navigator !== "undefined" && navigator.onLine) {
+  const validToken =
+    token && !token.startsWith("doc_") && token.length > 20 ? token : undefined
+  if (validToken && typeof navigator !== "undefined" && navigator.onLine) {
     try {
       const url = new URL(`${backendUrl}/catalogue/strengths`)
       url.searchParams.set("name", medicineName)
@@ -948,7 +1005,7 @@ export async function getCatalogueStrengths(
 
       const resp = await fetch(url.toString(), {
         headers: {
-          Authorization: `Bearer ${token}`,
+          Authorization: `Bearer ${validToken}`,
           "Content-Type": "application/json",
         },
       })

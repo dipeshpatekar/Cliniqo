@@ -9,6 +9,10 @@ import {
   CatalogueBrandSchema,
 } from './schemas/catalogue-brand.schema.js';
 import {
+  CatalogueProduct,
+  CatalogueProductSchema,
+} from './schemas/catalogue-product.schema.js';
+import {
   CatalogueImportJob,
   CatalogueImportJobSchema,
 } from './schemas/catalogue-import-job.schema.js';
@@ -22,6 +26,7 @@ import { AuthModule } from '../auth/auth.module.js';
     MongooseModule.forFeature([
       { name: CatalogueGeneric.name, schema: CatalogueGenericSchema },
       { name: CatalogueBrand.name, schema: CatalogueBrandSchema },
+      { name: CatalogueProduct.name, schema: CatalogueProductSchema },
       { name: CatalogueImportJob.name, schema: CatalogueImportJobSchema },
     ]),
     AuthModule,

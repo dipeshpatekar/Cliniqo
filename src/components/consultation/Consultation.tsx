@@ -144,7 +144,7 @@ export function Consultation({
     }
 
     // 2. Fetch catalogue suggestions
-    searchCatalogue(trimmed, desktopSession?.doctor_id, 10, formulation)
+    searchCatalogue(trimmed, undefined, 20, formulation)
       .then((res) => {
         setCatalogueSuggestions((prev) => ({
           ...prev,
@@ -157,7 +157,7 @@ export function Consultation({
       .catch(() => {})
 
     // 3. Automatic strength lookup: if exactly 1 variant exists, preselect it
-    getCatalogueStrengths(trimmed, desktopSession?.doctor_id, formulation)
+    getCatalogueStrengths(trimmed, undefined, formulation)
       .then((res) => {
         setCatalogueStrengthsMap((prev) => ({
           ...prev,

@@ -248,8 +248,50 @@ describe('CatalogueService', () => {
   });
 
   describe('getFeed', () => {
-    it('returns batched feed items with nextCursor for pagination', async () => {
-      const mockFeedItems = [
+    it('returns batched feed items with nextCursor for pagination across generics and brands', async () => {
+      const mockGenericItems = [
+        {
+          identifier: 'G1',
+          genericName: 'Generic 1',
+          strengths: [{ rawStrength: '100 mg' }],
+          rawStrengthSummary: '100 mg',
+          isStrengthVerified: true,
+          sourceProvenance: 'CDCI_NRCES_INDIA',
+        },
+        {
+          identifier: 'G2',
+          genericName: 'Generic 2',
+          strengths: [{ rawStrength: '50 mg' }],
+          rawStrengthSummary: '50 mg',
+          isStrengthVerified: true,
+          sourceProvenance: 'CDCI_NRCES_INDIA',
+        },
+      ];
+
+      mockGenericModel.countDocuments.mockReturnValue({
+        exec: vi.fn().mockResolvedValue(10),
+      });
+      mockBrandModel.countDocuments.mockReturnValue({
+        exec: vi.fn().mockResolvedValue(90),
+      });
+      mockGenericModel.find.mockReturnValue({
+        sort: vi.fn().mockReturnThis(),
+        limit: vi.fn().mockReturnThis(),
+        lean: vi.fn().mockReturnValue({
+          exec: vi.fn().mockResolvedValue(mockGenericItems),
+        }),
+      });
+
+      const res = await service.getFeed(undefined, 2);
+      expect(res.items.length).toBe(2);
+      expect(res.total).toBe(100);
+      expect(res.nextCursor).toBe('G_G2');
+      expect(res.items[0].type).toBe('GENERIC');
+      expect(res.attribution).toContain('CDCI / NRCeS India (CC BY 4.0)');
+    });
+
+    it('returns brand items when paginating with brand cursor', async () => {
+      const mockBrandItems = [
         {
           identifier: 'B1',
           brandName: 'Brand 1',
@@ -260,35 +302,28 @@ describe('CatalogueService', () => {
           isStrengthVerified: true,
           sourceProvenance: 'CDCI_NRCES_INDIA',
         },
-        {
-          identifier: 'B2',
-          brandName: 'Brand 2',
-          releaseType: 'IMMEDIATE_RELEASE',
-          strengths: [{ rawStrength: '50 mg' }],
-          rawStrengthSummary: '50 mg',
-          isStrengthVerified: true,
-          sourceProvenance: 'CDCI_NRCES_INDIA',
-        },
       ];
 
+      mockGenericModel.countDocuments.mockReturnValue({
+        exec: vi.fn().mockResolvedValue(10),
+      });
       mockBrandModel.countDocuments.mockReturnValue({
-        exec: vi.fn().mockResolvedValue(2),
+        exec: vi.fn().mockResolvedValue(90),
       });
       mockBrandModel.find.mockReturnValue({
         sort: vi.fn().mockReturnThis(),
         limit: vi.fn().mockReturnThis(),
         lean: vi.fn().mockReturnValue({
-          exec: vi.fn().mockResolvedValue(mockFeedItems),
+          exec: vi.fn().mockResolvedValue(mockBrandItems),
         }),
       });
 
-      const res = await service.getFeed(undefined, 2);
-      expect(res.items.length).toBe(2);
-      expect(res.total).toBe(2);
-      expect(res.nextCursor).toBe('B2');
-      expect(res.items[0].releaseType).toBe('SUSTAINED_RELEASE');
+      const res = await service.getFeed('B_B0', 1);
+      expect(res.items.length).toBe(1);
+      expect(res.total).toBe(100);
+      expect(res.nextCursor).toBe('B_B1');
+      expect(res.items[0].type).toBe('BRAND');
       expect(res.items[0].manufacturer).toBe('Pharma Corp');
-      expect(res.attribution).toContain('CDCI / NRCeS India (CC BY 4.0)');
     });
   });
 });

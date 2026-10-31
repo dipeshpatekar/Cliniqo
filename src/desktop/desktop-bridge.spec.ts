@@ -640,5 +640,72 @@ describe("Desktop Bridge (Tauri 2 Frontend Integration)", () => {
 
       vi.doUnmock("@tauri-apps/api/core")
     })
+
+    it("searches local SQLite catalogue cache in desktop mode without requiring token", async () => {
+      win.__TAURI_INTERNALS__ = {}
+      const mockLocalRecords = [
+        {
+          id: "1",
+          item_type: "BRAND",
+          name: "Amoxyclav 625 Tablet",
+          brand_name: "Amoxyclav 625",
+          generic_name: "Amoxicillin and Clavulanic Acid 500 mg + 125 mg Tablet",
+          product_name: "Amoxyclav 625 Tablet",
+          dosage_form: "Tablet",
+          route: "Oral",
+          strengths_json: JSON.stringify([{ rawStrength: "500 mg + 125 mg" }]),
+          raw_strength_summary: "500 mg + 125 mg",
+          is_combination: true,
+          is_verified: true,
+          source_provenance: "CDCI_NRCES_INDIA",
+          created_at: "2026-10-31T00:00:00Z",
+          updated_at: "2026-10-31T00:00:00Z",
+        },
+      ]
+
+      vi.doMock("@tauri-apps/api/core", () => ({
+        invoke: vi.fn().mockImplementation((cmd: string, args: any) => {
+          if (cmd === "search_catalogue_cache") {
+            expect(args.query).toBe("a")
+            expect(args.formulation).toBe("Tablet")
+            return Promise.resolve(mockLocalRecords)
+          }
+          return Promise.resolve(null)
+        }),
+      }))
+
+      const { searchCatalogue } = await import("./desktop-bridge")
+      const result = await searchCatalogue("a", undefined, 20, "Tablet")
+
+      expect(result.items.length).toBe(1)
+      expect(result.items[0].name).toBe("Amoxyclav 625 Tablet")
+      expect(result.isOfflineCache).toBe(true)
+      expect(result.attribution).toContain("Local Offline Cache")
+
+      vi.doUnmock("@tauri-apps/api/core")
+    })
+
+    it("retrieves catalogue strengths from local cache in desktop mode", async () => {
+      win.__TAURI_INTERNALS__ = {}
+      vi.doMock("@tauri-apps/api/core", () => ({
+        invoke: vi.fn().mockImplementation((cmd: string, args: any) => {
+          if (cmd === "get_catalogue_strengths_cache") {
+            expect(args.medicineName).toBe("Amoxyclav")
+            expect(args.formulation).toBe("Tablet")
+            return Promise.resolve(["625 mg", "1000 mg"])
+          }
+          return Promise.resolve(null)
+        }),
+      }))
+
+      const { getCatalogueStrengths } = await import("./desktop-bridge")
+      const result = await getCatalogueStrengths("Amoxyclav", undefined, "Tablet")
+
+      expect(result.strengths).toEqual(["625 mg", "1000 mg"])
+      expect(result.isSingleMatch).toBe(false)
+      expect(result.isOfflineCache).toBe(true)
+
+      vi.doUnmock("@tauri-apps/api/core")
+    })
   })
 })

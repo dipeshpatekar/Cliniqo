@@ -3055,13 +3055,19 @@ impl DbOperations {
 
         let clean_form = formulation.map(str::trim).filter(|f| !f.is_empty());
         if clean_form.is_some() {
-            query_sql.push_str(" AND (dosage_form LIKE ?4)");
+            query_sql.push_str(" AND (dosage_form LIKE ?4 OR name LIKE ?4)");
         }
 
         query_sql.push_str(
             r#"
             ORDER BY
-               CASE WHEN name LIKE ?2 THEN 0 ELSE 1 END,
+               CASE
+                   WHEN name LIKE ?2 THEN 0
+                   WHEN brand_name LIKE ?2 THEN 1
+                   WHEN generic_name LIKE ?2 THEN 2
+                   WHEN product_name LIKE ?2 THEN 3
+                   ELSE 4
+               END,
                name ASC
             LIMIT ?3
             "#,
@@ -3130,7 +3136,7 @@ impl DbOperations {
         );
 
         if formulation.is_some() {
-            query_sql.push_str(" AND (dosage_form LIKE '%' || ?2 || '%')");
+            query_sql.push_str(" AND (dosage_form LIKE '%' || ?2 || '%' OR name LIKE '%' || ?2 || '%')");
         }
         query_sql.push_str(" ORDER BY raw_strength_summary ASC");
 

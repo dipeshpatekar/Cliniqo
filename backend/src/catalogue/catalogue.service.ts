@@ -102,7 +102,12 @@ export class CatalogueService {
       ],
     };
     if (dto.formulation) {
-      brandFilter.dosageForm = new RegExp(dto.formulation, 'i');
+      const formRegex = new RegExp(dto.formulation, 'i');
+      brandFilter.$and = [
+        {
+          $or: [{ dosageForm: formRegex }, { brandName: formRegex }],
+        },
+      ];
     }
     if (dto.releaseType) {
       brandFilter.releaseType = dto.releaseType;
@@ -116,7 +121,12 @@ export class CatalogueService {
       ],
     };
     if (dto.formulation) {
-      genericFilter.doseForm = new RegExp(dto.formulation, 'i');
+      const formRegex = new RegExp(dto.formulation, 'i');
+      genericFilter.$and = [
+        {
+          $or: [{ doseForm: formRegex }, { genericName: formRegex }],
+        },
+      ];
     }
     if (dto.releaseType) {
       genericFilter.releaseType = dto.releaseType;
@@ -283,14 +293,24 @@ export class CatalogueService {
       $or: [{ brandName: partialRegex }, { productName: regex }, { genericName: regex }],
     };
     if (dto.formulation) {
-      brandFilter.dosageForm = new RegExp(dto.formulation, 'i');
+      const formRegex = new RegExp(dto.formulation, 'i');
+      brandFilter.$and = [
+        {
+          $or: [{ dosageForm: formRegex }, { brandName: formRegex }, { productName: formRegex }],
+        },
+      ];
     }
 
     const genericFilter: any = {
       $or: [{ genericName: partialRegex }, { substances: regex }],
     };
     if (dto.formulation) {
-      genericFilter.doseForm = new RegExp(dto.formulation, 'i');
+      const formRegex = new RegExp(dto.formulation, 'i');
+      genericFilter.$and = [
+        {
+          $or: [{ doseForm: formRegex }, { genericName: formRegex }],
+        },
+      ];
     }
 
     const [brands, generics] = await Promise.all([
@@ -327,52 +347,156 @@ export class CatalogueService {
   /**
    * Provides an incremental, cursor-paginated batched feed of catalogue records.
    * Designed for efficient local offline cache population in desktop clients.
+   * Feeds generics first (with G_ cursor prefix), then brands (with B_ cursor prefix).
    */
   async getFeed(
     cursor?: string,
     limit = 100,
   ): Promise<CatalogueFeedResult> {
     const safeLimit = Math.min(500, Math.max(1, limit || 100));
-    const filter = cursor ? { identifier: { $gt: cursor.trim() } } : {};
+    const [genericCount, brandCount] = await Promise.all([
+      this.genericModel.countDocuments().exec(),
+      this.brandModel.countDocuments().exec(),
+    ]);
+    const total = genericCount + brandCount;
 
-    const [brands, total] = await Promise.all([
-      this.brandModel
-        .find(filter)
+    const items: CatalogueSearchItem[] = [];
+    const trimmedCursor = cursor ? cursor.trim() : '';
+
+    if (!trimmedCursor || trimmedCursor.startsWith('G_')) {
+      const genericCursorId = trimmedCursor.startsWith('G_')
+        ? trimmedCursor.slice(2)
+        : '';
+      const genericFilter = genericCursorId ? { identifier: { $gt: genericCursorId } } : {};
+
+      const generics = await this.genericModel
+        .find(genericFilter)
         .sort({ identifier: 1 })
         .limit(safeLimit)
         .lean()
-        .exec(),
-      this.brandModel.countDocuments().exec(),
-    ]);
+        .exec();
 
-    const items: CatalogueSearchItem[] = brands.map((b) => ({
-      id: b.identifier,
-      sourceIdentifier: b.identifier,
-      type: 'BRAND',
-      name: b.brandName,
-      brandName: b.brandName,
-      genericName: b.genericName || undefined,
-      productName: b.productName || undefined,
-      dosageForm: b.dosageForm || undefined,
-      route: b.route || undefined,
-      strengths: b.strengths || [],
-      rawStrengthSummary: b.rawStrengthSummary,
-      releaseType: b.releaseType || 'IMMEDIATE_RELEASE',
-      manufacturer: b.supplierName || undefined,
-      isCombination: b.isCombination,
-      isStrengthVerified: b.isStrengthVerified,
-      sourceProvenance: b.sourceProvenance,
-    }));
+      for (const g of generics) {
+        items.push({
+          id: g.identifier,
+          sourceIdentifier: g.identifier,
+          type: 'GENERIC',
+          name: g.genericName,
+          genericName: g.genericName,
+          dosageForm: g.doseForm || undefined,
+          route: g.routes && g.routes.length > 0 ? g.routes[0] : undefined,
+          strengths: g.strengths || [],
+          rawStrengthSummary: g.rawStrengthSummary,
+          releaseType: g.releaseType || 'IMMEDIATE_RELEASE',
+          manufacturer: undefined,
+          isCombination: g.isCombination,
+          isStrengthVerified: g.isStrengthVerified,
+          sourceProvenance: g.sourceProvenance,
+        });
+      }
 
-    const nextCursor =
-      brands.length === safeLimit ? brands[brands.length - 1].identifier : null;
+      if (items.length < safeLimit) {
+        // Generics exhausted in this batch; fill remaining capacity with brands
+        const brandLimit = safeLimit - items.length;
+        const brands = await this.brandModel
+          .find({})
+          .sort({ identifier: 1 })
+          .limit(brandLimit)
+          .lean()
+          .exec();
 
-    return {
-      items,
-      nextCursor,
-      total,
-      attribution:
-        'CDCI / NRCeS India (CC BY 4.0); SNOMED CT® International Release terms apply.',
-    };
+        for (const b of brands) {
+          items.push({
+            id: b.identifier,
+            sourceIdentifier: b.identifier,
+            type: 'BRAND',
+            name: b.brandName,
+            brandName: b.brandName,
+            genericName: b.genericName || undefined,
+            productName: b.productName || undefined,
+            dosageForm: b.dosageForm || undefined,
+            route: b.route || undefined,
+            strengths: b.strengths || [],
+            rawStrengthSummary: b.rawStrengthSummary,
+            releaseType: b.releaseType || 'IMMEDIATE_RELEASE',
+            manufacturer: b.supplierName || undefined,
+            isCombination: b.isCombination,
+            isStrengthVerified: b.isStrengthVerified,
+            sourceProvenance: b.sourceProvenance,
+          });
+        }
+
+        const nextCursor =
+          brands.length > 0
+            ? `B_${brands[brands.length - 1].identifier}`
+            : generics.length === safeLimit
+              ? `G_${generics[generics.length - 1].identifier}`
+              : null;
+
+        return {
+          items,
+          nextCursor,
+          total,
+          attribution:
+            'CDCI / NRCeS India (CC BY 4.0); SNOMED CT® International Release terms apply.',
+        };
+      } else {
+        const nextCursor = `G_${generics[generics.length - 1].identifier}`;
+        return {
+          items,
+          nextCursor,
+          total,
+          attribution:
+            'CDCI / NRCeS India (CC BY 4.0); SNOMED CT® International Release terms apply.',
+        };
+      }
+    } else {
+      // Cursor starts with 'B_' or is legacy brand id
+      const brandCursorId = trimmedCursor.startsWith('B_')
+        ? trimmedCursor.slice(2)
+        : trimmedCursor;
+      const brandFilter = brandCursorId ? { identifier: { $gt: brandCursorId } } : {};
+
+      const brands = await this.brandModel
+        .find(brandFilter)
+        .sort({ identifier: 1 })
+        .limit(safeLimit)
+        .lean()
+        .exec();
+
+      for (const b of brands) {
+        items.push({
+          id: b.identifier,
+          sourceIdentifier: b.identifier,
+          type: 'BRAND',
+          name: b.brandName,
+          brandName: b.brandName,
+          genericName: b.genericName || undefined,
+          productName: b.productName || undefined,
+          dosageForm: b.dosageForm || undefined,
+          route: b.route || undefined,
+          strengths: b.strengths || [],
+          rawStrengthSummary: b.rawStrengthSummary,
+          releaseType: b.releaseType || 'IMMEDIATE_RELEASE',
+          manufacturer: b.supplierName || undefined,
+          isCombination: b.isCombination,
+          isStrengthVerified: b.isStrengthVerified,
+          sourceProvenance: b.sourceProvenance,
+        });
+      }
+
+      const nextCursor =
+        brands.length === safeLimit
+          ? `B_${brands[brands.length - 1].identifier}`
+          : null;
+
+      return {
+        items,
+        nextCursor,
+        total,
+        attribution:
+          'CDCI / NRCeS India (CC BY 4.0); SNOMED CT® International Release terms apply.',
+      };
+    }
   }
 }

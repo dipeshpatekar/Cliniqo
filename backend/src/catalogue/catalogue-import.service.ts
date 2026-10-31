@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, OnApplicationBootstrap, Optional } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
 import * as fs from 'fs';
@@ -12,6 +12,10 @@ import {
   CatalogueBrand,
   CatalogueBrandDocument,
 } from './schemas/catalogue-brand.schema.js';
+import {
+  CatalogueProduct,
+  CatalogueProductDocument,
+} from './schemas/catalogue-product.schema.js';
 import {
   CatalogueImportJob,
   CatalogueImportJobDocument,
@@ -27,6 +31,7 @@ export interface ImportSummary {
   totalGenericInserted: number;
   totalBrandProcessed: number;
   totalBrandInserted: number;
+  totalProductInserted?: number;
   totalRejected: number;
   durationMs: number;
   attribution: string;
@@ -50,7 +55,7 @@ export const CDCI_REQUIRED_FILES = [
 ] as const;
 
 @Injectable()
-export class CatalogueImportService {
+export class CatalogueImportService implements OnApplicationBootstrap {
   private readonly logger = new Logger(CatalogueImportService.name);
 
   constructor(
@@ -60,13 +65,38 @@ export class CatalogueImportService {
     private readonly brandModel: Model<CatalogueBrandDocument>,
     @InjectModel(CatalogueImportJob.name)
     private readonly jobModel: Model<CatalogueImportJobDocument>,
+    @Optional()
+    @InjectModel(CatalogueProduct.name)
+    private readonly productModel?: Model<CatalogueProductDocument>,
   ) {}
+
+  /**
+   * Automatically inspects catalogue on server startup.
+   * If empty (e.g. on fresh Render deployment), triggers background CDCI import.
+   */
+  async onApplicationBootstrap(): Promise<void> {
+    try {
+      const count = await this.genericModel.estimatedDocumentCount().exec();
+      if (count === 0) {
+        this.logger.log(
+          'Catalogue generic collection is empty (0 records). Auto-starting CDCI import in background...',
+        );
+        this.runImport({ dryRun: false }).catch((err) => {
+          this.logger.error('Background CDCI auto-import failed:', err);
+        });
+      } else {
+        this.logger.log(`Catalogue collections verified (${count} generics).`);
+      }
+    } catch (err) {
+      this.logger.warn('Failed to inspect catalogue collection on bootstrap:', err);
+    }
+  }
 
   /**
    * Resolves CDCI package directory in priority order:
    * 1. customPath (if provided)
    * 2. process.env.CDCI_DATA_DIR (if set)
-   * 3. Project workspace: data/cdci/CommonDrugCodesForIndia_FlatFilePackage
+   * 3. Project workspace candidates
    * 4. User downloads fallback: ~/Downloads/CommonDrugCodesForIndia_FlatFilePackage
    */
   resolveSourcePath(customPath?: string): string {
@@ -87,6 +117,9 @@ export class CatalogueImportService {
     const candidates = [
       path.resolve(process.cwd(), 'data', 'cdci', 'CommonDrugCodesForIndia_FlatFilePackage'),
       path.resolve(process.cwd(), '..', 'data', 'cdci', 'CommonDrugCodesForIndia_FlatFilePackage'),
+      path.resolve(__dirname, '..', '..', '..', 'data', 'cdci', 'CommonDrugCodesForIndia_FlatFilePackage'),
+      path.resolve(__dirname, '..', '..', 'data', 'cdci', 'CommonDrugCodesForIndia_FlatFilePackage'),
+      path.resolve(__dirname, '..', '..', '..', '..', 'data', 'cdci', 'CommonDrugCodesForIndia_FlatFilePackage'),
       path.join(process.env.HOME || '', 'Downloads', 'CommonDrugCodesForIndia_FlatFilePackage'),
     ];
 
@@ -183,6 +216,42 @@ export class CatalogueImportService {
       this.logger.log(
         `Lookups loaded: ${formsMap.size} dose forms, ${routesMap.size} routes, ${substancesMap.size} substances, ${suppliersMap.size} suppliers, ${productsMap.size} products.`,
       );
+
+      // Persist products if productModel is available and collection empty
+      if (!isDryRun && this.productModel) {
+        try {
+          const productCount = await this.productModel.estimatedDocumentCount().exec();
+          if (productCount === 0 && productsMap.size > 0) {
+            this.logger.log(`Populating catalogue_products with ${productsMap.size} records...`);
+            const pBatch: any[] = [];
+            for (const [identifier, productName] of productsMap.entries()) {
+              pBatch.push({
+                updateOne: {
+                  filter: { identifier },
+                  update: {
+                    $set: {
+                      identifier,
+                      productName,
+                      sourceProvenance: 'CDCI_NRCES_INDIA',
+                    },
+                  },
+                  upsert: true,
+                },
+              });
+              if (pBatch.length >= 2000) {
+                await this.productModel.bulkWrite(pBatch, { ordered: false });
+                pBatch.length = 0;
+              }
+            }
+            if (pBatch.length > 0) {
+              await this.productModel.bulkWrite(pBatch, { ordered: false });
+            }
+            summary.totalProductInserted = productsMap.size;
+          }
+        } catch (prodErr) {
+          this.logger.warn('Failed to bulk populate catalogue_products:', prodErr);
+        }
+      }
 
       // 2. Stream GenericMaster.txt
       const genericLookup = new Map<

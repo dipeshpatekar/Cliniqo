@@ -291,8 +291,16 @@ CREATE TABLE IF NOT EXISTS local_catalogue_cache_v1 (
 );
 
 CREATE INDEX IF NOT EXISTS idx_cat_cache_name ON local_catalogue_cache_v1(name);
+CREATE INDEX IF NOT EXISTS idx_cat_cache_brand ON local_catalogue_cache_v1(brand_name);
 CREATE INDEX IF NOT EXISTS idx_cat_cache_generic ON local_catalogue_cache_v1(generic_name);
+CREATE INDEX IF NOT EXISTS idx_cat_cache_product ON local_catalogue_cache_v1(product_name);
 CREATE INDEX IF NOT EXISTS idx_cat_cache_form ON local_catalogue_cache_v1(dosage_form);
+
+CREATE TABLE IF NOT EXISTS catalogue_sync_metadata (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
 "#;
 
 

@@ -66,8 +66,5 @@ crash_dumps/
 *.tsbuildinfo
 
 # Medicine Catalogue Raw Data (CDCI)
-data/cdci/CommonDrugCodesForIndia_FlatFilePackage/
-data/cdci/*.txt
 data/cdci/*.zip
 data/cdci/*.tsv
-!data/cdci/README.md

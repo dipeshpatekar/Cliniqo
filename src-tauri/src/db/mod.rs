@@ -1,3 +1,4 @@
+pub mod catalogue_seed;
 pub mod migrations;
 pub mod operations;
 pub mod schema;
@@ -62,6 +63,12 @@ impl DatabaseManager {
 
         // 5. Recovery check: reset any lingering in-flight outbox items from ungraceful shutdown
         DbOperations::recover_in_flight_jobs(&mut conn)?;
+
+        // 6. Seed offline reference medicine catalogue if empty (in release/app runtime)
+        #[cfg(not(test))]
+        if let Err(e) = catalogue_seed::seed_local_catalogue_if_empty(&mut conn, None) {
+            log::warn!("Offline catalogue auto-seed note: {e}");
+        }
 
         log::info!(
             "Local encrypted SQLite database initialized successfully at: {:?}",

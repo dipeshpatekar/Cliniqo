@@ -1174,6 +1174,20 @@ pub fn get_catalogue_cache_stats(
         .map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+pub fn seed_catalogue_cache(
+    state: State<'_, AppState>,
+) -> Result<usize, String> {
+    let _session = state
+        .session_mgr
+        .validate_session(None)
+        .map_err(|e| e.to_string())?;
+
+    let mut conn = state.db.get_connection();
+    crate::db::catalogue_seed::seed_local_catalogue_if_empty(&mut conn, None)
+        .map_err(|e| e.to_string())
+}
+
 
 #[cfg(test)]
 mod tests {

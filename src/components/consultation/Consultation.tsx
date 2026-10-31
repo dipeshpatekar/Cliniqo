@@ -12,6 +12,7 @@ import {
   Plus,
   Trash2,
   AlertCircle,
+  RefreshCw,
 } from "lucide-react"
 import type {
   Page,
@@ -55,6 +56,8 @@ import {
   saveLocalPrescription,
   searchCatalogue,
   getCatalogueStrengths,
+  getCatalogueSyncStatus,
+  type CatalogueSyncStatus,
   type LocalFormularyItemRecord,
   type DesktopSessionContext,
 } from "../../desktop/desktop-bridge"
@@ -96,6 +99,37 @@ export function Consultation({
     Record<number, string[]>
   >({})
   const [isOfflineSearchActive, setIsOfflineSearchActive] = useState(false)
+  const [catalogueSyncStatus, setCatalogueSyncStatus] =
+    useState<CatalogueSyncStatus | null>(null)
+
+  useEffect(() => {
+    let mounted = true
+    if (isTauriDesktop()) {
+      getCatalogueSyncStatus()
+        .then((status) => {
+          if (mounted && status) setCatalogueSyncStatus(status)
+        })
+        .catch(() => {})
+    }
+    return () => {
+      mounted = false
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!isTauriDesktop()) return
+    if (catalogueSyncStatus?.status !== "SYNCING") return
+
+    const interval = setInterval(() => {
+      getCatalogueSyncStatus()
+        .then((status) => {
+          if (status) setCatalogueSyncStatus(status)
+        })
+        .catch(() => {})
+    }, 2000)
+
+    return () => clearInterval(interval)
+  }, [catalogueSyncStatus?.status])
 
   useEffect(() => {
     let mounted = true
@@ -150,7 +184,7 @@ export function Consultation({
           ...prev,
           [medicineId]: res.items || [],
         }))
-        if (res.isOfflineCache) {
+        if (res.isOfflineCache && res.items && res.items.length > 0) {
           setIsOfflineSearchActive(true)
         }
       })
@@ -163,7 +197,7 @@ export function Consultation({
           ...prev,
           [medicineId]: res.strengths || [],
         }))
-        if (res.isOfflineCache) {
+        if (res.isOfflineCache && res.strengths && res.strengths.length > 0) {
           setIsOfflineSearchActive(true)
         }
         if (res.strengths && res.strengths.length === 1) {
@@ -215,7 +249,9 @@ export function Consultation({
             ...prev,
             [medicineId]: res.strengths || [],
           }))
-          if (res.isOfflineCache) setIsOfflineSearchActive(true)
+          if (res.isOfflineCache && res.strengths && res.strengths.length > 0) {
+            setIsOfflineSearchActive(true)
+          }
           if (res.strengths && res.strengths.length === 1) {
             updateMedicine(medicineId, "strength", res.strengths[0])
           }
@@ -621,25 +657,91 @@ export function Consultation({
               </Button>
             </div>
 
-            {isOfflineSearchActive && (
+            {/* Catalogue Sync & Offline Status Banners */}
+            {isTauriDesktop() && catalogueSyncStatus?.status === "SYNCING" && (
               <div
                 style={{
                   display: "flex",
                   alignItems: "center",
                   gap: "8px",
                   padding: "8px 12px",
-                  backgroundColor: "#f0fdf4",
-                  border: "1px solid #bbf7d0",
+                  backgroundColor: "#eff6ff",
+                  border: "1px solid #bfdbfe",
                   borderRadius: "6px",
-                  color: "#166534",
+                  color: "#1d4ed8",
                   fontSize: "12px",
                   marginBottom: "12px",
                 }}
               >
-                <AlertCircle size={15} />
-                <span>Offline CDCI reference catalogue active — searches are powered by local encrypted SQLite cache.</span>
+                <RefreshCw size={15} className="animate-spin" />
+                <span>
+                  Synchronizing CDCI reference catalogue (
+                  {catalogueSyncStatus.downloadedCount.toLocaleString()}
+                  {catalogueSyncStatus.totalCount > 0
+                    ? ` / ${catalogueSyncStatus.totalCount.toLocaleString()}`
+                    : ""}{" "}
+                  medicines downloaded)...
+                </span>
               </div>
             )}
+
+            {isTauriDesktop() &&
+              ((catalogueSyncStatus?.isReady &&
+                (catalogueSyncStatus.downloadedCount ?? 0) > 0) ||
+                (isOfflineSearchActive &&
+                  (catalogueSyncStatus?.downloadedCount ?? 0) > 0)) &&
+              catalogueSyncStatus?.status !== "SYNCING" && (
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "8px",
+                    padding: "8px 12px",
+                    backgroundColor: "#f0fdf4",
+                    border: "1px solid #bbf7d0",
+                    borderRadius: "6px",
+                    color: "#166534",
+                    fontSize: "12px",
+                    marginBottom: "12px",
+                  }}
+                >
+                  <AlertCircle size={15} />
+                  <span>
+                    Offline CDCI reference catalogue active —{" "}
+                    {catalogueSyncStatus?.downloadedCount
+                      ? `${catalogueSyncStatus.downloadedCount.toLocaleString()} medicines available locally.`
+                      : "searches are powered by local encrypted SQLite cache."}
+                  </span>
+                </div>
+              )}
+
+            {isTauriDesktop() &&
+              catalogueSyncStatus?.status === "FAILED" &&
+              !catalogueSyncStatus.isReady && (
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "8px",
+                    padding: "8px 12px",
+                    backgroundColor: "#fffbeb",
+                    border: "1px solid #fde68a",
+                    borderRadius: "6px",
+                    color: "#b45309",
+                    fontSize: "12px",
+                    marginBottom: "12px",
+                  }}
+                >
+                  <AlertCircle size={15} />
+                  <span>
+                    Offline catalogue synchronization paused
+                    {catalogueSyncStatus.downloadedCount > 0
+                      ? ` (${catalogueSyncStatus.downloadedCount.toLocaleString()} medicines cached)`
+                      : ""}
+                    . Retrying in background.
+                  </span>
+                </div>
+              )}
 
             {data.medicines.length === 0 ? (
               <div className="medicine-empty">
@@ -799,7 +901,12 @@ export function Consultation({
                               }
                               placeholder="Search CDCI medicine or type custom"
                               ariaLabel="Search and select medicine"
-                              emptyMessage="No matching medicine. Continue typing to use a custom name."
+                              emptyMessage={
+                                catalogueSyncStatus?.status === "SYNCING" &&
+                                (catalogueSyncStatus.downloadedCount ?? 0) === 0
+                                  ? "Catalogue is syncing in background... Continue typing to use custom name."
+                                  : "No matching medicine. Continue typing to use a custom name."
+                              }
                             />
                             {medicine.sourceIdentifier && (
                               <div

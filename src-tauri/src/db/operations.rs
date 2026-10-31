@@ -3186,6 +3186,32 @@ impl DbOperations {
         Ok(stats)
     }
 
+    /// Retrieves a catalogue sync metadata value by key (e.g. cursor, sync status, version).
+    pub fn get_catalogue_metadata(conn: &Connection, key: &str) -> Result<Option<String>, DatabaseOpError> {
+        let mut stmt = conn.prepare("SELECT value FROM catalogue_sync_metadata WHERE key = ?1")?;
+        let res = stmt.query_row(params![key], |row| row.get::<_, String>(0));
+        match res {
+            Ok(v) => Ok(Some(v)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(DatabaseOpError::Sqlite(e)),
+        }
+    }
+
+    /// Idempotently sets or updates a catalogue sync metadata key-value pair.
+    pub fn set_catalogue_metadata(conn: &Connection, key: &str, value: &str) -> Result<(), DatabaseOpError> {
+        conn.execute(
+            r#"
+            INSERT INTO catalogue_sync_metadata (key, value, updated_at)
+            VALUES (?1, ?2, CURRENT_TIMESTAMP)
+            ON CONFLICT(key) DO UPDATE SET
+                value = excluded.value,
+                updated_at = CURRENT_TIMESTAMP
+            "#,
+            params![key, value],
+        )?;
+        Ok(())
+    }
+
 
     fn map_invoice_row(
         row: &rusqlite::Row,

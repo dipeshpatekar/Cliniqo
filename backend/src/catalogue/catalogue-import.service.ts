@@ -76,16 +76,21 @@ export class CatalogueImportService implements OnApplicationBootstrap {
    */
   async onApplicationBootstrap(): Promise<void> {
     try {
-      const count = await this.genericModel.estimatedDocumentCount().exec();
-      if (count === 0) {
+      const [genericCount, brandCount] = await Promise.all([
+        this.genericModel.estimatedDocumentCount().exec(),
+        this.brandModel.estimatedDocumentCount().exec(),
+      ]);
+      if (genericCount === 0 || brandCount === 0) {
         this.logger.log(
-          'Catalogue generic collection is empty (0 records). Auto-starting CDCI import in background...',
+          `Catalogue collections incomplete (${genericCount} generics, ${brandCount} brands). Auto-starting CDCI import in background...`,
         );
         this.runImport({ dryRun: false }).catch((err) => {
           this.logger.error('Background CDCI auto-import failed:', err);
         });
       } else {
-        this.logger.log(`Catalogue collections verified (${count} generics).`);
+        this.logger.log(
+          `Catalogue collections verified (${genericCount} generics, ${brandCount} brands).`,
+        );
       }
     } catch (err) {
       this.logger.warn('Failed to inspect catalogue collection on bootstrap:', err);
@@ -116,10 +121,12 @@ export class CatalogueImportService implements OnApplicationBootstrap {
 
     const candidates = [
       path.resolve(process.cwd(), 'data', 'cdci', 'CommonDrugCodesForIndia_FlatFilePackage'),
+      path.resolve(process.cwd(), 'backend', 'data', 'cdci', 'CommonDrugCodesForIndia_FlatFilePackage'),
       path.resolve(process.cwd(), '..', 'data', 'cdci', 'CommonDrugCodesForIndia_FlatFilePackage'),
-      path.resolve(__dirname, '..', '..', '..', 'data', 'cdci', 'CommonDrugCodesForIndia_FlatFilePackage'),
+      path.resolve(process.cwd(), '..', 'backend', 'data', 'cdci', 'CommonDrugCodesForIndia_FlatFilePackage'),
       path.resolve(__dirname, '..', '..', 'data', 'cdci', 'CommonDrugCodesForIndia_FlatFilePackage'),
-      path.resolve(__dirname, '..', '..', '..', '..', 'data', 'cdci', 'CommonDrugCodesForIndia_FlatFilePackage'),
+      path.resolve(__dirname, '..', '..', '..', 'data', 'cdci', 'CommonDrugCodesForIndia_FlatFilePackage'),
+      path.resolve(__dirname, '..', '..', '..', 'backend', 'data', 'cdci', 'CommonDrugCodesForIndia_FlatFilePackage'),
       path.join(process.env.HOME || '', 'Downloads', 'CommonDrugCodesForIndia_FlatFilePackage'),
     ];
 

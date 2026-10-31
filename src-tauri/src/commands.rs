@@ -29,6 +29,7 @@ pub struct AppState {
     pub key_mgr: Arc<KeyManager>,
     pub sync_handle: Arc<SyncWorkerHandle>,
     pub refresh_coordinator: Arc<RefreshCoordinator>,
+    pub catalogue_sync: Arc<crate::sync::CatalogueSyncManager>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -1112,8 +1113,20 @@ pub fn delete_local_formulary_item(
     DbOperations::delete_formulary_item(&mut conn, &clinic_id, &id).map_err(|e| e.to_string())
 }
 
+fn percent_encode_query(val: &str) -> String {
+    let mut out = String::new();
+    for b in val.bytes() {
+        if b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'.' || b == b'~' {
+            out.push(b as char);
+        } else {
+            out.push_str(&format!("%{:02X}", b));
+        }
+    }
+    out
+}
+
 #[tauri::command]
-pub fn search_catalogue_cache(
+pub async fn search_catalogue_cache(
     state: State<'_, AppState>,
     query: String,
     limit: Option<usize>,
@@ -1124,9 +1137,74 @@ pub fn search_catalogue_cache(
         .validate_session(None)
         .map_err(|e| e.to_string())?;
 
-    let conn = state.db.get_connection();
-    DbOperations::search_local_catalogue(&conn, &query, limit.unwrap_or(20), formulation.as_deref())
-        .map_err(|e| e.to_string())
+    let local_results = {
+        let conn = state.db.get_connection();
+        DbOperations::search_local_catalogue(&conn, &query, limit.unwrap_or(20), formulation.as_deref())
+            .map_err(|e| e.to_string())?
+    };
+
+    if !local_results.is_empty() {
+        return Ok(local_results);
+    }
+
+    // Fallback: if local cache has 0 matches and access token exists, query backend directly
+    if let (Some(token), Ok(base_url)) = (state.session_mgr.get_access_token(), crate::config::get_trusted_backend_url()) {
+        if let Ok(client) = crate::config::create_secure_http_client(Duration::from_secs(5)) {
+            let mut search_url = format!("{base_url}/catalogue/search?q={}", percent_encode_query(&query));
+            if let Some(l) = limit {
+                search_url.push_str(&format!("&limit={l}"));
+            }
+            if let Some(ref form) = formulation {
+                search_url.push_str(&format!("&formulation={}", percent_encode_query(form)));
+            }
+
+            if let Ok(resp) = client.get(&search_url).bearer_auth(&token).send().await {
+                if resp.status().is_success() {
+                    #[derive(Deserialize)]
+                    struct OnlineSearchResponse {
+                        items: Vec<crate::sync::catalogue_sync::CatalogueFeedItem>,
+                    }
+                    if let Ok(data) = resp.json::<OnlineSearchResponse>().await {
+                        if !data.items.is_empty() {
+                            let items_to_save: Vec<SaveCatalogueCacheItemArgs> = data
+                                .items
+                                .into_iter()
+                                .map(|item| {
+                                    let strengths_str = match item.strengths {
+                                        Some(ref v) => v.to_string(),
+                                        None => "[]".to_string(),
+                                    };
+                                    SaveCatalogueCacheItemArgs {
+                                        id: item.id,
+                                        item_type: item.item_type,
+                                        name: item.name,
+                                        brand_name: item.brand_name,
+                                        generic_name: item.generic_name,
+                                        product_name: item.product_name,
+                                        dosage_form: item.dosage_form,
+                                        route: item.route,
+                                        active_ingredients_json: None,
+                                        strengths_json: strengths_str,
+                                        raw_strength_summary: item.raw_strength_summary.unwrap_or_default(),
+                                        is_combination: item.is_combination.unwrap_or(false),
+                                        is_verified: item.is_strength_verified.unwrap_or(true),
+                                        source_provenance: item.source_provenance,
+                                    }
+                                })
+                                .collect();
+
+                            let mut mut_conn = state.db.get_connection();
+                            let _ = DbOperations::cache_catalogue_items(&mut mut_conn, &items_to_save);
+                            return DbOperations::search_local_catalogue(&mut_conn, &query, limit.unwrap_or(20), formulation.as_deref())
+                                .map_err(|e| e.to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(local_results)
 }
 
 #[tauri::command]
@@ -1186,6 +1264,20 @@ pub fn seed_catalogue_cache(
     let mut conn = state.db.get_connection();
     crate::db::catalogue_seed::seed_local_catalogue_if_empty(&mut conn, None)
         .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn get_catalogue_sync_status(
+    state: State<'_, AppState>,
+) -> Result<crate::sync::CatalogueSyncStatus, String> {
+    Ok(state.catalogue_sync.get_status().await)
+}
+
+#[tauri::command]
+pub async fn start_catalogue_sync(
+    state: State<'_, AppState>,
+) -> Result<crate::sync::CatalogueSyncStatus, String> {
+    state.catalogue_sync.start_sync(None).await
 }
 
 

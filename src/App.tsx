@@ -58,6 +58,7 @@ import {
   saveLocalPatient,
   deleteLocalPatient,
   getSyncStatus,
+  startCatalogueSync,
   type DesktopSessionContext,
   type LocalInvoiceRecord,
 } from "./desktop/desktop-bridge"
@@ -256,6 +257,7 @@ export default function App() {
               setPage((curr) =>
                 curr === "login" || curr === "register" ? "dashboard" : curr,
               )
+              startCatalogueSync().catch(() => {})
             } else {
               // Incomplete onboarding: session established but clinic not created yet
               const doctorData = {
@@ -300,6 +302,7 @@ export default function App() {
               setPage((curr) =>
                 curr === "login" || curr === "register" ? "dashboard" : curr,
               )
+              startCatalogueSync().catch(() => {})
             } else {
               // Incomplete onboarding: restored refresh token valid, but 0 clinics -> resume setup!
               const doctorData = {
@@ -687,6 +690,7 @@ export default function App() {
         err,
       )
     }
+    startCatalogueSync().catch(() => {})
     go("dashboard", session)
   }
 

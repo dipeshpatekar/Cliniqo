@@ -685,6 +685,60 @@ describe("Desktop Bridge (Tauri 2 Frontend Integration)", () => {
       vi.doUnmock("@tauri-apps/api/core")
     })
 
+    it("does not flag search as active offline cache when local SQLite results are empty", async () => {
+      win.__TAURI_INTERNALS__ = {}
+      vi.doMock("@tauri-apps/api/core", () => ({
+        invoke: vi.fn().mockImplementation((cmd: string) => {
+          if (cmd === "search_catalogue_cache") {
+            return Promise.resolve([])
+          }
+          return Promise.resolve(null)
+        }),
+      }))
+
+      const { searchCatalogue } = await import("./desktop-bridge")
+      const result = await searchCatalogue("xyz_not_found", undefined, 20, "Tablet")
+
+      expect(result.items.length).toBe(0)
+      expect(result.isOfflineCache).toBe(false)
+
+      vi.doUnmock("@tauri-apps/api/core")
+    })
+
+    it("retrieves catalogue sync status and starts sync via Tauri commands in desktop mode", async () => {
+      win.__TAURI_INTERNALS__ = {}
+      const mockStatus = {
+        status: "SYNCING",
+        downloadedCount: 1500,
+        totalCount: 104208,
+        lastCursor: "cursor_1500",
+        lastSyncedAt: null,
+        error: null,
+        isReady: false,
+      }
+
+      vi.doMock("@tauri-apps/api/core", () => ({
+        invoke: vi.fn().mockImplementation((cmd: string) => {
+          if (cmd === "get_catalogue_sync_status" || cmd === "start_catalogue_sync") {
+            return Promise.resolve(mockStatus)
+          }
+          return Promise.resolve(null)
+        }),
+      }))
+
+      const { getCatalogueSyncStatus, startCatalogueSync } = await import("./desktop-bridge")
+      const status = await getCatalogueSyncStatus()
+      expect(status).not.toBeNull()
+      expect(status?.status).toBe("SYNCING")
+      expect(status?.downloadedCount).toBe(1500)
+
+      const startRes = await startCatalogueSync()
+      expect(startRes).not.toBeNull()
+      expect(startRes?.status).toBe("SYNCING")
+
+      vi.doUnmock("@tauri-apps/api/core")
+    })
+
     it("retrieves catalogue strengths from local cache in desktop mode", async () => {
       win.__TAURI_INTERNALS__ = {}
       vi.doMock("@tauri-apps/api/core", () => ({

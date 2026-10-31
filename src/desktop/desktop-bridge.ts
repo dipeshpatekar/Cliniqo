@@ -961,7 +961,7 @@ export async function searchCatalogue(
     limit,
     totalPages: Math.ceil(localItems.length / limit) || 1,
     attribution: "CDCI / NRCeS India (CC BY 4.0) — Local Offline Cache",
-    isOfflineCache: true,
+    isOfflineCache: isDesktop && localItems.length > 0,
   }
 }
 
@@ -1028,7 +1028,7 @@ export async function getCatalogueStrengths(
   return {
     strengths: localStrengths,
     isSingleMatch: localStrengths.length === 1,
-    isOfflineCache: true,
+    isOfflineCache: isDesktop && localStrengths.length > 0,
   }
 }
 
@@ -1037,6 +1037,34 @@ export interface CatalogueCacheStats {
   brandCount: number
   genericCount: number
   verifiedCount: number
+}
+
+export interface CatalogueSyncStatus {
+  status: "IDLE" | "SYNCING" | "COMPLETED" | "FAILED"
+  downloadedCount: number
+  totalCount: number
+  lastCursor: string | null
+  lastSyncedAt: string | null
+  error: string | null
+  isReady: boolean
+}
+
+export async function getCatalogueSyncStatus(): Promise<CatalogueSyncStatus | null> {
+  if (!isTauriDesktop()) return null
+  try {
+    return await invokeTauri<CatalogueSyncStatus>("get_catalogue_sync_status")
+  } catch {
+    return null
+  }
+}
+
+export async function startCatalogueSync(): Promise<CatalogueSyncStatus | null> {
+  if (!isTauriDesktop()) return null
+  try {
+    return await invokeTauri<CatalogueSyncStatus>("start_catalogue_sync")
+  } catch {
+    return null
+  }
 }
 
 export async function getCatalogueCacheStats(): Promise<CatalogueCacheStats | null> {

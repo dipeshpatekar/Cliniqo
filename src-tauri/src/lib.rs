@@ -66,13 +66,21 @@ pub fn run() {
 
             let sync_handle = Arc::new(SyncWorkerHandle::new());
             let refresh_coordinator = Arc::new(RefreshCoordinator::new());
+            let db_arc = Arc::new(db_manager);
+            let session_arc = Arc::new(session_manager);
+            let key_arc = Arc::new(key_manager);
+            let catalogue_sync = Arc::new(crate::sync::CatalogueSyncManager::new(
+                db_arc.clone(),
+                session_arc.clone(),
+            ));
 
             app.manage(AppState {
-                db: Arc::new(db_manager),
-                session_mgr: Arc::new(session_manager),
-                key_mgr: Arc::new(key_manager),
+                db: db_arc,
+                session_mgr: session_arc,
+                key_mgr: key_arc,
                 sync_handle,
                 refresh_coordinator,
+                catalogue_sync,
             });
 
             Ok(())
@@ -113,6 +121,8 @@ pub fn run() {
             commands::save_catalogue_cache,
             commands::get_catalogue_cache_stats,
             commands::seed_catalogue_cache,
+            commands::get_catalogue_sync_status,
+            commands::start_catalogue_sync,
         ])
         .run(tauri::generate_context!())
         .expect("error while building tauri application");

@@ -150,7 +150,7 @@ describe("Auth Flow Regression: Registration to Profile Setup Navigation", () =>
 
     it("handles string rejections from Tauri IPC and displays server connectivity error rather than review details", () => {
       const rawStringError =
-        "Authentication server unreachable (https://cliniqo-backend-68x3.onrender.com): dns error: failed to lookup address information"
+        "Authentication server unreachable (https://cliniqo-api.onrender.com): dns error: failed to lookup address information"
 
       const rawMessage =
         typeof rawStringError === "string"

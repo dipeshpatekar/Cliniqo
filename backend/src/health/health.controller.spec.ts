@@ -87,4 +87,32 @@ describe('HealthController', () => {
       expect(typeof liveResult.uptime).toBe('number');
     });
   });
+
+  describe('getDiagnostics (Security & Authorization)', () => {
+    it('should reject unauthenticated access with UnauthorizedException when no admin key is provided', async () => {
+      await expect(controller.getDiagnostics()).rejects.toThrow(
+        'Unauthorized diagnostic access',
+      );
+    });
+
+    it('should reject access when incorrect admin key is provided', async () => {
+      const mockConfig: any = { adminDiagnosticKey: 'valid_secret_key_123' };
+      const authController = new HealthController(service, mockConfig);
+      await expect(authController.getDiagnostics('wrong_key')).rejects.toThrow(
+        'Unauthorized diagnostic access',
+      );
+    });
+
+    it('should return sanitized diagnostics when valid admin key is provided', async () => {
+      const mockConfig: any = { adminDiagnosticKey: 'valid_secret_key_123' };
+      const authController = new HealthController(service, mockConfig);
+      const diag = await authController.getDiagnostics('valid_secret_key_123');
+      expect(diag.status).toBeDefined();
+      expect(typeof diag.uptime).toBe('number');
+      // Assert zero leak of sensitive network or credential data
+      expect((diag as any).egressIp).toBeUndefined();
+      expect((diag as any).database?.lastError).toBeUndefined();
+      expect((diag as any).database?.dbName).toBeUndefined();
+    });
+  });
 });

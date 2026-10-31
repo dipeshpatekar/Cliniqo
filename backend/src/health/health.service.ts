@@ -49,44 +49,15 @@ export class HealthService {
     };
   }
 
-  async getDiagnostics() {
-    let egressIp: string | null = null;
-    try {
-      const res = await fetch('https://api.ipify.org?format=json', {
-        signal: AbortSignal.timeout(3000),
-      });
-      if (res.ok) {
-        const data = (await res.json()) as any;
-        egressIp = data.ip || null;
-      }
-    } catch (e: any) {
-      egressIp = `Lookup error: ${e.message}`;
-    }
-
-    const stateMap = ['disconnected', 'connected', 'connecting', 'disconnecting'];
+  getSanitizedDiagnostics() {
     const readyState = this.connection?.readyState ?? 0;
-
     return {
       status: readyState === 1 ? 'ok' : 'degraded',
       timestamp: new Date().toISOString(),
       uptime: Math.floor((Date.now() - this.startTime) / 1000),
-      runtime: {
-        nodeVersion: process.version,
-        platform: process.platform,
-        arch: process.arch,
-      },
       database: {
-        readyState,
-        readyStateText: stateMap[readyState] || 'unknown',
         isConnected: readyState === 1,
-        dbName: DatabaseDiagnostics.dbName,
-        lastError: DatabaseDiagnostics.lastError,
-        lastErrorTime: DatabaseDiagnostics.lastErrorTime,
         reconnectAttempts: DatabaseDiagnostics.reconnectAttempts,
-        lastReconnectAttempt: DatabaseDiagnostics.lastReconnectAttempt,
-      },
-      network: {
-        egressIp,
       },
     };
   }

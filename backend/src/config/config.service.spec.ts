@@ -9,7 +9,7 @@ describe('ConfigService', () => {
     expect(service.isProduction).toBe(false);
     expect(service.isDevelopment).toBe(true);
     expect(service.corsOrigin).toBe('http://localhost:8443');
-    expect(service.mongodbDbName).toBe('cliniqo');
+    expect(service.mongodbDbName).toBe('cliniqo_prod');
     expect(service.mongodbUri).toBeUndefined();
   });
 
@@ -18,7 +18,7 @@ describe('ConfigService', () => {
       NODE_ENV: 'production',
       PORT: '8080',
       CORS_ORIGIN: 'https://cliniqo.app',
-      MONGODB_URI: 'mongodb+srv://user:pass@cluster.test/cliniqo',
+      MONGODB_URI: 'mongodb+srv://user:pass@cluster.test/prod_cliniqo',
       MONGODB_DB_NAME: 'prod_cliniqo',
     });
     expect(service.port).toBe(8080);
@@ -32,7 +32,7 @@ describe('ConfigService', () => {
     expect(service.corsOrigins).toContain('tauri://localhost');
     expect(service.corsOrigins).not.toContain('*');
     expect(service.mongodbUri).toBe(
-      'mongodb+srv://user:pass@cluster.test/cliniqo',
+      'mongodb+srv://user:pass@cluster.test/prod_cliniqo',
     );
     expect(service.mongodbDbName).toBe('prod_cliniqo');
   });
@@ -84,6 +84,27 @@ describe('ConfigService', () => {
         'mongodb+srv://user:secret@cluster0.abcde.mongodb.net',
       );
       expect(dbConfig.dbName).toBe('cliniqo_prod');
+    });
+
+    it('should throw an error when URI path database conflicts with MONGODB_DB_NAME', () => {
+      const service = new ConfigService({
+        MONGODB_URI: 'mongodb+srv://user:secret@cluster0.abcde.mongodb.net/database_one',
+        MONGODB_DB_NAME: 'database_two',
+      });
+      expect(() => service.validateDatabaseConfig()).toThrow(
+        'URI database path ("database_one") conflicts with MONGODB_DB_NAME ("database_two")',
+      );
+    });
+
+    it('should reject unpermitted "cliniqo" database in production mode', () => {
+      const service = new ConfigService({
+        NODE_ENV: 'production',
+        MONGODB_URI: 'mongodb+srv://user:secret@cluster0.abcde.mongodb.net',
+        MONGODB_DB_NAME: 'cliniqo',
+      });
+      expect(() => service.validateDatabaseConfig()).toThrow(
+        '"cliniqo" is not a valid production database. Authoritative production database is "cliniqo_prod".',
+      );
     });
 
     it('should not leak passwords or credentials in error messages for invalid inputs', () => {

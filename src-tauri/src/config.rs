@@ -3,7 +3,7 @@
 
 use std::time::Duration;
 
-pub const PRODUCTION_BACKEND_URL: &str = "https://cliniqo-backend-68x3.onrender.com";
+pub const PRODUCTION_BACKEND_URL: &str = "https://cliniqo-api.onrender.com";
 pub const DEFAULT_DEV_BACKEND_URL: &str = "http://localhost:3000";
 
 /// Resolves the trusted backend base URL.
@@ -76,6 +76,6 @@ mod tests {
 
     #[test]
     fn test_production_backend_url_points_to_render() {
-        assert_eq!(PRODUCTION_BACKEND_URL, "https://cliniqo-backend-68x3.onrender.com");
+        assert_eq!(PRODUCTION_BACKEND_URL, "https://cliniqo-api.onrender.com");
     }
 }

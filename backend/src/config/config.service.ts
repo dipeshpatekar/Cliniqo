@@ -26,6 +26,7 @@ export interface AppConfig {
   rateLimitRecoveryMax?: number;
   rateLimitRecoveryWindowSec?: number;
   outboxEncryptionKey?: string;
+  adminDiagnosticKey?: string;
 }
 
 export interface AuthConfig {
@@ -90,7 +91,7 @@ export class ConfigService {
       port: parseInt(env.PORT || '3000', 10),
       corsOrigin: env.CORS_ORIGIN || 'http://localhost:8443',
       mongodbUri: env.MONGODB_URI,
-      mongodbDbName: env.MONGODB_DB_NAME || 'cliniqo',
+      mongodbDbName: env.MONGODB_DB_NAME || 'cliniqo_prod',
       jwtAccessSecret: env.JWT_ACCESS_SECRET,
       jwtRefreshSecret: env.JWT_REFRESH_SECRET,
       jwtAccessExpiresIn: env.JWT_ACCESS_EXPIRES_IN || '15m',
@@ -127,6 +128,7 @@ export class ConfigService {
         ? parseInt(env.RATE_LIMIT_RECOVERY_WINDOW_SEC, 10)
         : 300,
       outboxEncryptionKey: env.OUTBOX_ENCRYPTION_KEY,
+      adminDiagnosticKey: env.ADMIN_DIAGNOSTIC_KEY,
     };
   }
 
@@ -183,7 +185,11 @@ export class ConfigService {
   }
 
   get mongodbDbName(): string {
-    return this.config.mongodbDbName || 'cliniqo';
+    return this.config.mongodbDbName || 'cliniqo_prod';
+  }
+
+  get adminDiagnosticKey(): string | undefined {
+    return this.config.adminDiagnosticKey;
   }
 
   get jwtAccessExpiresIn(): string {
@@ -272,6 +278,22 @@ export class ConfigService {
     if (!dbName || !VALID_DB_NAME_REGEX.test(dbName)) {
       throw new Error(
         'Database configuration error: MONGODB_DB_NAME must only contain alphanumeric characters, underscores, and hyphens (1-63 chars).',
+      );
+    }
+
+    // Detect if URI contains a database path that conflicts with dbName
+    const uriPathMatch = trimmedUri.match(/(?:mongodb(?:\+srv)?:\/\/[^/?#]+)\/([^?#]+)/);
+    const uriPathDb = uriPathMatch ? uriPathMatch[1].trim() : null;
+    if (uriPathDb && uriPathDb !== dbName) {
+      throw new Error(
+        `Database configuration error: URI database path ("${uriPathDb}") conflicts with MONGODB_DB_NAME ("${dbName}"). Ensure both specify the same database name.`,
+      );
+    }
+
+    // Fail-safe: prevent accidental unpermitted 'cliniqo' database in production
+    if (this.isProduction && dbName === 'cliniqo') {
+      throw new Error(
+        'Database configuration error: "cliniqo" is not a valid production database. Authoritative production database is "cliniqo_prod".',
       );
     }
 

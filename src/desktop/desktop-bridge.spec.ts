@@ -51,7 +51,7 @@ describe("Desktop Bridge (Tauri 2 Frontend Integration)", () => {
   })
 
   it("enforces explicit production and dev API constants without credentials", () => {
-    expect(PRODUCTION_API_URL).toBe("https://cliniqo-backend-68x3.onrender.com")
+    expect(PRODUCTION_API_URL).toBe("https://cliniqo-api.onrender.com")
     expect(DEFAULT_DEV_API_URL).toBe("http://localhost:3000")
     expect(PRODUCTION_API_URL).not.toContain("api.cliniqo.app")
     expect(PRODUCTION_API_URL).not.toContain("mongodb")
@@ -542,7 +542,7 @@ describe("Desktop Bridge (Tauri 2 Frontend Integration)", () => {
             return Promise.resolve(mockDesktopDoctor)
           }
           if (cmd === "get_trusted_api_url") {
-            return Promise.resolve("https://cliniqo-backend-68x3.onrender.com")
+            return Promise.resolve("https://cliniqo-api.onrender.com")
           }
           return Promise.resolve(null)
         }),
@@ -559,7 +559,7 @@ describe("Desktop Bridge (Tauri 2 Frontend Integration)", () => {
       expect(desktopResult).toEqual(mockDesktopDoctor)
 
       const trustedUrl = await getTrustedApiUrl()
-      expect(trustedUrl).toBe("https://cliniqo-backend-68x3.onrender.com")
+      expect(trustedUrl).toBe("https://cliniqo-api.onrender.com")
 
       vi.doUnmock("@tauri-apps/api/core")
     })
@@ -567,7 +567,7 @@ describe("Desktop Bridge (Tauri 2 Frontend Integration)", () => {
     it("normalizes Tauri IPC string rejections into Error objects with isNetworkError flag", async () => {
       win.__TAURI_INTERNALS__ = {}
       const mockDnsError =
-        "Authentication server unreachable (https://cliniqo-backend-68x3.onrender.com): dns error: failed to lookup address information: No such host is known."
+        "Authentication server unreachable (https://cliniqo-api.onrender.com): dns error: failed to lookup address information: No such host is known."
 
       vi.doMock("@tauri-apps/api/core", () => ({
         invoke: vi.fn().mockImplementation((cmd: string) => {

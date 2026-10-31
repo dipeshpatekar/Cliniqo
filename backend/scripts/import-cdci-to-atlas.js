@@ -54,6 +54,7 @@ async function main() {
   console.log('Status:', summary.status);
   console.log('Duration (ms):', summary.durationMs);
   console.log('Generics processed:', summary.totalGenericProcessed);
+
   console.log('Generics inserted/upserted:', summary.totalGenericInserted);
   console.log('Brands processed:', summary.totalBrandProcessed);
   console.log('Brands inserted/upserted:', summary.totalBrandInserted);

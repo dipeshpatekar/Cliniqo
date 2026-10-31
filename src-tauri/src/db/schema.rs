@@ -598,4 +598,13 @@ pub struct SaveCatalogueCacheItemArgs {
     pub source_provenance: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CatalogueCacheStats {
+    pub total_items: i64,
+    pub brand_count: i64,
+    pub generic_count: i64,
+    pub verified_count: i64,
+}
+
 

@@ -32,6 +32,8 @@ export interface CatalogueSearchItem {
     unit?: string;
   }>;
   rawStrengthSummary: string;
+  releaseType?: string;
+  manufacturer?: string;
   isCombination: boolean;
   isStrengthVerified: boolean;
   sourceProvenance: string;
@@ -43,6 +45,13 @@ export interface CatalogueSearchResult {
   page: number;
   limit: number;
   totalPages: number;
+  attribution: string;
+}
+
+export interface CatalogueFeedResult {
+  items: CatalogueSearchItem[];
+  nextCursor: string | null;
+  total: number;
   attribution: string;
 }
 
@@ -95,6 +104,9 @@ export class CatalogueService {
     if (dto.formulation) {
       brandFilter.dosageForm = new RegExp(dto.formulation, 'i');
     }
+    if (dto.releaseType) {
+      brandFilter.releaseType = dto.releaseType;
+    }
 
     const genericFilter: any = {
       $or: [
@@ -105,6 +117,9 @@ export class CatalogueService {
     };
     if (dto.formulation) {
       genericFilter.doseForm = new RegExp(dto.formulation, 'i');
+    }
+    if (dto.releaseType) {
+      genericFilter.releaseType = dto.releaseType;
     }
 
     let items: CatalogueSearchItem[] = [];
@@ -132,6 +147,8 @@ export class CatalogueService {
         route: b.route || undefined,
         strengths: b.strengths || [],
         rawStrengthSummary: b.rawStrengthSummary,
+        releaseType: b.releaseType || 'IMMEDIATE_RELEASE',
+        manufacturer: b.supplierName || undefined,
         isCombination: b.isCombination,
         isStrengthVerified: b.isStrengthVerified,
         sourceProvenance: b.sourceProvenance,
@@ -156,6 +173,8 @@ export class CatalogueService {
         route: g.routes && g.routes.length > 0 ? g.routes[0] : undefined,
         strengths: g.strengths || [],
         rawStrengthSummary: g.rawStrengthSummary,
+        releaseType: g.releaseType || 'IMMEDIATE_RELEASE',
+        manufacturer: undefined,
         isCombination: g.isCombination,
         isStrengthVerified: g.isStrengthVerified,
         sourceProvenance: g.sourceProvenance,
@@ -196,6 +215,8 @@ export class CatalogueService {
           route: b.route || undefined,
           strengths: b.strengths || [],
           rawStrengthSummary: b.rawStrengthSummary,
+          releaseType: b.releaseType || 'IMMEDIATE_RELEASE',
+          manufacturer: b.supplierName || undefined,
           isCombination: b.isCombination,
           isStrengthVerified: b.isStrengthVerified,
           sourceProvenance: b.sourceProvenance,
@@ -210,6 +231,8 @@ export class CatalogueService {
           route: g.routes && g.routes.length > 0 ? g.routes[0] : undefined,
           strengths: g.strengths || [],
           rawStrengthSummary: g.rawStrengthSummary,
+          releaseType: g.releaseType || 'IMMEDIATE_RELEASE',
+          manufacturer: undefined,
           isCombination: g.isCombination,
           isStrengthVerified: g.isStrengthVerified,
           sourceProvenance: g.sourceProvenance,
@@ -298,6 +321,58 @@ export class CatalogueService {
       strengths,
       variantsCount: strengths.length,
       isSingleMatch: strengths.length === 1,
+    };
+  }
+
+  /**
+   * Provides an incremental, cursor-paginated batched feed of catalogue records.
+   * Designed for efficient local offline cache population in desktop clients.
+   */
+  async getFeed(
+    cursor?: string,
+    limit = 100,
+  ): Promise<CatalogueFeedResult> {
+    const safeLimit = Math.min(500, Math.max(1, limit || 100));
+    const filter = cursor ? { identifier: { $gt: cursor.trim() } } : {};
+
+    const [brands, total] = await Promise.all([
+      this.brandModel
+        .find(filter)
+        .sort({ identifier: 1 })
+        .limit(safeLimit)
+        .lean()
+        .exec(),
+      this.brandModel.countDocuments().exec(),
+    ]);
+
+    const items: CatalogueSearchItem[] = brands.map((b) => ({
+      id: b.identifier,
+      sourceIdentifier: b.identifier,
+      type: 'BRAND',
+      name: b.brandName,
+      brandName: b.brandName,
+      genericName: b.genericName || undefined,
+      productName: b.productName || undefined,
+      dosageForm: b.dosageForm || undefined,
+      route: b.route || undefined,
+      strengths: b.strengths || [],
+      rawStrengthSummary: b.rawStrengthSummary,
+      releaseType: b.releaseType || 'IMMEDIATE_RELEASE',
+      manufacturer: b.supplierName || undefined,
+      isCombination: b.isCombination,
+      isStrengthVerified: b.isStrengthVerified,
+      sourceProvenance: b.sourceProvenance,
+    }));
+
+    const nextCursor =
+      brands.length === safeLimit ? brands[brands.length - 1].identifier : null;
+
+    return {
+      items,
+      nextCursor,
+      total,
+      attribution:
+        'CDCI / NRCeS India (CC BY 4.0); SNOMED CT® International Release terms apply.',
     };
   }
 }

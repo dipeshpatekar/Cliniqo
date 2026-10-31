@@ -202,6 +202,8 @@ export function Consultation({
             brandName: catItem.brandName,
             genericName: catItem.genericName,
             productName: catItem.productName,
+            releaseType: catItem.releaseType,
+            manufacturer: catItem.manufacturer,
             isCustom: false,
           }
         }),
@@ -693,13 +695,29 @@ export function Consultation({
                       badge: "Formulary",
                       subtitle: item.activeIngredient,
                     })),
-                  ...(catalogueSuggestions[medicine.id] || []).map((cat) => ({
-                    value: cat.name,
-                    label: cat.name,
-                    badge: cat.isCombination ? "Combo" : cat.type,
-                    subtitle: cat.productName || cat.genericName || undefined,
-                    meta: cat,
-                  })),
+                  ...(catalogueSuggestions[medicine.id] || []).map((cat) => {
+                    const releaseBadge =
+                      cat.releaseType && cat.releaseType !== "IMMEDIATE_RELEASE"
+                        ? cat.releaseType
+                            .replace("_RELEASE", "")
+                            .replace("GASTRO_RESISTANT", "EC")
+                            .replace("_", " ")
+                        : null
+                    const badgeText =
+                      releaseBadge || (cat.isCombination ? "Combo" : cat.type)
+                    const subtitleParts = [
+                      cat.manufacturer,
+                      cat.productName || cat.genericName,
+                    ].filter(Boolean)
+
+                    return {
+                      value: cat.name,
+                      label: cat.name,
+                      badge: badgeText,
+                      subtitle: subtitleParts.join(" • ") || undefined,
+                      meta: cat,
+                    }
+                  }),
                 ]
 
                 return (

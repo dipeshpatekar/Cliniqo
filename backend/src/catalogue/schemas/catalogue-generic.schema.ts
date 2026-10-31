@@ -57,6 +57,9 @@ export class CatalogueGeneric {
   @Prop({ type: String, default: '' })
   rawStrengthSummary: string;
 
+  @Prop({ type: String, default: 'IMMEDIATE_RELEASE', index: true })
+  releaseType: string;
+
   @Prop({ type: String, default: null })
   indications?: string | null;
 

@@ -246,4 +246,49 @@ describe('CatalogueService', () => {
       expect(res.isSingleMatch).toBe(false);
     });
   });
+
+  describe('getFeed', () => {
+    it('returns batched feed items with nextCursor for pagination', async () => {
+      const mockFeedItems = [
+        {
+          identifier: 'B1',
+          brandName: 'Brand 1',
+          supplierName: 'Pharma Corp',
+          releaseType: 'SUSTAINED_RELEASE',
+          strengths: [{ rawStrength: '100 mg' }],
+          rawStrengthSummary: '100 mg',
+          isStrengthVerified: true,
+          sourceProvenance: 'CDCI_NRCES_INDIA',
+        },
+        {
+          identifier: 'B2',
+          brandName: 'Brand 2',
+          releaseType: 'IMMEDIATE_RELEASE',
+          strengths: [{ rawStrength: '50 mg' }],
+          rawStrengthSummary: '50 mg',
+          isStrengthVerified: true,
+          sourceProvenance: 'CDCI_NRCES_INDIA',
+        },
+      ];
+
+      mockBrandModel.countDocuments.mockReturnValue({
+        exec: vi.fn().mockResolvedValue(2),
+      });
+      mockBrandModel.find.mockReturnValue({
+        sort: vi.fn().mockReturnThis(),
+        limit: vi.fn().mockReturnThis(),
+        lean: vi.fn().mockReturnValue({
+          exec: vi.fn().mockResolvedValue(mockFeedItems),
+        }),
+      });
+
+      const res = await service.getFeed(undefined, 2);
+      expect(res.items.length).toBe(2);
+      expect(res.total).toBe(2);
+      expect(res.nextCursor).toBe('B2');
+      expect(res.items[0].releaseType).toBe('SUSTAINED_RELEASE');
+      expect(res.items[0].manufacturer).toBe('Pharma Corp');
+      expect(res.attribution).toContain('CDCI / NRCeS India (CC BY 4.0)');
+    });
+  });
 });

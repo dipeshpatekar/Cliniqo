@@ -237,7 +237,21 @@ export function PrescriptionPreview({
                         <strong>{medicine.name || "Unnamed medicine"}</strong>
                         <br />
                         <span>
-                          {[medicine.formulation, medicine.strength]
+                          {[
+                            medicine.formulation,
+                            medicine.strength,
+                            medicine.releaseType &&
+                            medicine.releaseType !== "IMMEDIATE_RELEASE"
+                              ? medicine.releaseType
+                                  .replace("_RELEASE", "")
+                                  .replace("GASTRO_RESISTANT", "EC")
+                                  .replace("_", " ")
+                              : null,
+                            medicine.activeIngredient &&
+                            medicine.activeIngredient !== medicine.name
+                              ? `(${medicine.activeIngredient})`
+                              : null,
+                          ]
                             .filter(Boolean)
                             .join(" · ")}
                         </span>

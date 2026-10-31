@@ -62,6 +62,9 @@ export class CatalogueBrand {
   @Prop({ type: String, default: '' })
   rawStrengthSummary: string;
 
+  @Prop({ type: String, default: 'IMMEDIATE_RELEASE', index: true })
+  releaseType: string;
+
   @Prop({ type: String, default: 'UNKNOWN' })
   licenseStatus: string;
 

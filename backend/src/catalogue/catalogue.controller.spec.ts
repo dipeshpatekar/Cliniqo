@@ -11,6 +11,7 @@ describe('CatalogueController', () => {
     mockCatalogueService = {
       search: vi.fn(),
       getStrengthsForMedicine: vi.fn(),
+      getFeed: vi.fn(),
     };
     mockImportService = {
       runImport: vi.fn(),
@@ -50,6 +51,20 @@ describe('CatalogueController', () => {
     const res = await controller.getStrengths(query);
     expect(mockCatalogueService.getStrengthsForMedicine).toHaveBeenCalledWith(query);
     expect(res.isSingleMatch).toBe(true);
+  });
+
+  it('delegates feed query to catalogueService.getFeed', async () => {
+    const query = { cursor: 'B10', limit: 50 };
+    mockCatalogueService.getFeed.mockResolvedValue({
+      items: [],
+      nextCursor: null,
+      total: 0,
+      attribution: 'Attribution',
+    });
+
+    const res = await controller.getFeed(query);
+    expect(mockCatalogueService.getFeed).toHaveBeenCalledWith('B10', 50);
+    expect(res.total).toBe(0);
   });
 
   it('delegates triggerImport to importService.runImport with defaults', async () => {

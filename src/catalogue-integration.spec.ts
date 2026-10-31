@@ -170,6 +170,8 @@ describe("Medicine Catalogue & Auto-Strength Selection Integration", () => {
           activeIngredient: "Cefpodoxime Proxetil",
           sourceIdentifier: "2430421000189104",
           sourceProvenance: "CDCI_NRCES_INDIA",
+          releaseType: "IMMEDIATE_RELEASE",
+          manufacturer: "Micro Labs Ltd",
           isCombination: false,
           isStrengthVerified: true,
           isCustom: false,
@@ -183,7 +185,30 @@ describe("Medicine Catalogue & Auto-Strength Selection Integration", () => {
       expect(deserialized[0].sourceIdentifier).toBe("2430421000189104")
       expect(deserialized[0].sourceProvenance).toBe("CDCI_NRCES_INDIA")
       expect(deserialized[0].strength).toBe("200 mg")
+      expect(deserialized[0].releaseType).toBe("IMMEDIATE_RELEASE")
+      expect(deserialized[0].manufacturer).toBe("Micro Labs Ltd")
       expect(deserialized[0].isStrengthVerified).toBe(true)
+    })
+
+    it("preserves modified release types (SR, ER, CR, MR, PR, DR, EC) in prescription", () => {
+      const srMedicine: Medicine = {
+        id: 2,
+        name: "Diclofenac SR 100 mg",
+        formulation: "Tablet",
+        strength: "100 mg",
+        dose: "1",
+        route: "Oral",
+        frequency: "Once daily",
+        duration: "5 days",
+        food: "After food",
+        directions: "Do not crush or chew",
+        releaseType: "SUSTAINED_RELEASE",
+        manufacturer: "Cipla Ltd",
+        isStrengthVerified: true,
+      }
+
+      expect(srMedicine.releaseType).toBe("SUSTAINED_RELEASE")
+      expect(srMedicine.manufacturer).toBe("Cipla Ltd")
     })
   })
 

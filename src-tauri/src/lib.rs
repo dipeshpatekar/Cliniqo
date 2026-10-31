@@ -111,6 +111,7 @@ pub fn run() {
             commands::search_catalogue_cache,
             commands::get_catalogue_strengths_cache,
             commands::save_catalogue_cache,
+            commands::get_catalogue_cache_stats,
         ])
         .run(tauri::generate_context!())
         .expect("error while building tauri application");

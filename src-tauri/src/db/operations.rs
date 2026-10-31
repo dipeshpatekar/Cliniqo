@@ -5,7 +5,7 @@ use thiserror::Error;
 use crate::crypto::{decrypt_payload, encrypt_payload, CryptoError};
 use crate::crypto::key_manager::DatabaseEncryptionKey;
 use super::schema::{
-    ClinicalData, ConflictStatus, ConsultationRecord, DecryptedOutboxItem, EncryptedBillingData,
+    CatalogueCacheStats, ClinicalData, ConflictStatus, ConsultationRecord, DecryptedOutboxItem, EncryptedBillingData,
     FormularyRecord, InvoiceItem, InvoiceRecord, LocalCatalogueItem, PatientDemographics, PatientRecord,
     PrescriptionRecord, SaveCatalogueCacheItemArgs, SaveFormularyArgs, SaveInvoiceArgs, SyncConflictRecord, SyncFeedChangeItem,
     SyncOutboxSummary, SyncStateRecord,
@@ -3028,6 +3028,7 @@ impl DbOperations {
         conn: &Connection,
         query: &str,
         limit: usize,
+        formulation: Option<&str>,
     ) -> Result<Vec<LocalCatalogueItem>, DatabaseOpError> {
         let raw_q = query.trim();
         if raw_q.is_empty() {
@@ -3038,25 +3039,37 @@ impl DbOperations {
         let pattern = format!("%{}%", raw_q);
         let prefix_pattern = format!("{}%", raw_q);
 
-        let mut stmt = conn.prepare(
+        let mut query_sql = String::from(
             r#"
             SELECT id, item_type, name, brand_name, generic_name, product_name,
                    dosage_form, route, active_ingredients_json, strengths_json,
                    raw_strength_summary, is_combination, is_verified, source_provenance,
                    cached_at
             FROM local_catalogue_cache_v1
-            WHERE name LIKE ?1
+            WHERE (name LIKE ?1
                OR generic_name LIKE ?1
                OR brand_name LIKE ?1
-               OR product_name LIKE ?1
+               OR product_name LIKE ?1)
+            "#,
+        );
+
+        let clean_form = formulation.map(str::trim).filter(|f| !f.is_empty());
+        if clean_form.is_some() {
+            query_sql.push_str(" AND (dosage_form LIKE ?4)");
+        }
+
+        query_sql.push_str(
+            r#"
             ORDER BY
                CASE WHEN name LIKE ?2 THEN 0 ELSE 1 END,
                name ASC
             LIMIT ?3
             "#,
-        )?;
+        );
 
-        let rows = stmt.query_map(params![pattern, prefix_pattern, limit as i64], |row| {
+        let mut stmt = conn.prepare(&query_sql)?;
+
+        let map_row = |row: &rusqlite::Row| -> Result<LocalCatalogueItem, rusqlite::Error> {
             let is_comb: i32 = row.get(11)?;
             let is_ver: i32 = row.get(12)?;
             Ok(LocalCatalogueItem {
@@ -3076,11 +3089,20 @@ impl DbOperations {
                 source_provenance: row.get(13)?,
                 cached_at: row.get(14)?,
             })
-        })?;
+        };
 
         let mut items = Vec::new();
-        for item in rows {
-            items.push(item?);
+        if let Some(form) = clean_form {
+            let form_pattern = format!("%{}%", form);
+            let rows = stmt.query_map(params![pattern, prefix_pattern, limit as i64, form_pattern], map_row)?;
+            for item in rows {
+                items.push(item?);
+            }
+        } else {
+            let rows = stmt.query_map(params![pattern, prefix_pattern, limit as i64], map_row)?;
+            for item in rows {
+                items.push(item?);
+            }
         }
         Ok(items)
     }
@@ -3108,7 +3130,7 @@ impl DbOperations {
         );
 
         if formulation.is_some() {
-            query_sql.push_str(" AND dosage_form = ?2");
+            query_sql.push_str(" AND (dosage_form LIKE '%' || ?2 || '%')");
         }
         query_sql.push_str(" ORDER BY raw_strength_summary ASC");
 
@@ -3133,6 +3155,29 @@ impl DbOperations {
             }
         }
         Ok(list)
+    }
+
+    /// Retrieves statistics about the locally cached catalogue (total items, brands, generics, verified).
+    pub fn get_catalogue_cache_stats(conn: &Connection) -> Result<CatalogueCacheStats, DatabaseOpError> {
+        let mut stmt = conn.prepare(
+            r#"
+            SELECT
+                COUNT(*),
+                COALESCE(SUM(CASE WHEN item_type = 'BRAND' THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN item_type = 'GENERIC' THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN is_verified = 1 THEN 1 ELSE 0 END), 0)
+            FROM local_catalogue_cache_v1
+            "#,
+        )?;
+        let stats = stmt.query_row([], |row| {
+            Ok(CatalogueCacheStats {
+                total_items: row.get(0)?,
+                brand_count: row.get(1)?,
+                generic_count: row.get(2)?,
+                verified_count: row.get(3)?,
+            })
+        })?;
+        Ok(stats)
     }
 
 
@@ -5110,14 +5155,25 @@ mod tests {
         assert_eq!(count, 4);
 
         // 2. Search prefix matches first
-        let search_results = DbOperations::search_local_catalogue(&conn, "Calpol", 10).unwrap();
+        let search_results = DbOperations::search_local_catalogue(&conn, "Calpol", 10, None).unwrap();
         assert_eq!(search_results.len(), 2);
         assert_eq!(search_results[0].name, "Calpol 250 Syrup");
         assert_eq!(search_results[1].name, "Calpol 500");
 
+        // 2b. Search with formulation filter
+        let filtered_search = DbOperations::search_local_catalogue(&conn, "Calpol", 10, Some("Syrup")).unwrap();
+        assert_eq!(filtered_search.len(), 1);
+        assert_eq!(filtered_search[0].name, "Calpol 250 Syrup");
+
         // 3. Search substring/generic name
-        let para_results = DbOperations::search_local_catalogue(&conn, "Paracetamol", 10).unwrap();
+        let para_results = DbOperations::search_local_catalogue(&conn, "Paracetamol", 10, None).unwrap();
         assert_eq!(para_results.len(), 3);
+
+        // 3b. Verify cache stats
+        let stats = DbOperations::get_catalogue_cache_stats(&conn).unwrap();
+        assert_eq!(stats.total_items, 4);
+        assert_eq!(stats.brand_count, 4);
+        assert_eq!(stats.verified_count, 3);
 
         // 4. Extract verified strengths for medicine
         let calpol_strengths = DbOperations::get_local_catalogue_strengths(&conn, "Calpol 500", None).unwrap();

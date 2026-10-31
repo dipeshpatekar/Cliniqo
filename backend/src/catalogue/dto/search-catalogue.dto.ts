@@ -27,6 +27,10 @@ export class SearchCatalogueDto {
   formulation?: string;
 
   @IsOptional()
+  @IsString()
+  releaseType?: string;
+
+  @IsOptional()
   @Type(() => Number)
   @IsInt()
   @Min(1)
@@ -47,4 +51,17 @@ export class GetStrengthsQueryDto {
   @IsOptional()
   @IsString()
   formulation?: string;
+}
+
+export class CatalogueFeedQueryDto {
+  @IsOptional()
+  @IsString()
+  cursor?: string;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(500)
+  limit?: number = 100;
 }

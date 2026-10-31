@@ -38,6 +38,8 @@ export type Medicine = {
   brandName?: string
   genericName?: string
   productName?: string
+  releaseType?: string
+  manufacturer?: string
 }
 
 export type CatalogueStrength = {
@@ -59,6 +61,8 @@ export type CatalogueItem = {
   route?: string
   strengths: CatalogueStrength[]
   rawStrengthSummary: string
+  releaseType?: string
+  manufacturer?: string
   isCombination: boolean
   isStrengthVerified: boolean
   sourceProvenance: string

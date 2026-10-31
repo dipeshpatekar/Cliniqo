@@ -795,10 +795,11 @@ export interface LocalCatalogueCacheRecord {
 export async function searchLocalCatalogueCache(
   query: string,
   limit = 20,
+  formulation?: string,
 ): Promise<CatalogueItem[]> {
   const result = await invokeTauri<LocalCatalogueCacheRecord[]>(
     "search_catalogue_cache",
-    { query, limit },
+    { query, limit, formulation: formulation || null },
   )
   if (!result) return []
   return result.map((r) => {
@@ -807,6 +808,14 @@ export async function searchLocalCatalogueCache(
       parsedStrengths = JSON.parse(r.strengths_json)
     } catch {
       // ignore
+    }
+    let extraMeta: { releaseType?: string; manufacturer?: string } = {}
+    if (r.active_ingredients_json) {
+      try {
+        extraMeta = JSON.parse(r.active_ingredients_json)
+      } catch {
+        // ignore
+      }
     }
     return {
       id: r.id,
@@ -820,6 +829,8 @@ export async function searchLocalCatalogueCache(
       route: r.route || undefined,
       strengths: parsedStrengths,
       rawStrengthSummary: r.raw_strength_summary,
+      releaseType: extraMeta.releaseType,
+      manufacturer: extraMeta.manufacturer,
       isCombination: r.is_combination,
       isStrengthVerified: r.is_verified,
       sourceProvenance: r.source_provenance,
@@ -851,7 +862,13 @@ export async function saveCatalogueCacheItems(
     product_name: it.productName || null,
     dosage_form: it.dosageForm || null,
     route: it.route || null,
-    active_ingredients_json: null,
+    active_ingredients_json:
+      it.releaseType || it.manufacturer
+        ? JSON.stringify({
+            releaseType: it.releaseType,
+            manufacturer: it.manufacturer,
+          })
+        : null,
     strengths_json: JSON.stringify(it.strengths || []),
     raw_strength_summary: it.rawStrengthSummary || "",
     is_combination: Boolean(it.isCombination),
@@ -869,6 +886,7 @@ export async function searchCatalogue(
   token?: string,
   limit = 20,
   formulation?: string,
+  releaseType?: string,
 ): Promise<CatalogueSearchResult> {
   const backendUrl = getBackendUrl()
   if (token && typeof navigator !== "undefined" && navigator.onLine) {
@@ -877,6 +895,7 @@ export async function searchCatalogue(
       url.searchParams.set("q", query)
       url.searchParams.set("limit", String(limit))
       if (formulation) url.searchParams.set("formulation", formulation)
+      if (releaseType) url.searchParams.set("releaseType", releaseType)
 
       const resp = await fetch(url.toString(), {
         headers: {
@@ -899,7 +918,7 @@ export async function searchCatalogue(
     }
   }
 
-  const localItems = await searchLocalCatalogueCache(query, limit)
+  const localItems = await searchLocalCatalogueCache(query, limit, formulation)
   return {
     items: localItems,
     total: localItems.length,
@@ -954,4 +973,54 @@ export async function getCatalogueStrengths(
     isSingleMatch: localStrengths.length === 1,
     isOfflineCache: true,
   }
+}
+
+export interface CatalogueCacheStats {
+  totalItems: number
+  brandCount: number
+  genericCount: number
+  verifiedCount: number
+}
+
+export async function getCatalogueCacheStats(): Promise<CatalogueCacheStats | null> {
+  return invokeTauri<CatalogueCacheStats>("get_catalogue_cache_stats")
+}
+
+export async function syncCatalogueIncremental(
+  token: string,
+  onProgress?: (synced: number, total: number) => void,
+): Promise<{ totalSynced: number }> {
+  const backendUrl = getBackendUrl()
+  let cursor: string | undefined = undefined
+  let totalSynced = 0
+  let isDone = false
+
+  while (!isDone) {
+    const url = new URL(`${backendUrl}/catalogue/feed`)
+    url.searchParams.set("limit", "100")
+    if (cursor) url.searchParams.set("cursor", cursor)
+
+    const resp = await fetch(url.toString(), {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+    })
+    if (!resp.ok) break
+
+    const data = await resp.json()
+    if (!data.items || data.items.length === 0) break
+
+    await saveCatalogueCacheItems(data.items)
+    totalSynced += data.items.length
+    if (onProgress) onProgress(totalSynced, data.total || 0)
+
+    if (!data.nextCursor || data.items.length < 100) {
+      isDone = true
+    } else {
+      cursor = data.nextCursor
+    }
+  }
+
+  return { totalSynced }
 }

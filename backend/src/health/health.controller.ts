@@ -24,4 +24,9 @@ export class HealthController {
     }
     return readiness;
   }
+
+  @Get('diag')
+  async getDiagnostics() {
+    return this.healthService.getDiagnostics();
+  }
 }

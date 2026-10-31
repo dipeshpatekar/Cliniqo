@@ -3,6 +3,7 @@ import {
   UnauthorizedException,
   BadRequestException,
   ConflictException,
+  ServiceUnavailableException,
   Logger,
 } from "@nestjs/common"
 import { InjectModel } from "@nestjs/mongoose"
@@ -173,7 +174,14 @@ export class AuthService {
   ) {
     const email = dto.email.trim().toLowerCase()
 
-    // Check if account already exists
+    // 1. Fail-fast if database connection is temporarily unavailable
+    if (this.doctorModel.db && this.doctorModel.db.readyState !== 1) {
+      throw new ServiceUnavailableException(
+        "Authentication service is temporarily unavailable. Please retry in a few moments.",
+      )
+    }
+
+    // 2. Check if account already exists
     const existing = await this.doctorModel.findOne({ email })
     if (existing) {
       throw new ConflictException(
@@ -181,6 +189,7 @@ export class AuthService {
       )
     }
 
+    // 3. Hash password using Argon2id
     const passwordHash = await this.passwordService.hashPassword(dto.password)
     const doctor = new this.doctorModel({
       fullName: dto.fullName.trim(),
@@ -191,14 +200,39 @@ export class AuthService {
       failedLoginAttempts: 0,
       lastLoginAt: new Date(),
     })
-    await doctor.save()
 
-    const accessToken = await this.tokenService.generateAccessToken(doctor)
-    const { refreshToken } = await this.tokenService.createRefreshSession(
-      doctor._id,
-      undefined,
-      meta,
-    )
+    // 4. Save doctor catching unique key race conditions
+    try {
+      await doctor.save()
+    } catch (err: any) {
+      if (err?.code === 11000 || (err?.name === "MongoServerError" && err?.code === 11000)) {
+        throw new ConflictException(
+          "An account with this email address already exists.",
+        )
+      }
+      throw err
+    }
+
+    // 5. Issue access and refresh tokens atomically (rollback orphaned record if token generation fails)
+    let accessToken: string
+    let refreshToken: string
+    try {
+      accessToken = await this.tokenService.generateAccessToken(doctor)
+      const session = await this.tokenService.createRefreshSession(
+        doctor._id,
+        undefined,
+        meta,
+      )
+      refreshToken = session.refreshToken
+    } catch (tokenErr) {
+      this.logger.error(
+        `Failed to issue authentication tokens for new doctor ${doctor._id.toString()}: ${String(tokenErr)}`,
+      )
+      await this.doctorModel.deleteOne({ _id: doctor._id }).catch((cleanupErr) => {
+        this.logger.error(`Failed to clean up orphaned doctor ${doctor._id.toString()}: ${String(cleanupErr)}`)
+      })
+      throw tokenErr
+    }
 
     return {
       accessToken,

@@ -59,16 +59,16 @@ export function Setup({
   )
   const [createdClinicId, setCreatedClinicId] = useState<string | null>(null)
 
-  // Step 1: Doctor Profile State (prepopulate from doctor data or verified sessionProp)
+  // Step 1: Doctor Profile State (prepopulate from verified sessionProp or doctor data)
   const [fullName, setFullName] = useState(
-    doctor?.fullName || sessionProp?.doctor_name || "",
+    sessionProp?.doctor_name || doctor?.fullName || "",
   )
   const [gender, setGender] = useState("Male")
   const [qualifications, setQualifications] = useState("")
   const [registrationNumber, setRegistrationNumber] = useState("")
   const [mobile, setMobile] = useState(doctor?.phone || "")
   const [email, setEmail] = useState(
-    doctor?.email || sessionProp?.doctor_email || "",
+    sessionProp?.doctor_email || doctor?.email || "",
   )
 
   // Step 2: Clinic Profile State
@@ -80,7 +80,7 @@ export function Setup({
   const [postalCode, setPostalCode] = useState("")
   const [mapsLocation, setMapsLocation] = useState("")
   const [clinicEmail, setClinicEmail] = useState(
-    doctor?.email || sessionProp?.doctor_email || "",
+    sessionProp?.doctor_email || doctor?.email || "",
   )
 
   // Re-auth modal state for session expiry
@@ -89,8 +89,8 @@ export function Setup({
   const [reauthError, setReauthError] = useState<string | null>(null)
 
   useEffect(() => {
-    const verifiedFullName = doctor?.fullName || sessionProp?.doctor_name
-    const verifiedEmail = doctor?.email || sessionProp?.doctor_email
+    const verifiedFullName = sessionProp?.doctor_name || doctor?.fullName
+    const verifiedEmail = sessionProp?.doctor_email || doctor?.email
     const verifiedPhone = doctor?.phone
     const verifiedAccessToken = doctor?.accessToken
 
@@ -100,6 +100,19 @@ export function Setup({
     if (verifiedAccessToken && !currentAccessToken)
       setCurrentAccessToken(verifiedAccessToken)
   }, [doctor, sessionProp])
+
+  useEffect(() => {
+    if (isTauriDesktop() && !sessionProp) {
+      getDesktopSession().then((active) => {
+        if (!active) {
+          setStatus("error")
+          setErrorMessage(
+            "No active authenticated session found. Please log in or register.",
+          )
+        }
+      })
+    }
+  }, [sessionProp])
 
   const next = async (event: FormEvent) => {
     event.preventDefault()
@@ -207,7 +220,7 @@ export function Setup({
       }
 
       const effectiveClinicId = clinicId || "clinic-1"
-      const doctorId = doctor?.id || sessionProp?.doctor_id || ""
+      const doctorId = sessionProp?.doctor_id || doctor?.id || ""
 
       let session: DesktopSessionContext | null = null
       if (isTauriDesktop()) {
@@ -354,10 +367,27 @@ export function Setup({
           <div
             className="auth-error"
             role="alert"
-            style={{ marginBottom: "1.25rem" }}
+            style={{
+              marginBottom: "1.25rem",
+              display: "flex",
+              flexDirection: "column",
+              gap: "8px",
+            }}
           >
-            <AlertCircle size={18} />
-            <span>{errorMessage}</span>
+            <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+              <AlertCircle size={18} />
+              <span>{errorMessage}</span>
+            </div>
+            {errorMessage.toLowerCase().includes("no active") && (
+              <Button
+                size="sm"
+                variant="secondary"
+                onClick={() => go("login")}
+                style={{ alignSelf: "flex-start", marginTop: "4px" }}
+              >
+                Go to login
+              </Button>
+            )}
           </div>
         )}
 

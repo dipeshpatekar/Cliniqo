@@ -20,13 +20,13 @@ rsUP0IbNhum1SmkagfVh1FrgfqaziuZa6kq9hM+aKOmG+AOcXJN3dms9LTPMul5h
 
 /// Active production RSA 2048-bit SPKI Public Key for verifying access tokens issued by the backend on Render.
 pub const PRODUCTION_BACKEND_PUBLIC_KEY_PEM: &str = r#"-----BEGIN PUBLIC KEY-----
-MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA3CxRzNxFJV/qUjkRPgXG
-4CGtzLN53PPSHkuimhoegD1CnEZN3Z+iae2WMPuxBFAoE8jyGyspPie/WBqYu+EL
-X6e+365ttLAR47FW6ZK/qOXd86goCbzk15r3pNimhYmfUxbfS3NzEuk+JRxOPizl
-N/TWhn1iLisYzpvx4isV5dWr6hAb0yJDz+B2gOsJX6zFz7MNkOdMaQVzSciz/IKE
-CyjNLf4RcbUYiOwgYi9+/9GJLoBajt9r5RSHjrlWecrcDoGQ8/O2hO1y7q/3DoVK
-ukK+CzwjKtDcVrGaDNYhUgsQD//Xe3JGXiH34AGjc+liz8CcqKv+bLk9rBkiCq32
-ywIDAQAB
+MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEApVcqcizNZXUOhfP4beGp
+BUzkAxbvgl6OOqQM4epZom2DlLZRf7rN8fIXKrWw3ILlwMaQ1WHJDRppIgSiKAY2
+Ey8gW8ROxfTSRQFvGkZE0n9GV4+oObtKsFiEfk5LJGjCJPhPVvPSWh6SsO0T3Yr+
+x3+5Ekyv8t7FVQdRGbDIbbUtbyLJJXQcvIg8A8/ODK0XfzGra09vx7f3or4r30fS
+WACi/0DeP5mfuFh8DGGJYZG+aGzll4yhdrxY0BjFnYcTIF1QhESiaBDaiR9scnZJ
+AKvFFzZzHBWkfJE8Ifiz2XF3VH34qtthiNetWVKiFCelaD9E2nAmm0ye+wIyFxkV
+kwIDAQAB
 -----END PUBLIC KEY-----"#;
 
 /// Default RSA 2048-bit SPKI Public Key for local test fixtures and development.
@@ -247,6 +247,22 @@ impl SessionManager {
     /// Returns the active public key version
     pub fn get_key_version(&self) -> u32 {
         *self.key_version.read().unwrap()
+    }
+
+    /// Securely updates the active RSA decoding key from a verified RSA-2048 SPKI PEM
+    pub fn update_public_key(&self, pem: &str) -> Result<(), AuthError> {
+        let trimmed = pem.trim();
+        validate_rsa_key_strength(trimmed, 2048)?;
+        let new_key = DecodingKey::from_rsa_pem(trimmed.as_bytes())
+            .map_err(|e| AuthError::PublicKeyError(format!("Invalid RSA public key PEM: {e}")))?;
+
+        let mut key_lock = self.decoding_key.write().unwrap();
+        let mut pem_lock = self.public_key_pem.write().unwrap();
+        *key_lock = new_key;
+        *pem_lock = trimmed.to_string();
+
+        log::info!("SessionManager: RSA decoding key updated from verified SPKI PEM.");
+        Ok(())
     }
 
     /// Returns the root trust anchor PEM used exclusively for rotation certificate verification.

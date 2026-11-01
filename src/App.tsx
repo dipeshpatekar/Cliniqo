@@ -373,8 +373,7 @@ export default function App() {
       isTauriDesktop() &&
       !effectiveSession &&
       next !== "login" &&
-      next !== "register" &&
-      !(next === "setup" && effectiveOnboarding)
+      next !== "register"
     ) {
       setPage("login")
       return
@@ -752,8 +751,7 @@ export default function App() {
     isTauriDesktop() &&
     !activeSession &&
     page !== "login" &&
-    page !== "register" &&
-    !(page === "setup" && activeOnboarding)
+    page !== "register"
   ) {
     return <Login go={go} onLoginSuccess={handleLoginSuccess} />
   }
@@ -766,6 +764,10 @@ export default function App() {
       <Register
         go={go}
         onRegisterSuccess={(result) => {
+          if (isTauriDesktop() && !result.session) {
+            go("login")
+            return
+          }
           const doctorData = {
             id: result.doctor.id,
             email: result.doctor.email,

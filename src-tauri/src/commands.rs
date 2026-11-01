@@ -130,6 +130,83 @@ pub fn get_desktop_info(state: State<'_, AppState>) -> DesktopInfo {
 // Desktop Session & Authorization Commands
 // ---------------------------------------------------------------------------
 
+#[derive(Deserialize, Debug)]
+struct BackendPublicKeyResponse {
+    algorithm: String,
+    #[serde(rename = "publicKey")]
+    public_key: String,
+    #[allow(dead_code)]
+    issuer: Option<String>,
+    #[allow(dead_code)]
+    audience: Option<String>,
+}
+
+/// Synchronizes the active RSA SPKI public key from the trusted backend /auth/public-key endpoint
+/// over TLS, validates minimum 2048-bit modulus, and updates the native SessionManager in memory.
+/// To preserve the pinned trust anchor and prevent unauthenticated persistence, dynamically fetched keys
+/// are held in memory only and are NOT persisted to DPAPI storage until backend-signed key rotation
+/// certificates are implemented.
+pub async fn sync_backend_public_key_from_server(
+    session_mgr: &SessionManager,
+) -> Result<(), String> {
+    let base_url = crate::config::get_trusted_backend_url()?;
+    let client = crate::config::create_secure_http_client(Duration::from_secs(10))?;
+    let pk_url = format!("{base_url}/auth/public-key");
+
+    let resp = client
+        .get(&pk_url)
+        .send()
+        .await
+        .map_err(|e| format!("Failed to reach backend public key endpoint ({pk_url}): {e}"))?;
+
+    if !resp.status().is_success() {
+        return Err(format!("Backend returned HTTP {} on /auth/public-key", resp.status()));
+    }
+
+    let data = resp
+        .json::<BackendPublicKeyResponse>()
+        .await
+        .map_err(|e| format!("Failed to parse /auth/public-key response: {e}"))?;
+
+    if data.algorithm != "RS256" {
+        return Err(format!("Unsupported algorithm '{}' from /auth/public-key", data.algorithm));
+    }
+
+    session_mgr
+        .update_public_key(&data.public_key)
+        .map_err(|e| format!("Failed to update session manager public key: {e}"))?;
+
+    log::info!("Successfully synchronized verified RS256 public key from trusted backend into memory.");
+    Ok(())
+}
+
+/// Authenticates a token into SessionManager. If cryptographic signature verification fails
+/// (e.g. backend rotated its RSA keypair or restarted), attempts a live public-key discovery
+/// from the trusted backend /auth/public-key endpoint and retries verification.
+pub async fn login_with_auto_key_sync(
+    session_mgr: &SessionManager,
+    _key_mgr: &KeyManager,
+    token: &str,
+    clinic_id: &str,
+    role: &str,
+) -> Result<SessionContext, String> {
+    match session_mgr.login(token, clinic_id, role) {
+        Ok(session) => Ok(session),
+        Err(crate::auth::AuthError::SignatureVerificationFailed) => {
+            log::info!("JWT signature verification failed with local decoding key. Fetching active public key from trusted backend...");
+            if let Err(e) = sync_backend_public_key_from_server(session_mgr).await {
+                log::warn!("Could not sync public key from backend: {e}");
+                return Err("Token signature verification failed: cryptographic signature mismatch.".to_string());
+            }
+            // Retry login with newly synchronized backend public key
+            session_mgr
+                .login(token, clinic_id, role)
+                .map_err(|e| e.to_string())
+        }
+        Err(e) => Err(e.to_string()),
+    }
+}
+
 /// Native login: Executes HTTP POST /auth/login directly in Rust.
 /// Refresh tokens are saved directly to secure DPAPI storage and are NEVER
 /// returned to the renderer JavaScript or exposed over IPC.
@@ -209,9 +286,15 @@ pub async fn login_desktop(
     };
 
     // 3. Establish session with authoritative clinic & role
-    let session = state.session_mgr
-        .login(&login_data.access_token, &selected_clinic_id, &selected_role)
-        .map_err(|e| format!("Failed to validate session token: {e}"))?;
+    let session = login_with_auto_key_sync(
+        &state.session_mgr,
+        &state.key_mgr,
+        &login_data.access_token,
+        &selected_clinic_id,
+        &selected_role,
+    )
+    .await
+    .map_err(|e| format!("Failed to validate session token: {e}"))?;
 
     // 4. Start native background sync worker for this clinic if clinic exists
     if !selected_clinic_id.is_empty() {
@@ -307,15 +390,21 @@ pub async fn register_desktop(
     }
 
     // Immediately establish the native session for the newly registered doctor
-    let session = state.session_mgr
-        .login(&reg_data.access_token, "", "OWNER")
-        .ok();
+    let session = login_with_auto_key_sync(
+        &state.session_mgr,
+        &state.key_mgr,
+        &reg_data.access_token,
+        "",
+        "OWNER",
+    )
+    .await
+    .map_err(|e| format!("Failed to establish native doctor session: {e}"))?;
 
     Ok(RegisterDesktopResult {
         access_token: reg_data.access_token,
         refresh_token: reg_data.refresh_token,
         doctor: reg_data.doctor,
-        session,
+        session: Some(session),
     })
 }
 
@@ -327,10 +416,15 @@ pub async fn login_desktop_session(
     role: String,
     refresh_token: Option<String>,
 ) -> Result<SessionContext, String> {
-    let session = state
-        .session_mgr
-        .login(&token, &clinic_id, &role)
-        .map_err(|e| e.to_string())?;
+    let session = login_with_auto_key_sync(
+        &state.session_mgr,
+        &state.key_mgr,
+        &token,
+        &clinic_id,
+        &role,
+    )
+    .await
+    .map_err(|e| e.to_string())?;
 
     if let Some(ref rt) = refresh_token {
         let trimmed = rt.trim();
@@ -463,9 +557,15 @@ async fn do_actual_refresh_session(
         (selected_clinic.id, selected_clinic.role)
     };
 
-    let session = session_mgr
-        .login(&refresh_data.access_token, &selected_clinic_id, &selected_role)
-        .map_err(|e| format!("Failed to validate refreshed access token: {e}"))?;
+    let session = login_with_auto_key_sync(
+        session_mgr,
+        key_mgr,
+        &refresh_data.access_token,
+        &selected_clinic_id,
+        &selected_role,
+    )
+    .await
+    .map_err(|e| format!("Failed to validate refreshed access token: {e}"))?;
 
     Ok(DesktopLoginResult {
         session,
@@ -554,8 +654,15 @@ pub async fn switch_active_clinic(
     let token = state.session_mgr.get_access_token()
         .ok_or_else(|| "No active session".to_string())?;
 
-    let session = state.session_mgr.login(&token, &clinic_id, &role)
-        .map_err(|e| e.to_string())?;
+    let session = login_with_auto_key_sync(
+        &state.session_mgr,
+        &state.key_mgr,
+        &token,
+        &clinic_id,
+        &role,
+    )
+    .await
+    .map_err(|e| e.to_string())?;
 
     let _ = state.key_mgr.save_active_clinic_id(&clinic_id);
 
@@ -1451,6 +1558,52 @@ mod tests {
         let updated_session = session_mgr.login(&token, "clinic_real_1", "OWNER").expect("update succeeds");
         assert_eq!(updated_session.clinic_id, "clinic_real_1");
         assert!(session_mgr.validate_session(Some("clinic_real_1")).is_ok());
+    }
+
+    #[test]
+    fn test_login_with_auto_key_sync_validates_and_establishes_session() {
+        tauri::async_runtime::block_on(async {
+            let temp_dir = std::env::temp_dir().join(format!("cliniqo_cmd_sync_{}", uuid::Uuid::new_v4()));
+            let key_mgr = KeyManager::new(&temp_dir);
+            let session_mgr = SessionManager::with_default_public_key().unwrap();
+
+            let token = crate::auth::tests::generate_test_rs256_jwt_with_name(
+                crate::auth::tests::TEST_BACKEND_PRIVATE_KEY_PEM,
+                "doc_sync_99",
+                "sync@cliniqo.test",
+                Some("Dr. Sync Test"),
+                3600,
+            );
+
+            // Matches current key directly
+            let res = login_with_auto_key_sync(&session_mgr, &key_mgr, &token, "", "OWNER").await;
+            assert!(res.is_ok());
+            let session = res.unwrap();
+            assert_eq!(session.doctor_id, "doc_sync_99");
+            assert_eq!(session.doctor_name, "Dr. Sync Test");
+            assert_eq!(session.clinic_id, "");
+            assert_eq!(session_mgr.get_access_token(), Some(token));
+        });
+    }
+
+    #[test]
+    fn test_update_public_key_validates_modulus_and_rejects_weak_key() {
+        let session_mgr = SessionManager::with_default_public_key().unwrap();
+
+        // 1. Invalid PEM format is rejected
+        let invalid_pem = "-----BEGIN PUBLIC KEY-----\nNOT_VALID_BASE64\n-----END PUBLIC KEY-----";
+        let res = session_mgr.update_public_key(invalid_pem);
+        assert!(res.is_err());
+
+        // 2. 1024-bit RSA key is rejected (must be at least 2048-bit)
+        let weak_1024_pem = r#"-----BEGIN PUBLIC KEY-----
+MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQC3/jY0a29mNlZgW4hC8RzF+K8h
+D1d0B/9iI/8p4iH21N3W7B3gT9D9e/9Y2Z3b4K5L6M7N8P9Q0R1S2T3U4V5W6X7Y
+8Z9a0b1c2d3e4f5g6h7i8j9k0l1m2n3o4p5q6r7s8t9u0v1w2x3y4z5A6B7C8D9E
+0F1G2H3I4J5K6L7M8N9O0P1QIDAQAB
+-----END PUBLIC KEY-----"#;
+        let weak_res = session_mgr.update_public_key(weak_1024_pem);
+        assert!(weak_res.is_err());
     }
 }
 

@@ -72,6 +72,8 @@ pub fn run() {
             let catalogue_sync = Arc::new(crate::sync::CatalogueSyncManager::new(
                 db_arc.clone(),
                 session_arc.clone(),
+                key_arc.clone(),
+                refresh_coordinator.clone(),
             ));
 
             app.manage(AppState {
@@ -123,6 +125,8 @@ pub fn run() {
             commands::seed_catalogue_cache,
             commands::get_catalogue_sync_status,
             commands::start_catalogue_sync,
+            commands::get_clinic_profile,
+            commands::save_clinic_profile,
         ])
         .run(tauri::generate_context!())
         .expect("error while building tauri application");

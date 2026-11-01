@@ -5,7 +5,7 @@ use thiserror::Error;
 use crate::crypto::{decrypt_payload, encrypt_payload, CryptoError};
 use crate::crypto::key_manager::DatabaseEncryptionKey;
 use super::schema::{
-    CatalogueCacheStats, ClinicalData, ConflictStatus, ConsultationRecord, DecryptedOutboxItem, EncryptedBillingData,
+    CatalogueCacheStats, ClinicalData, ClinicProfileRecord, ConflictStatus, ConsultationRecord, DecryptedOutboxItem, EncryptedBillingData,
     FormularyRecord, InvoiceItem, InvoiceRecord, LocalCatalogueItem, PatientDemographics, PatientRecord,
     PrescriptionRecord, SaveCatalogueCacheItemArgs, SaveFormularyArgs, SaveInvoiceArgs, SyncConflictRecord, SyncFeedChangeItem,
     SyncOutboxSummary, SyncStateRecord,
@@ -3212,6 +3212,82 @@ impl DbOperations {
         Ok(())
     }
 
+    /// Upserts a local clinic profile record into SQLite for durable offline profile settings.
+    pub fn upsert_clinic_profile(
+        conn: &Connection,
+        profile: &ClinicProfileRecord,
+    ) -> Result<(), DatabaseOpError> {
+        conn.execute(
+            r#"
+            INSERT INTO local_clinic_profile (
+                clinic_id, name, slug, phone, email, street, city, state, postal_code, country, location_link, updated_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, CURRENT_TIMESTAMP)
+            ON CONFLICT(clinic_id) DO UPDATE SET
+                name = excluded.name,
+                slug = excluded.slug,
+                phone = excluded.phone,
+                email = excluded.email,
+                street = excluded.street,
+                city = excluded.city,
+                state = excluded.state,
+                postal_code = excluded.postal_code,
+                country = excluded.country,
+                location_link = excluded.location_link,
+                updated_at = CURRENT_TIMESTAMP
+            "#,
+            params![
+                profile.clinic_id,
+                profile.name,
+                profile.slug,
+                profile.phone,
+                profile.email,
+                profile.street,
+                profile.city,
+                profile.state,
+                profile.postal_code,
+                profile.country,
+                profile.location_link,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Retrieves a local clinic profile record by clinic_id.
+    pub fn get_clinic_profile(
+        conn: &Connection,
+        clinic_id: &str,
+    ) -> Result<Option<ClinicProfileRecord>, DatabaseOpError> {
+        let mut stmt = conn.prepare(
+            r#"
+            SELECT clinic_id, name, slug, phone, email, street, city, state, postal_code, country, location_link, updated_at
+            FROM local_clinic_profile
+            WHERE clinic_id = ?1
+            "#,
+        )?;
+        let res = stmt.query_row(params![clinic_id], |row| {
+            Ok(ClinicProfileRecord {
+                clinic_id: row.get(0)?,
+                name: row.get(1)?,
+                slug: row.get(2)?,
+                phone: row.get(3)?,
+                email: row.get(4)?,
+                street: row.get(5)?,
+                city: row.get(6)?,
+                state: row.get(7)?,
+                postal_code: row.get(8)?,
+                country: row.get(9)?,
+                location_link: row.get(10)?,
+                updated_at: row.get(11)?,
+            })
+        });
+
+        match res {
+            Ok(profile) => Ok(Some(profile)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(DatabaseOpError::Sqlite(e)),
+        }
+    }
+
 
     fn map_invoice_row(
         row: &rusqlite::Row,
@@ -3654,16 +3730,16 @@ mod tests {
         )
         .unwrap();
 
-        // Simulate a database from a newer future application (e.g. version 6)
+        // Simulate a database from a newer future application (e.g. version 99)
         conn.execute(
-            "INSERT INTO schema_migrations (version, name, checksum) VALUES (6, 'future_v6', 'chk6')",
+            "INSERT INTO schema_migrations (version, name, checksum) VALUES (99, 'future_v99', 'chk99')",
             [],
         )
         .unwrap();
 
         let result = MigrationRunner::run_migrations(&mut conn, &dek);
         assert!(
-            matches!(result, Err(MigrationError::UnsupportedSchemaVersion(6))),
+            matches!(result, Err(MigrationError::UnsupportedSchemaVersion(99))),
             "Must fail closed when database schema version exceeds supported range"
         );
     }
@@ -5221,5 +5297,57 @@ mod tests {
         // 6. Safe idempotency on rerun
         let count2 = DbOperations::cache_catalogue_items(&mut conn, &items).unwrap();
         assert_eq!(count2, 4);
+    }
+
+    #[test]
+    fn test_clinic_profile_persistence() {
+        let (conn, _dek) = setup_test_db();
+        let clinic_id = "test-clinic-42";
+
+        // Initial check: profile does not exist
+        let initial = DbOperations::get_clinic_profile(&conn, clinic_id).unwrap();
+        assert!(initial.is_none());
+
+        // Upsert clinic profile
+        let profile = ClinicProfileRecord {
+            clinic_id: clinic_id.to_string(),
+            name: "Dr. Patekar Multi-Speciality Clinic".to_string(),
+            slug: "dr-patekar-clinic".to_string(),
+            phone: "+91 9876543210".to_string(),
+            email: "clinic@drpatekar.com".to_string(),
+            street: "123 Healthcare Ave, Suite 4".to_string(),
+            city: "Mumbai".to_string(),
+            state: "Maharashtra".to_string(),
+            postal_code: "400001".to_string(),
+            country: "India".to_string(),
+            location_link: "https://maps.google.com/?q=19.0760,72.8777".to_string(),
+            updated_at: None,
+        };
+
+        DbOperations::upsert_clinic_profile(&conn, &profile).unwrap();
+
+        // Retrieve and verify
+        let fetched = DbOperations::get_clinic_profile(&conn, clinic_id).unwrap().expect("found");
+        assert_eq!(fetched.clinic_id, clinic_id);
+        assert_eq!(fetched.name, "Dr. Patekar Multi-Speciality Clinic");
+        assert_eq!(fetched.phone, "+91 9876543210");
+        assert_eq!(fetched.email, "clinic@drpatekar.com");
+        assert_eq!(fetched.street, "123 Healthcare Ave, Suite 4");
+        assert_eq!(fetched.city, "Mumbai");
+        assert_eq!(fetched.state, "Maharashtra");
+        assert_eq!(fetched.postal_code, "400001");
+        assert_eq!(fetched.country, "India");
+        assert_eq!(fetched.location_link, "https://maps.google.com/?q=19.0760,72.8777");
+        assert!(fetched.updated_at.is_some());
+
+        // Update profile
+        let mut updated = profile.clone();
+        updated.name = "Dr. Patekar Advanced Clinic".to_string();
+        updated.phone = "+91 9999999999".to_string();
+        DbOperations::upsert_clinic_profile(&conn, &updated).unwrap();
+
+        let refetched = DbOperations::get_clinic_profile(&conn, clinic_id).unwrap().expect("found");
+        assert_eq!(refetched.name, "Dr. Patekar Advanced Clinic");
+        assert_eq!(refetched.phone, "+91 9999999999");
     }
 }

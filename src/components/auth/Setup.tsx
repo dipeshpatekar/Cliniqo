@@ -150,6 +150,7 @@ export function Setup({
         postalCode: postalCode.trim(),
         country: "India",
       },
+      location_link: mapsLocation.trim(),
     }
 
     try {

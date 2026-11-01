@@ -464,7 +464,7 @@ tbody tr:hover { background: #fbfcfc; }
 .medicine-search-input input { min-width: 0; flex: 1; border: 0; outline: 0; background: transparent; color: var(--ink); font-size: 12px; }
 .medicine-options { position: absolute; z-index: 45; top: calc(100% + 5px); left: 0; right: 0; max-height: 220px; overflow-y: auto; padding: 5px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); box-shadow: 0 10px 28px rgba(20, 35, 38, .16); }
 .medicine-options button { width: 100%; min-height: 34px; padding: 0 9px; border: 0; border-radius: 6px; background: transparent; color: var(--ink); display: flex; align-items: center; justify-content: space-between; font-size: 11px; text-align: left; }
-.medicine-options button:hover, .medicine-options button[aria-selected="true"] { background: var(--primary-soft); color: var(--primary-dark); }
+.medicine-options button:hover, .medicine-options button.highlighted, .medicine-options button[aria-selected="true"] { background: var(--primary-soft); color: var(--primary-dark); }
 .medicine-no-results { padding: 11px; color: var(--muted); font-size: 10px; line-height: 1.45; }
 .medicine-row > .icon-btn { margin-top: 21px; color: var(--danger); }
 .medicine-empty { padding: 30px; display: flex; flex-direction: column; align-items: center; gap: 10px; color: #859194; }

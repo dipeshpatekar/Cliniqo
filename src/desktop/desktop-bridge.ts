@@ -23,12 +23,24 @@ export interface DesktopSessionContext {
   expires_at: number
 }
 
+export interface ClinicAddressData {
+  street?: string
+  city?: string
+  state?: string
+  postalCode?: string
+  country?: string
+}
+
 export interface ClinicItem {
   id: string
   name: string
   slug: string
   role: string
   status: string
+  phone?: string
+  email?: string
+  address?: ClinicAddressData
+  location_link?: string
 }
 
 export interface DesktopLoginResult {
@@ -226,6 +238,7 @@ export interface CreateClinicInput {
     postalCode: string
     country: string
   }
+  location_link?: string
 }
 
 export interface CreateClinicResult {
@@ -236,6 +249,8 @@ export interface CreateClinicResult {
     slug: string
     phone: string
     email: string
+    address?: ClinicAddressData
+    location_link?: string
   }
   membership: {
     _id?: string
@@ -1108,4 +1123,61 @@ export async function syncCatalogueIncremental(
   }
 
   return { totalSynced }
+}
+
+export interface ClinicProfile {
+  clinic_id: string
+  name: string
+  slug: string
+  phone: string
+  email: string
+  street: string
+  city: string
+  state: string
+  postal_code: string
+  country: string
+  location_link: string
+  updated_at?: string | null
+}
+
+export async function getClinicProfile(
+  clinicId: string,
+): Promise<ClinicProfile | null> {
+  if (!clinicId) return null
+  if (isTauriDesktop()) {
+    try {
+      return await invokeTauri<ClinicProfile | null>("get_clinic_profile", {
+        clinicId,
+      })
+    } catch (e) {
+      console.warn("Failed to retrieve clinic profile from desktop SQLite:", e)
+      return null
+    }
+  }
+
+  try {
+    const raw = localStorage.getItem(`cliniqo_clinic_profile_${clinicId}`)
+    if (raw) return JSON.parse(raw)
+  } catch {}
+  return null
+}
+
+export async function saveClinicProfile(
+  args: Omit<ClinicProfile, "updated_at">,
+): Promise<ClinicProfile> {
+  if (isTauriDesktop()) {
+    return await invokeTauri<ClinicProfile>("save_clinic_profile", { args })
+  }
+
+  const saved: ClinicProfile = {
+    ...args,
+    updated_at: new Date().toISOString(),
+  }
+  try {
+    localStorage.setItem(
+      `cliniqo_clinic_profile_${args.clinic_id}`,
+      JSON.stringify(saved),
+    )
+  } catch {}
+  return saved
 }

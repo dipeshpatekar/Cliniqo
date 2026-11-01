@@ -1,4 +1,4 @@
-import { useState } from "react"
+import { useState, useRef } from "react"
 import {
   ArrowLeft,
   UserRound,
@@ -88,6 +88,7 @@ export function SettingsPage({
 }: SettingsPageProps) {
   const [tab, setTab] = useState(initialTab)
   const [saved, setSaved] = useState(false)
+  const saveClinicProfileHandlerRef = useRef<(() => Promise<boolean>) | null>(null)
 
   const sections = [
     { label: "Doctor profile", icon: UserRound },
@@ -150,6 +151,9 @@ export function SettingsPage({
               description="Contact information visible to your patients."
               clinic
               desktopSession={desktopSession}
+              onSave={(handler) => {
+                saveClinicProfileHandlerRef.current = handler
+              }}
             />
           )}
           {tab === "Prescription layout" && (
@@ -206,9 +210,17 @@ export function SettingsPage({
                 Cancel
               </Button>
               <Button
-                onClick={() => {
-                  setSaved(true)
-                  window.setTimeout(() => setSaved(false), 1800)
+                onClick={async () => {
+                  if (tab === "Clinic profile" && saveClinicProfileHandlerRef.current) {
+                    const ok = await saveClinicProfileHandlerRef.current()
+                    if (ok) {
+                      setSaved(true)
+                      window.setTimeout(() => setSaved(false), 1800)
+                    }
+                  } else {
+                    setSaved(true)
+                    window.setTimeout(() => setSaved(false), 1800)
+                  }
                 }}
               >
                 {saved ? (

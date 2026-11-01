@@ -1,4 +1,4 @@
-import { useEffect, useState, type ComponentType, type ReactNode } from "react"
+import { useEffect, useRef, useState, type ComponentType, type ReactNode } from "react"
 import { cn } from "../../utils/cn"
 import {
   Check,
@@ -137,6 +137,8 @@ export function SearchableOptionSelect({
   emptyMessage: string
 }) {
   const [open, setOpen] = useState(false)
+  const [highlightedIndex, setHighlightedIndex] = useState(-1)
+  const listRef = useRef<HTMLDivElement>(null)
   const listId = `searchable-options-${id}`
 
   // Normalize options into SearchOptionItem
@@ -155,12 +157,66 @@ export function SearchableOptionSelect({
     (option.subtitle && option.subtitle.toLowerCase().includes(lowerVal)),
   )
 
+  // Ensure highlighted index stays in bounds when filteredOptions change
+  useEffect(() => {
+    if (open && filteredOptions.length > 0) {
+      if (highlightedIndex < 0 || highlightedIndex >= filteredOptions.length) {
+        setHighlightedIndex(0)
+      }
+    } else if (!open) {
+      setHighlightedIndex(-1)
+    }
+  }, [open, filteredOptions.length])
+
+  // Auto-scroll highlighted option into view
+  useEffect(() => {
+    if (open && highlightedIndex >= 0 && listRef.current) {
+      const activeEl = listRef.current.children[highlightedIndex] as HTMLElement
+      if (activeEl && typeof activeEl.scrollIntoView === "function") {
+        activeEl.scrollIntoView({ block: "nearest" })
+      }
+    }
+  }, [highlightedIndex, open])
+
   const selectOption = (option: SearchOptionItem) => {
     onChange(option.value)
     if (onSelectOption) {
       onSelectOption(option)
     }
     setOpen(false)
+    setHighlightedIndex(-1)
+  }
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === "ArrowDown") {
+      e.preventDefault()
+      if (!open) {
+        setOpen(true)
+        setHighlightedIndex(0)
+      } else if (filteredOptions.length > 0) {
+        setHighlightedIndex((prev) =>
+          prev < filteredOptions.length - 1 ? prev + 1 : 0,
+        )
+      }
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault()
+      if (open && filteredOptions.length > 0) {
+        setHighlightedIndex((prev) =>
+          prev > 0 ? prev - 1 : filteredOptions.length - 1,
+        )
+      }
+    } else if (e.key === "Enter") {
+      if (open && highlightedIndex >= 0 && highlightedIndex < filteredOptions.length) {
+        e.preventDefault()
+        selectOption(filteredOptions[highlightedIndex])
+      }
+    } else if (e.key === "Escape") {
+      if (open) {
+        e.preventDefault()
+        setOpen(false)
+        setHighlightedIndex(-1)
+      }
+    }
   }
 
   return (
@@ -175,65 +231,87 @@ export function SearchableOptionSelect({
           aria-autocomplete="list"
           aria-expanded={open}
           aria-controls={listId}
+          aria-activedescendant={
+            open && highlightedIndex >= 0
+              ? `${listId}-opt-${highlightedIndex}`
+              : undefined
+          }
           autoComplete="off"
           placeholder={placeholder}
-          onFocus={() => setOpen(true)}
+          onFocus={() => {
+            setOpen(true)
+            const matchIdx = filteredOptions.findIndex(
+              (o) =>
+                o.value.toLowerCase() === lowerVal ||
+                (o.label && o.label.toLowerCase() === lowerVal),
+            )
+            setHighlightedIndex(matchIdx >= 0 ? matchIdx : 0)
+          }}
           onBlur={() => window.setTimeout(() => setOpen(false), 150)}
+          onKeyDown={handleKeyDown}
           onChange={(event) => {
             onChange(event.target.value)
             setOpen(true)
+            setHighlightedIndex(0)
           }}
         />
         <ChevronDown size={15} />
       </div>
       {open && (
-        <div className="medicine-options" id={listId} role="listbox">
+        <div ref={listRef} className="medicine-options" id={listId} role="listbox">
           {filteredOptions.length > 0 ? (
-            filteredOptions.map((option) => (
-              <button
-                key={option.value}
-                type="button"
-                role="option"
-                aria-selected={value === option.value}
-                onMouseDown={(event) => event.preventDefault()}
-                onClick={() => selectOption(option)}
-                style={{
-                  display: "flex",
-                  flexDirection: "column",
-                  alignItems: "flex-start",
-                  gap: "2px",
-                  padding: "8px 12px",
-                  textAlign: "left",
-                  width: "100%",
-                }}
-              >
-                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", width: "100%" }}>
-                  <span style={{ fontWeight: 500 }}>{option.label || option.value}</span>
-                  <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-                    {option.badge && (
-                      <span
-                        style={{
-                          fontSize: "11px",
-                          fontWeight: 600,
-                          padding: "1px 6px",
-                          borderRadius: "4px",
-                          backgroundColor: "#e0f2fe",
-                          color: "#0369a1",
-                        }}
-                      >
-                        {option.badge}
-                      </span>
-                    )}
-                    {value === option.value && <Check size={15} />}
+            filteredOptions.map((option, idx) => {
+              const isHighlighted = idx === highlightedIndex
+              const isSelected = value === option.value
+              return (
+                <button
+                  key={option.value}
+                  id={`${listId}-opt-${idx}`}
+                  type="button"
+                  role="option"
+                  aria-selected={isSelected || isHighlighted}
+                  className={cn(isHighlighted && "highlighted")}
+                  onMouseEnter={() => setHighlightedIndex(idx)}
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={() => selectOption(option)}
+                  style={{
+                    display: "flex",
+                    flexDirection: "column",
+                    alignItems: "flex-start",
+                    gap: "2px",
+                    padding: "8px 12px",
+                    textAlign: "left",
+                    width: "100%",
+                  }}
+                >
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", width: "100%" }}>
+                    <span style={{ fontWeight: 500 }}>{option.label || option.value}</span>
+                    <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                      {option.badge && (
+                        <span
+                          style={{
+                            fontSize: "11px",
+                            fontWeight: 600,
+                            padding: "1px 6px",
+                            borderRadius: "4px",
+                            backgroundColor: "#e0f2fe",
+                            color: "#0369a1",
+                          }}
+                        >
+                          {option.badge}
+                        </span>
+                      )}
+                      {isSelected && <Check size={15} />}
+                    </div>
                   </div>
-                </div>
-                {option.subtitle && (
-                  <span style={{ fontSize: "11px", color: "#64748b" }}>
-                    {option.subtitle}
-                  </span>
-                )}
-              </button>
-            ))
+                  {option.subtitle && (
+                    <span style={{ fontSize: "11px", color: "#64748b" }}>
+                      {option.subtitle}
+                    </span>
+                  )}
+                </button>
+              )
+            })
           ) : (
             <div className="medicine-no-results">{emptyMessage}</div>
           )}

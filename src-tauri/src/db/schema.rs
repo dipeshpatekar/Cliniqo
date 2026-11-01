@@ -303,6 +303,40 @@ CREATE TABLE IF NOT EXISTS catalogue_sync_metadata (
 );
 "#;
 
+/// Migration V6: Introduces local clinic profile persistence for durable offline profile settings and tenancy details.
+pub const MIGRATION_V6_SQL: &str = r#"
+CREATE TABLE IF NOT EXISTS local_clinic_profile (
+    clinic_id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    slug TEXT NOT NULL DEFAULT '',
+    phone TEXT NOT NULL DEFAULT '',
+    email TEXT NOT NULL DEFAULT '',
+    street TEXT NOT NULL DEFAULT '',
+    city TEXT NOT NULL DEFAULT '',
+    state TEXT NOT NULL DEFAULT '',
+    postal_code TEXT NOT NULL DEFAULT '',
+    country TEXT NOT NULL DEFAULT 'India',
+    location_link TEXT NOT NULL DEFAULT '',
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+"#;
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ClinicProfileRecord {
+    pub clinic_id: String,
+    pub name: String,
+    pub slug: String,
+    pub phone: String,
+    pub email: String,
+    pub street: String,
+    pub city: String,
+    pub state: String,
+    pub postal_code: String,
+    pub country: String,
+    pub location_link: String,
+    pub updated_at: Option<String>,
+}
+
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct PatientDemographics {

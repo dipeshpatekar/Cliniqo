@@ -32,13 +32,29 @@ pub struct AppState {
     pub catalogue_sync: Arc<crate::sync::CatalogueSyncManager>,
 }
 
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+pub struct ClinicAddressData {
+    pub street: Option<String>,
+    pub city: Option<String>,
+    pub state: Option<String>,
+    #[serde(rename = "postalCode")]
+    pub postal_code: Option<String>,
+    pub country: Option<String>,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct ClinicItem {
     pub id: String,
     pub name: String,
+    #[serde(default)]
     pub slug: String,
     pub role: String,
+    #[serde(default)]
     pub status: String,
+    pub phone: Option<String>,
+    pub email: Option<String>,
+    pub address: Option<ClinicAddressData>,
+    pub location_link: Option<String>,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -271,6 +287,29 @@ pub async fn login_desktop(
         .await
         .map_err(|e| format!("Failed to parse clinic memberships: {e}"))?;
 
+    // Persist all retrieved clinic profiles to local SQLite for durable offline access
+    {
+        let conn = state.db.get_connection();
+        for c in &clinics {
+            let addr = c.address.as_ref();
+            let profile = crate::db::schema::ClinicProfileRecord {
+                clinic_id: c.id.clone(),
+                name: c.name.clone(),
+                slug: c.slug.clone(),
+                phone: c.phone.clone().unwrap_or_default(),
+                email: c.email.clone().unwrap_or_default(),
+                street: addr.and_then(|a| a.street.clone()).unwrap_or_default(),
+                city: addr.and_then(|a| a.city.clone()).unwrap_or_default(),
+                state: addr.and_then(|a| a.state.clone()).unwrap_or_default(),
+                postal_code: addr.and_then(|a| a.postal_code.clone()).unwrap_or_default(),
+                country: addr.and_then(|a| a.country.clone()).unwrap_or_else(|| "India".to_string()),
+                location_link: c.location_link.clone().unwrap_or_default(),
+                updated_at: None,
+            };
+            let _ = crate::db::operations::DbOperations::upsert_clinic_profile(&conn, &profile);
+        }
+    }
+
     let (selected_clinic_id, selected_role) = if clinics.is_empty() {
         ("".to_string(), "OWNER".to_string())
     } else {
@@ -467,9 +506,22 @@ pub async fn execute_refresh_session(
     session_mgr: &SessionManager,
     refresh_coordinator: &RefreshCoordinator,
 ) -> Result<DesktopLoginResult, String> {
+    execute_refresh_session_with_url(key_mgr, session_mgr, refresh_coordinator, None).await
+}
+
+pub async fn execute_refresh_session_with_url(
+    key_mgr: &KeyManager,
+    session_mgr: &SessionManager,
+    refresh_coordinator: &RefreshCoordinator,
+    backend_url_override: Option<&str>,
+) -> Result<DesktopLoginResult, String> {
+    let url_opt = backend_url_override.map(|s| s.to_string());
     refresh_coordinator
-        .execute_single_flight(|| async {
-            do_actual_refresh_session(key_mgr, session_mgr).await
+        .execute_single_flight(|| {
+            let u = url_opt.clone();
+            async move {
+                do_actual_refresh_session(key_mgr, session_mgr, u.as_deref()).await
+            }
         })
         .await
 }
@@ -477,6 +529,7 @@ pub async fn execute_refresh_session(
 async fn do_actual_refresh_session(
     key_mgr: &KeyManager,
     session_mgr: &SessionManager,
+    backend_url_override: Option<&str>,
 ) -> Result<DesktopLoginResult, String> {
     let persisted_rt = match key_mgr.load_refresh_token() {
         Ok(Some(rt)) if !rt.trim().is_empty() => rt,
@@ -484,7 +537,10 @@ async fn do_actual_refresh_session(
         Err(e) => return Err(format!("Failed to read refresh token: {e}")),
     };
 
-    let base_url = crate::config::get_trusted_backend_url()?;
+    let base_url = match backend_url_override {
+        Some(u) => u.trim_end_matches('/').to_string(),
+        None => crate::config::get_trusted_backend_url()?,
+    };
     let refresh_url = format!("{base_url}/auth/refresh");
 
     let client = crate::config::create_secure_http_client(Duration::from_secs(35))?;
@@ -617,6 +673,29 @@ pub async fn refresh_desktop_session(
     )
     .await?;
 
+    // Persist refreshed clinic profiles to local SQLite for durable offline access
+    {
+        let conn = state.db.get_connection();
+        for c in &result.clinics {
+            let addr = c.address.as_ref();
+            let profile = crate::db::schema::ClinicProfileRecord {
+                clinic_id: c.id.clone(),
+                name: c.name.clone(),
+                slug: c.slug.clone(),
+                phone: c.phone.clone().unwrap_or_default(),
+                email: c.email.clone().unwrap_or_default(),
+                street: addr.and_then(|a| a.street.clone()).unwrap_or_default(),
+                city: addr.and_then(|a| a.city.clone()).unwrap_or_default(),
+                state: addr.and_then(|a| a.state.clone()).unwrap_or_default(),
+                postal_code: addr.and_then(|a| a.postal_code.clone()).unwrap_or_default(),
+                country: addr.and_then(|a| a.country.clone()).unwrap_or_else(|| "India".to_string()),
+                location_link: c.location_link.clone().unwrap_or_default(),
+                updated_at: None,
+            };
+            let _ = crate::db::operations::DbOperations::upsert_clinic_profile(&conn, &profile);
+        }
+    }
+
     if !result.active_clinic_id.is_empty() {
         state.sync_handle.start(
             result.active_clinic_id.clone(),
@@ -684,9 +763,10 @@ pub struct CreateClinicDesktopInput {
     pub phone: String,
     pub email: String,
     pub address: ClinicAddressInput,
+    pub location_link: Option<String>,
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Deserialize, Serialize, Clone, Debug)]
 pub struct ClinicAddressInput {
     pub street: String,
     pub city: String,
@@ -704,6 +784,8 @@ pub struct CreatedClinicInfo {
     pub slug: Option<String>,
     pub phone: Option<String>,
     pub email: Option<String>,
+    pub address: Option<ClinicAddressData>,
+    pub location_link: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -773,6 +855,28 @@ pub async fn create_clinic_desktop(
         let _ = state.session_mgr.login(&token, clinic_id, "OWNER");
         let _ = state.key_mgr.save_active_clinic_id(clinic_id);
 
+        let profile = crate::db::schema::ClinicProfileRecord {
+            clinic_id: clinic_id.to_string(),
+            name: input.name.trim().to_string(),
+            slug: input.slug.unwrap_or_default().trim().to_string(),
+            phone: input.phone.trim().to_string(),
+            email: input.email.trim().to_string(),
+            street: input.address.street.trim().to_string(),
+            city: input.address.city.trim().to_string(),
+            state: input.address.state.trim().to_string(),
+            postal_code: input.address.postal_code.trim().to_string(),
+            country: input.address.country.trim().to_string(),
+            location_link: input.location_link.unwrap_or_default().trim().to_string(),
+            updated_at: None,
+        };
+
+        {
+            let conn = state.db.get_connection();
+            if let Err(e) = crate::db::operations::DbOperations::upsert_clinic_profile(&conn, &profile) {
+                log::warn!("Failed to persist created clinic profile to SQLite: {e}");
+            }
+        }
+
         state.sync_handle.start(
             clinic_id.to_string(),
             state.db.clone(),
@@ -783,6 +887,92 @@ pub async fn create_clinic_desktop(
     }
 
     Ok(clinic_result)
+}
+
+#[derive(Deserialize, Serialize, Clone, Debug)]
+pub struct SaveClinicProfileArgs {
+    pub clinic_id: String,
+    pub name: String,
+    pub slug: Option<String>,
+    pub phone: String,
+    pub email: String,
+    pub street: String,
+    pub city: String,
+    pub state: String,
+    pub postal_code: String,
+    pub country: String,
+    pub location_link: Option<String>,
+}
+
+#[tauri::command]
+pub fn get_clinic_profile(
+    state: State<'_, AppState>,
+    clinic_id: String,
+) -> Result<Option<crate::db::schema::ClinicProfileRecord>, String> {
+    let conn = state.db.get_connection();
+    crate::db::operations::DbOperations::get_clinic_profile(&conn, &clinic_id)
+        .map_err(|e| format!("Failed to read clinic profile: {e}"))
+}
+
+#[tauri::command]
+pub async fn save_clinic_profile(
+    state: State<'_, AppState>,
+    args: SaveClinicProfileArgs,
+) -> Result<crate::db::schema::ClinicProfileRecord, String> {
+    let session = state.session_mgr.get_session()
+        .ok_or_else(|| "No active authenticated session".to_string())?;
+
+    if !session.clinic_id.is_empty() && session.clinic_id != args.clinic_id {
+        return Err("Cross-clinic profile mutation rejected".to_string());
+    }
+
+    let record = crate::db::schema::ClinicProfileRecord {
+        clinic_id: args.clinic_id.clone(),
+        name: args.name.trim().to_string(),
+        slug: args.slug.unwrap_or_default().trim().to_string(),
+        phone: args.phone.trim().to_string(),
+        email: args.email.trim().to_string(),
+        street: args.street.trim().to_string(),
+        city: args.city.trim().to_string(),
+        state: args.state.trim().to_string(),
+        postal_code: args.postal_code.trim().to_string(),
+        country: args.country.trim().to_string(),
+        location_link: args.location_link.unwrap_or_default().trim().to_string(),
+        updated_at: None,
+    };
+
+    {
+        let conn = state.db.get_connection();
+        crate::db::operations::DbOperations::upsert_clinic_profile(&conn, &record)
+            .map_err(|e| format!("Failed to update local clinic profile: {e}"))?;
+    }
+
+    if let Some(token) = state.session_mgr.get_access_token() {
+        if let Ok(base_url) = crate::config::get_trusted_backend_url() {
+            if let Ok(client) = crate::config::create_secure_http_client(Duration::from_secs(10)) {
+                let url = format!("{base_url}/clinics/{}", args.clinic_id);
+                let _ = client
+                    .patch(&url)
+                    .bearer_auth(&token)
+                    .json(&serde_json::json!({
+                        "name": record.name,
+                        "phone": record.phone,
+                        "email": record.email,
+                        "address": {
+                            "street": record.street,
+                            "city": record.city,
+                            "state": record.state,
+                            "postalCode": record.postal_code,
+                            "country": record.country,
+                        }
+                    }))
+                    .send()
+                    .await;
+            }
+        }
+    }
+
+    Ok(record)
 }
 
 #[tauri::command]

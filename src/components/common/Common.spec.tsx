@@ -9,6 +9,7 @@ import {
   StatusPill,
   Modal,
   ConfirmDialog,
+  SearchableOptionSelect,
 } from "./index"
 import { User } from "lucide-react"
 
@@ -160,6 +161,48 @@ describe("Common Components", () => {
         />,
       )
       expect(html).toBe("")
+    })
+  })
+
+  describe("SearchableOptionSelect", () => {
+    it("renders combobox with accessible attributes, placeholder, and search icon", () => {
+      const html = renderToString(
+        <SearchableOptionSelect
+          id="test-med"
+          value="Paracetamol 500mg"
+          options={["Paracetamol 500mg", "Amoxicillin 250mg"]}
+          onChange={() => {}}
+          placeholder="Search CDCI medicine"
+          ariaLabel="Search and select medicine"
+          emptyMessage="No medicines found"
+        />,
+      )
+      expect(html).toContain('role="combobox"')
+      expect(html).toContain('aria-label="Search and select medicine"')
+      expect(html).toContain('aria-autocomplete="list"')
+      expect(html).toContain('aria-controls="searchable-options-test-med"')
+      expect(html).toContain('placeholder="Search CDCI medicine"')
+      expect(html).toContain('value="Paracetamol 500mg"')
+      expect(html).toContain("medicine-combobox")
+    })
+
+    it("renders custom SearchOptionItems with subtitles and badges", () => {
+      const html = renderToString(
+        <SearchableOptionSelect
+          id="strength-sel"
+          value="500 mg"
+          options={[
+            { value: "500 mg", label: "500 mg", badge: "Verified", subtitle: "Tablet" },
+            { value: "650 mg", label: "650 mg", badge: "Verified", subtitle: "Tablet" },
+          ]}
+          onChange={() => {}}
+          placeholder="Select strength"
+          ariaLabel="Select strength"
+          emptyMessage="No strengths"
+        />,
+      )
+      expect(html).toContain('id="strength-sel"')
+      expect(html).toContain('value="500 mg"')
     })
   })
 })

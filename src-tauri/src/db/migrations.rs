@@ -4,7 +4,7 @@ use crate::crypto::key_manager::DatabaseEncryptionKey;
 use crate::crypto::{encrypt_payload, CryptoError};
 use super::schema::{
     ClinicalData, PatientDemographics, CREATE_MIGRATIONS_TABLE, MIGRATION_V1_SQL, MIGRATION_V2_SQL,
-    MIGRATION_V3_SQL, MIGRATION_V4_SQL, MIGRATION_V5_SQL,
+    MIGRATION_V3_SQL, MIGRATION_V4_SQL, MIGRATION_V5_SQL, MIGRATION_V6_SQL,
 };
 
 #[derive(Error, Debug)]
@@ -21,7 +21,7 @@ pub enum MigrationError {
     #[error("Migration transaction failed: {0}")]
     TransactionError(String),
 
-    #[error("Unsupported schema version: database is at version {0}, but this client only supports up to version 5. Please update the application.")]
+    #[error("Unsupported schema version: database is at version {0}, but this client only supports up to version 6. Please update the application.")]
     UnsupportedSchemaVersion(i32),
 }
 
@@ -73,7 +73,7 @@ impl MigrationRunner {
             )
             .unwrap_or(0);
 
-        if max_version > 5 {
+        if max_version > 6 {
             return Err(MigrationError::UnsupportedSchemaVersion(max_version));
         }
 
@@ -156,6 +156,21 @@ impl MigrationRunner {
             log::info!("Applying local offline SQLite migration v5 (Catalogue offline cache)...");
             Self::migrate_to_v5(conn)?;
             log::info!("Migration v5 applied successfully. Local catalogue cache active.");
+        }
+
+        // 8. Check if v6 (Clinic profile persistence) has already been applied
+        let v6_applied: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = 6)",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or(false);
+
+        if !v6_applied {
+            log::info!("Applying local offline SQLite migration v6 (Clinic profile persistence)...");
+            Self::migrate_to_v6(conn)?;
+            log::info!("Migration v6 applied successfully. Local clinic profile active.");
         }
 
         Ok(())
@@ -558,6 +573,17 @@ impl MigrationRunner {
         tx.commit()?;
         Ok(())
     }
+
+    fn migrate_to_v6(conn: &mut Connection) -> Result<(), MigrationError> {
+        let tx = conn.transaction()?;
+        tx.execute_batch(MIGRATION_V6_SQL)?;
+        tx.execute(
+            "INSERT INTO schema_migrations (version, name, checksum) VALUES (?1, ?2, ?3)",
+            params![6, "clinic_profile_persistence_v6", "v6_cliniqo_clinic_profile_schema"],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -638,7 +664,7 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(max_version, 5);
+        assert_eq!(max_version, 6);
 
         let table_exists: bool = conn
             .query_row(
@@ -648,5 +674,14 @@ mod tests {
             )
             .unwrap();
         assert!(table_exists, "local_catalogue_cache_v1 table must exist after v5 migration");
+
+        let clinic_table_exists: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='local_clinic_profile')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(clinic_table_exists, "local_clinic_profile table must exist after v6 migration");
     }
 }

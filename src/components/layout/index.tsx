@@ -1,3 +1,4 @@
+import { useState, useEffect } from "react"
 import type { ReactNode } from "react"
 import { cn } from "../../utils/cn"
 import { IconButton, Logo } from "../common"
@@ -11,7 +12,10 @@ import {
   X,
 } from "lucide-react"
 import type { Page } from "../../types"
-import type { DesktopSessionContext } from "../../desktop/desktop-bridge"
+import {
+  type DesktopSessionContext,
+  getClinicProfile,
+} from "../../desktop/desktop-bridge"
 
 export function Sidebar({
   page,
@@ -32,6 +36,20 @@ export function Sidebar({
   conflictsCount?: number
   onOpenConflicts?: () => void
 }) {
+  const [clinicName, setClinicName] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (!desktopSession?.clinic_id) {
+      setClinicName(null)
+      return
+    }
+    getClinicProfile(desktopSession.clinic_id).then((profile) => {
+      if (profile?.name) {
+        setClinicName(profile.name)
+      }
+    })
+  }, [desktopSession?.clinic_id])
+
   const nav = [
     { id: "dashboard" as Page, label: "Dashboard", icon: LayoutDashboard },
     { id: "patients" as Page, label: "Patients", icon: Users },
@@ -112,9 +130,10 @@ export function Sidebar({
               {desktopSession?.doctor_name || "Doctor"}
             </strong>
             <small>
-              {desktopSession?.clinic_id
-                ? `Clinic: ${desktopSession.clinic_id}`
-                : "No active clinic"}
+              {clinicName ||
+                (desktopSession?.clinic_id
+                  ? `Clinic: ${desktopSession.clinic_id}`
+                  : "No active clinic")}
             </small>
           </button>
         </div>

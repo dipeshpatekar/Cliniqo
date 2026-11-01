@@ -48,8 +48,10 @@ describe('MailService', () => {
     mailService = new MailService(config);
     mailService.setTransporter(mockTransporter);
     mockTransporter.sendMail.mockRejectedValue(
-      new Error('ECONNREFUSED 127.0.0.1:25'),
+      new Error('Simulated SMTP mock transport network failure (expected negative test)'),
     );
+
+    const loggerSpy = vi.spyOn((mailService as any).logger, 'error').mockImplementation(() => {});
 
     const sent = await mailService.sendPasswordResetEmail(
       'doctor@clinic.com',
@@ -57,16 +59,25 @@ describe('MailService', () => {
     );
 
     expect(sent).toBe(false);
+    expect(loggerSpy).toHaveBeenCalledWith(
+      expect.stringContaining('Simulated SMTP mock transport network failure'),
+    );
+    loggerSpy.mockRestore();
   });
 
   it('should skip email delivery safely when SMTP is unconfigured', async () => {
     const config = new ConfigService({});
     mailService = new MailService(config);
+    const loggerWarnSpy = vi.spyOn((mailService as any).logger, 'warn').mockImplementation(() => {});
 
     const sent = await mailService.sendPasswordResetEmail(
       'doctor@clinic.com',
       'token-abc',
     );
     expect(sent).toBe(false);
+    expect(loggerWarnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('SMTP is not configured'),
+    );
+    loggerWarnSpy.mockRestore();
   });
 });

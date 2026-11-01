@@ -43,11 +43,13 @@ const SENSITIVE_KEYS = new Set([
 
 const MONGODB_URI_REGEX = /mongodb(\+srv)?:\/\/[^\s"',;)]+/gi;
 const PASSWORD_PARAM_REGEX = /(password|pwd|secret)=([^&\s]+)/gi;
+const PASSWORD_LEAK_REGEX = /(password|secret|token|pwd)(?:\s*(?:leak|is|:|value)[\s:]*)([^\s"',;)]+)/gi;
 
 export function redactString(str: string): string {
   return str
     .replace(MONGODB_URI_REGEX, '[REDACTED_MONGODB_URI]')
-    .replace(PASSWORD_PARAM_REGEX, '$1=[REDACTED]');
+    .replace(PASSWORD_PARAM_REGEX, '$1=[REDACTED]')
+    .replace(PASSWORD_LEAK_REGEX, '$1: [REDACTED]');
 }
 
 export function redactSensitiveData(data: unknown): unknown {

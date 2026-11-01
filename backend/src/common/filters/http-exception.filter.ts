@@ -7,6 +7,7 @@ import {
   Logger,
 } from '@nestjs/common';
 import type { Request, Response } from 'express';
+import { redactString } from '../logging/app-logger.service.js';
 
 export interface ErrorResponsePayload {
   statusCode: number;
@@ -44,11 +45,13 @@ export class HttpExceptionFilter implements ExceptionFilter {
         errorName = body.error || exception.name;
       }
     } else {
-      // Unhandled internal error: log full error internally, but NEVER leak stack trace to client
+      // Unhandled internal error: log sanitized error internally, and NEVER leak stack trace or secrets to client
       const err = exception as Error;
+      const sanitizedMessage = redactString(err?.message || '');
+      const sanitizedStack = err?.stack ? redactString(err.stack) : undefined;
       this.logger.error(
-        `Unhandled exception on ${request?.method} ${request?.url}: ${err?.message}`,
-        err?.stack,
+        `Unhandled exception on ${request?.method} ${request?.url}: ${sanitizedMessage}`,
+        sanitizedStack,
       );
       message = 'An unexpected internal error occurred';
     }

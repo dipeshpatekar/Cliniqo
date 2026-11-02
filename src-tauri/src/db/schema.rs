@@ -321,6 +321,11 @@ CREATE TABLE IF NOT EXISTS local_clinic_profile (
 );
 "#;
 
+/// Migration V7: CDCI catalogue ProductMaster standalone backfill & reconciliation (104,367 records).
+pub const MIGRATION_V7_SQL: &str = r#"
+CREATE INDEX IF NOT EXISTS idx_cat_cache_product ON local_catalogue_cache_v1(product_name);
+"#;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ClinicProfileRecord {
     pub clinic_id: String,

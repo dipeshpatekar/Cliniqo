@@ -917,21 +917,15 @@ export async function searchCatalogue(
 
   // In desktop mode, SQLite cache is high-speed, local, encrypted, and offline-first
   if (isDesktop) {
-    try {
-      const localItems = await searchLocalCatalogueCache(query, limit, formulation)
-      if (localItems && localItems.length > 0) {
-        return {
-          items: localItems,
-          total: localItems.length,
-          page: 1,
-          limit,
-          totalPages: Math.ceil(localItems.length / limit) || 1,
-          attribution: "CDCI / NRCeS India (CC BY 4.0) — Local Offline Cache",
-          isOfflineCache: true,
-        }
-      }
-    } catch {
-      // Fall through to online search if local query failed
+    const localItems = await searchLocalCatalogueCache(query, limit, formulation)
+    return {
+      items: localItems,
+      total: localItems.length,
+      page: 1,
+      limit,
+      totalPages: Math.ceil(localItems.length / limit) || 1,
+      attribution: "CDCI / NRCeS India (CC BY 4.0) — Local Offline Cache",
+      isOfflineCache: localItems.length > 0,
     }
   }
 
@@ -997,15 +991,17 @@ export async function getCatalogueStrengths(
         medicineName,
         formulation,
       )
-      if (localStrengths && localStrengths.length > 0) {
-        return {
-          strengths: localStrengths,
-          isSingleMatch: localStrengths.length === 1,
-          isOfflineCache: true,
-        }
+      return {
+        strengths: localStrengths || [],
+        isSingleMatch: (localStrengths?.length || 0) === 1,
+        isOfflineCache: true,
       }
     } catch {
-      // Fall through to online search
+      return {
+        strengths: [],
+        isSingleMatch: false,
+        isOfflineCache: true,
+      }
     }
   }
 
@@ -1076,6 +1072,10 @@ export async function getCatalogueSyncStatus(): Promise<CatalogueSyncStatus | nu
 export async function startCatalogueSync(): Promise<CatalogueSyncStatus | null> {
   if (!isTauriDesktop()) return null
   try {
+    const status = await getCatalogueSyncStatus()
+    if (status && status.isReady && status.downloadedCount >= 104367) {
+      return status
+    }
     return await invokeTauri<CatalogueSyncStatus>("start_catalogue_sync")
   } catch {
     return null
@@ -1164,9 +1164,14 @@ export async function getClinicProfile(
 
 export async function saveClinicProfile(
   args: Omit<ClinicProfile, "updated_at">,
-): Promise<ClinicProfile> {
+): Promise<ClinicProfile | null> {
   if (isTauriDesktop()) {
-    return await invokeTauri<ClinicProfile>("save_clinic_profile", { args })
+    try {
+      return await invokeTauri<ClinicProfile>("save_clinic_profile", { args })
+    } catch (e) {
+      console.warn("Failed to persist clinic profile to desktop SQLite:", e)
+      return null
+    }
   }
 
   const saved: ClinicProfile = {

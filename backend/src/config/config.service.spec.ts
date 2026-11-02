@@ -9,7 +9,7 @@ describe('ConfigService', () => {
     expect(service.isProduction).toBe(false);
     expect(service.isDevelopment).toBe(true);
     expect(service.corsOrigin).toBe('http://localhost:8443');
-    expect(service.mongodbDbName).toBe('cliniqo_prod');
+    expect(service.mongodbDbName).toBe('cliniqo_dev');
     expect(service.mongodbUri).toBeUndefined();
   });
 
@@ -76,6 +76,7 @@ describe('ConfigService', () => {
 
     it('should succeed and return config for valid mongodb+srv:// Atlas URI', () => {
       const service = new ConfigService({
+        NODE_ENV: 'production',
         MONGODB_URI: 'mongodb+srv://user:secret@cluster0.abcde.mongodb.net',
         MONGODB_DB_NAME: 'cliniqo_prod',
       });
@@ -88,6 +89,7 @@ describe('ConfigService', () => {
 
     it('should throw an error when URI path database conflicts with MONGODB_DB_NAME', () => {
       const service = new ConfigService({
+        NODE_ENV: 'development',
         MONGODB_URI: 'mongodb+srv://user:secret@cluster0.abcde.mongodb.net/database_one',
         MONGODB_DB_NAME: 'database_two',
       });
@@ -103,8 +105,59 @@ describe('ConfigService', () => {
         MONGODB_DB_NAME: 'cliniqo',
       });
       expect(() => service.validateDatabaseConfig()).toThrow(
-        '"cliniqo" is not a valid production database. Authoritative production database is "cliniqo_prod".',
+        'Database "cliniqo" is not permitted in production mode. Authoritative production database is strictly "cliniqo_prod".',
       );
+    });
+
+    it('should fail closed when development mode attempts to select production database "cliniqo_prod"', () => {
+      const service = new ConfigService({
+        NODE_ENV: 'development',
+        MONGODB_URI: 'mongodb+srv://user:secret@cluster0.abcde.mongodb.net',
+        MONGODB_DB_NAME: 'cliniqo_prod',
+      });
+      expect(() => service.validateDatabaseConfig()).toThrow(
+        'Production database "cliniqo_prod" cannot be selected in development mode. Development must use "cliniqo_dev" or an explicitly configured local development database.',
+      );
+    });
+
+    it('should fail closed when production mode attempts to select development database "cliniqo_dev"', () => {
+      const service = new ConfigService({
+        NODE_ENV: 'production',
+        MONGODB_URI: 'mongodb+srv://user:secret@cluster0.abcde.mongodb.net',
+        MONGODB_DB_NAME: 'cliniqo_dev',
+      });
+      expect(() => service.validateDatabaseConfig()).toThrow(
+        'Database "cliniqo_dev" is not permitted in production mode. Authoritative production database is strictly "cliniqo_prod".',
+      );
+    });
+
+    it('should fail closed when development mode selects an unknown or unpermitted database', () => {
+      const service = new ConfigService({
+        NODE_ENV: 'development',
+        MONGODB_URI: 'mongodb://localhost:27017',
+        MONGODB_DB_NAME: 'random_db',
+      });
+      expect(() => service.validateDatabaseConfig()).toThrow(
+        'Database "random_db" is not permitted in development mode. Allowed databases are "cliniqo_dev", "cliniqo_test", or local development databases.',
+      );
+    });
+
+    it('should default safely to cliniqo_prod in production mode when MONGODB_DB_NAME is omitted', () => {
+      const service = new ConfigService({
+        NODE_ENV: 'production',
+        MONGODB_URI: 'mongodb+srv://user:secret@cluster0.abcde.mongodb.net',
+      });
+      const dbConfig = service.validateDatabaseConfig();
+      expect(dbConfig.dbName).toBe('cliniqo_prod');
+    });
+
+    it('should default safely to cliniqo_dev in development mode when MONGODB_DB_NAME is omitted', () => {
+      const service = new ConfigService({
+        NODE_ENV: 'development',
+        MONGODB_URI: 'mongodb://localhost:27017',
+      });
+      const dbConfig = service.validateDatabaseConfig();
+      expect(dbConfig.dbName).toBe('cliniqo_dev');
     });
 
     it('should not leak passwords or credentials in error messages for invalid inputs', () => {

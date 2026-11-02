@@ -19,7 +19,33 @@ async function main() {
     throw new Error('MONGODB_URI not found in backend/.env');
   }
   const uri = uriMatch[1].trim();
-  const dbName = 'cliniqo_prod';
+
+  // Explicit target database resolution with safety guards against accidental production mutation
+  const args = process.argv.slice(2);
+  const dbArg = args.find((a) => a.startsWith('--db='))?.split('=')[1];
+  const isProdConfirmed = args.includes('--confirm-prod');
+
+  const envDbMatch = envContent.match(/MONGODB_DB_NAME=(.+)/);
+  const envDb = envDbMatch ? envDbMatch[1].trim() : null;
+
+  // Explicit database selection only: do not infer production from default!
+  const targetDb = dbArg || process.env.TARGET_DB || envDb;
+  if (!targetDb) {
+    throw new Error(
+      'Database configuration error: Explicit database selection is required. Specify --db=cliniqo_dev or --db=cliniqo_prod (with --confirm-prod).',
+    );
+  }
+  const dbName = targetDb.trim();
+
+  if (!['cliniqo_dev', 'cliniqo_prod'].includes(dbName)) {
+    throw new Error(`Invalid target database: "${dbName}". Must be "cliniqo_dev" or "cliniqo_prod".`);
+  }
+
+  if (dbName === 'cliniqo_prod' && !isProdConfirmed && !process.env.CONFIRM_PROD) {
+    throw new Error(
+      'SAFETY LOCK: Target database is "cliniqo_prod". To import into production, you must supply the explicit flag "--confirm-prod".',
+    );
+  }
 
   console.log(`Connecting to MongoDB Atlas database [${dbName}]...`);
   const conn = await mongoose.connect(uri, {

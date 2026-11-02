@@ -121,15 +121,16 @@ impl CatalogueSyncManager {
             .unwrap_or(None);
 
         let is_ready = total_items > 0 && stored_status == "COMPLETED";
+        let is_reconciled = crate::db::catalogue_seed::is_catalogue_reconciled(&conn);
 
-        // If local cache has rows (> 100k) from flat file seed or previous complete sync, mark ready
-        let effective_status = if is_ready || total_items >= 100_000 {
+        // If local cache is verified and reconciled to expected 104,367 records, mark ready
+        let effective_status = if is_reconciled || (is_ready && total_items >= crate::db::catalogue_seed::EXPECTED_TOTAL_RECORDS as i64) {
             "COMPLETED".to_string()
         } else {
             stored_status
         };
 
-        let effective_ready = is_ready || total_items >= 100_000;
+        let effective_ready = is_reconciled || (is_ready && total_items >= crate::db::catalogue_seed::EXPECTED_TOTAL_RECORDS as i64);
 
         let initial_status = CatalogueSyncStatus {
             status: effective_status,
@@ -150,12 +151,13 @@ impl CatalogueSyncManager {
     pub async fn get_status(&self) -> CatalogueSyncStatus {
         let current = self.status.read().await.clone();
         if current.status == "IDLE" || current.status == "COMPLETED" {
-            // Check fresh row count from SQLite
+            // Check fresh row count and reconciliation status from SQLite
             let conn = self.db.get_connection();
             let total_items: i64 = conn
                 .query_row("SELECT COUNT(*) FROM local_catalogue_cache_v1", [], |r| r.get(0))
                 .unwrap_or(0);
-            if total_items >= 100_000 && !current.is_ready {
+            let is_reconciled = crate::db::catalogue_seed::is_catalogue_reconciled(&conn);
+            if (is_reconciled || total_items >= crate::db::catalogue_seed::EXPECTED_TOTAL_RECORDS as i64) && !current.is_ready {
                 let mut updated = current;
                 updated.downloaded_count = total_items as usize;
                 updated.total_count = total_items as usize;

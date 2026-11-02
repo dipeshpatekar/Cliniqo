@@ -1444,6 +1444,12 @@ pub async fn search_catalogue_cache(
         return Ok(local_results);
     }
 
+    // If local offline catalogue is fully seeded and ready, do not fallback to online search
+    let sync_status = state.catalogue_sync.get_status().await;
+    if sync_status.is_ready && sync_status.downloaded_count >= crate::db::catalogue_seed::EXPECTED_TOTAL_RECORDS {
+        return Ok(local_results);
+    }
+
     // Fallback: if local cache has 0 matches and access token exists, query backend directly
     if let (Some(token), Ok(base_url)) = (state.session_mgr.get_access_token(), crate::config::get_trusted_backend_url()) {
         if let Ok(client) = crate::config::create_secure_http_client(Duration::from_secs(5)) {

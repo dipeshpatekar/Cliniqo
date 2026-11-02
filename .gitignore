@@ -65,6 +65,8 @@ crash_dumps/
 .mise.local.toml
 *.tsbuildinfo
 
-# Medicine Catalogue Raw Data (CDCI)
+# Medicine Catalogue Raw Data (CDCI) & Backups
 data/cdci/*.zip
 data/cdci/*.tsv
+backend/data/catalogue_backup/
+*.jsonl

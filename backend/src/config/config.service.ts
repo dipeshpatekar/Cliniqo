@@ -86,12 +86,14 @@ export class ConfigService {
       }
     }
 
+    const nodeEnv = env.NODE_ENV || 'development';
     this.config = {
-      nodeEnv: env.NODE_ENV || 'development',
+      nodeEnv,
       port: parseInt(env.PORT || '3000', 10),
       corsOrigin: env.CORS_ORIGIN || 'http://localhost:8443',
       mongodbUri: env.MONGODB_URI,
-      mongodbDbName: env.MONGODB_DB_NAME || 'cliniqo_prod',
+      mongodbDbName:
+        env.MONGODB_DB_NAME || (nodeEnv === 'production' ? 'cliniqo_prod' : 'cliniqo_dev'),
       jwtAccessSecret: env.JWT_ACCESS_SECRET,
       jwtRefreshSecret: env.JWT_REFRESH_SECRET,
       jwtAccessExpiresIn: env.JWT_ACCESS_EXPIRES_IN || '15m',
@@ -290,11 +292,30 @@ export class ConfigService {
       );
     }
 
-    // Fail-safe: prevent accidental unpermitted 'cliniqo' database in production
-    if (this.isProduction && dbName === 'cliniqo') {
-      throw new Error(
-        'Database configuration error: "cliniqo" is not a valid production database. Authoritative production database is "cliniqo_prod".',
-      );
+    // Fail-safe: Strict environment database isolation
+    if (this.isProduction) {
+      if (dbName !== 'cliniqo_prod') {
+        throw new Error(
+          `Database configuration error: Database "${dbName}" is not permitted in production mode. Authoritative production database is strictly "cliniqo_prod".`,
+        );
+      }
+    } else if (this.isDevelopment) {
+      if (dbName === 'cliniqo_prod') {
+        throw new Error(
+          'Database configuration error: Production database "cliniqo_prod" cannot be selected in development mode. Development must use "cliniqo_dev" or an explicitly configured local development database.',
+        );
+      }
+      const isPermittedDevDb =
+        dbName === 'cliniqo_dev' ||
+        dbName === 'cliniqo_test' ||
+        dbName.startsWith('cliniqo_dev_') ||
+        dbName.startsWith('cliniqo_test_') ||
+        dbName.startsWith('cliniqo_local_');
+      if (!isPermittedDevDb) {
+        throw new Error(
+          `Database configuration error: Database "${dbName}" is not permitted in development mode. Allowed databases are "cliniqo_dev", "cliniqo_test", or local development databases.`,
+        );
+      }
     }
 
     return { uri: trimmedUri, dbName };

@@ -4,7 +4,7 @@ use crate::crypto::key_manager::DatabaseEncryptionKey;
 use crate::crypto::{encrypt_payload, CryptoError};
 use super::schema::{
     ClinicalData, PatientDemographics, CREATE_MIGRATIONS_TABLE, MIGRATION_V1_SQL, MIGRATION_V2_SQL,
-    MIGRATION_V3_SQL, MIGRATION_V4_SQL, MIGRATION_V5_SQL, MIGRATION_V6_SQL,
+    MIGRATION_V3_SQL, MIGRATION_V4_SQL, MIGRATION_V5_SQL, MIGRATION_V6_SQL, MIGRATION_V7_SQL,
 };
 
 #[derive(Error, Debug)]
@@ -21,7 +21,7 @@ pub enum MigrationError {
     #[error("Migration transaction failed: {0}")]
     TransactionError(String),
 
-    #[error("Unsupported schema version: database is at version {0}, but this client only supports up to version 6. Please update the application.")]
+    #[error("Unsupported schema version: database is at version {0}, but this client only supports up to version 7. Please update the application.")]
     UnsupportedSchemaVersion(i32),
 }
 
@@ -73,7 +73,7 @@ impl MigrationRunner {
             )
             .unwrap_or(0);
 
-        if max_version > 6 {
+        if max_version > 7 {
             return Err(MigrationError::UnsupportedSchemaVersion(max_version));
         }
 
@@ -171,6 +171,21 @@ impl MigrationRunner {
             log::info!("Applying local offline SQLite migration v6 (Clinic profile persistence)...");
             Self::migrate_to_v6(conn)?;
             log::info!("Migration v6 applied successfully. Local clinic profile active.");
+        }
+
+        // 9. Check if v7 (CDCI ProductMaster 104,367 backfill & reconciliation) has already been applied
+        let v7_applied: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = 7)",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or(false);
+
+        if !v7_applied {
+            log::info!("Applying local offline SQLite migration v7 (CDCI ProductMaster 104,367 backfill & reconciliation)...");
+            Self::migrate_to_v7(conn)?;
+            log::info!("Migration v7 applied successfully. Catalogue reconciliation complete.");
         }
 
         Ok(())
@@ -584,6 +599,24 @@ impl MigrationRunner {
         tx.commit()?;
         Ok(())
     }
+
+    fn migrate_to_v7(conn: &mut Connection) -> Result<(), MigrationError> {
+        let tx = conn.transaction()?;
+        tx.execute_batch(MIGRATION_V7_SQL)?;
+        tx.execute(
+            "INSERT INTO schema_migrations (version, name, checksum) VALUES (?1, ?2, ?3)",
+            params![7, "catalogue_product_master_backfill", "v7_cdci_104367_reconciled"],
+        )?;
+        tx.commit()?;
+
+        // Perform backfill/reconciliation of the local catalogue cache in app runtime
+        #[cfg(not(test))]
+        if let Err(e) = crate::db::catalogue_seed::reconcile_and_seed_local_catalogue(conn, None) {
+            log::warn!("Migration v7 catalogue reconciliation note: {e}");
+        }
+
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -664,7 +697,16 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(max_version, 6);
+        assert_eq!(max_version, 7);
+
+        let v7_exists: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = 7)",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(v7_exists, "Migration v7 must exist after running migrations");
 
         let table_exists: bool = conn
             .query_row(

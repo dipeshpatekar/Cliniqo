@@ -64,9 +64,9 @@ impl DatabaseManager {
         // 5. Recovery check: reset any lingering in-flight outbox items from ungraceful shutdown
         DbOperations::recover_in_flight_jobs(&mut conn)?;
 
-        // 6. Seed offline reference medicine catalogue if empty (in release/app runtime)
+        // 6. Reconcile offline reference medicine catalogue (in release/app runtime)
         #[cfg(not(test))]
-        if let Err(e) = catalogue_seed::seed_local_catalogue_if_empty(&mut conn, None) {
+        if let Err(e) = catalogue_seed::reconcile_and_seed_local_catalogue(&mut conn, None) {
             log::warn!("Offline catalogue auto-seed note: {e}");
         }
 

@@ -331,6 +331,59 @@ export class SyncService {
   // PATIENT MUTATION HANDLER
   // -------------------------------------------------------------------------
 
+  /**
+   * Normalizes raw gender input into the canonical PatientGender enum.
+   * Maps legacy, case-insensitive, and frontend values ('Male', 'Female', 'Other', 'Non-binary', etc.)
+   * safely to PatientGender. Rejects invalid or unknown inputs with an explicit validation error.
+   */
+  public normalizePatientGender(raw: unknown): {
+    gender: PatientGender | null;
+    error?: string;
+  } {
+    if (
+      raw === undefined ||
+      raw === null ||
+      (typeof raw === 'string' && raw.trim() === '')
+    ) {
+      return {
+        gender: null,
+        error:
+          'Patient validation failed: gender: value is required and cannot be empty.',
+      };
+    }
+
+    if (typeof raw !== 'string') {
+      return {
+        gender: null,
+        error: `Patient validation failed: gender: ${typeof raw} is not a valid gender string.`,
+      };
+    }
+
+    const trimmed = raw.trim();
+    const upper = trimmed.toUpperCase();
+
+    if (upper === 'MALE' || upper === 'M') {
+      return { gender: PatientGender.MALE };
+    }
+    if (upper === 'FEMALE' || upper === 'F') {
+      return { gender: PatientGender.FEMALE };
+    }
+    if (
+      upper === 'OTHER' ||
+      upper === 'O' ||
+      upper === 'NON-BINARY' ||
+      upper === 'NONBINARY' ||
+      upper === 'PREFER NOT TO SAY'
+    ) {
+      return { gender: PatientGender.OTHER };
+    }
+
+    return {
+      gender: null,
+      error: `Patient validation failed: gender: ${trimmed} is not a valid enum value. Must be MALE, FEMALE, or OTHER.`,
+    };
+  }
+
   private async applyPatientMutation(
     clinicId: Types.ObjectId,
     doctorId: Types.ObjectId,
@@ -340,6 +393,18 @@ export class SyncService {
     if (mutation.action === SyncActionType.CREATE) {
       const patientCode =
         mutation.payload.patientCode || mutation.payload.patientId;
+
+      // Normalization and validation for gender at the sync boundary
+      const genderNorm = this.normalizePatientGender(mutation.payload.gender);
+      if (genderNorm.error || !genderNorm.gender) {
+        return {
+          outboxId: mutation.outboxId,
+          status: 'REJECTED',
+          entityType: mutation.entityType,
+          entityId: mutation.entityId,
+          error: genderNorm.error || 'Invalid gender value.',
+        };
+      }
 
       let canonicalPatientCode = patientCode;
       if (!canonicalPatientCode) {
@@ -393,7 +458,7 @@ export class SyncService {
               .join('')
               .toUpperCase(),
             age: mutation.payload.age ?? 0,
-            gender: mutation.payload.gender || PatientGender.OTHER,
+            gender: genderNorm.gender,
             phone,
             normalizedPhone,
             dateOfBirth: mutation.payload.dateOfBirth
@@ -530,6 +595,19 @@ export class SyncService {
         patient.normalizedPhone = mutation.payload.phone.replace(/\D/g, '');
       }
       if (mutation.payload.age !== undefined) patient.age = mutation.payload.age;
+      if (mutation.payload.gender !== undefined) {
+        const genderNorm = this.normalizePatientGender(mutation.payload.gender);
+        if (genderNorm.error || !genderNorm.gender) {
+          return {
+            outboxId: mutation.outboxId,
+            status: 'REJECTED',
+            entityType: mutation.entityType,
+            entityId: mutation.entityId,
+            error: genderNorm.error || 'Invalid gender value.',
+          };
+        }
+        patient.gender = genderNorm.gender;
+      }
       if (mutation.payload.allergies) patient.allergies = mutation.payload.allergies;
       if (mutation.payload.conditions) patient.conditions = mutation.payload.conditions;
 

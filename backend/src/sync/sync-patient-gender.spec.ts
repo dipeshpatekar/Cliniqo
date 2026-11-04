@@ -1,24 +1,58 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+import type { Mock } from 'vitest';
 import { Types } from 'mongoose';
+import type { Model, Connection } from 'mongoose';
 import { SyncService } from './sync.service.js';
 import { SyncPushDto } from './dto/sync-push.dto.js';
 import { SyncActionType, SyncEntityType } from './schemas/sync-change-feed.schema.js';
 import { PatientGender } from '../patient/schemas/patient.schema.js';
+import type { PatientDocument } from '../patient/schemas/patient.schema.js';
+import type { SyncChangeFeedDocument } from './schemas/sync-change-feed.schema.js';
+import type { ClinicSyncCounterDocument } from './schemas/clinic-sync-counter.schema.js';
+import type { SyncConflictDocument } from './schemas/sync-conflict.schema.js';
+import type { IdempotencyRecordDocument } from '../common/schemas/idempotency-record.schema.js';
+import type { ConsultationDocument } from '../consultation/schemas/consultation.schema.js';
+import type { PrescriptionDocument } from '../prescription/schemas/prescription.schema.js';
+import type { PrescriptionRevisionDocument } from '../prescription/schemas/prescription-revision.schema.js';
+import type { ClinicSequenceCounterDocument } from '../patient/schemas/clinic-sequence-counter.schema.js';
+import type { InvoiceDocument } from '../billing/schemas/invoice.schema.js';
+
+interface MockPatientDocument {
+  _id: Types.ObjectId;
+  clinicId?: Types.ObjectId;
+  patientId?: string;
+  name?: string;
+  gender?: PatientGender;
+  age?: number;
+  phone?: string;
+  normalizedPhone?: string;
+  version?: number;
+  save: Mock<() => Promise<unknown>>;
+  toObject: () => Record<string, unknown>;
+  [key: string]: unknown;
+}
+
+interface MockPatientModel {
+  (doc?: Record<string, unknown>): MockPatientDocument;
+  new (doc?: Record<string, unknown>): MockPatientDocument;
+  create: Mock<(docs: Record<string, unknown>[], options?: unknown) => Promise<MockPatientDocument[]>>;
+  findOne: Mock<(filter: { _id?: Types.ObjectId; clinicId?: Types.ObjectId; patientId?: string }, projection?: unknown, options?: unknown) => Promise<MockPatientDocument | null>>;
+}
 
 describe('SyncService Patient Gender Normalization & Sync Boundary', () => {
   let service: SyncService;
 
-  let mockConnection: any;
-  let mockChangeFeedModel: any;
-  let mockCounterModel: any;
-  let mockConflictModel: any;
-  let mockIdempotencyModel: any;
-  let mockPatientModel: any;
-  let mockConsultationModel: any;
-  let mockPrescriptionModel: any;
-  let mockRevisionModel: any;
-  let mockSeqCounterModel: any;
-  let mockInvoiceModel: any;
+  let mockConnection: unknown;
+  let mockChangeFeedModel: unknown;
+  let mockCounterModel: unknown;
+  let mockConflictModel: unknown;
+  let mockIdempotencyModel: unknown;
+  let mockPatientModel: MockPatientModel;
+  let mockConsultationModel: unknown;
+  let mockPrescriptionModel: unknown;
+  let mockRevisionModel: unknown;
+  let mockSeqCounterModel: unknown;
+  let mockInvoiceModel: unknown;
 
   const clinicId = new Types.ObjectId('672bb0000000000000000001');
   const doctorId = new Types.ObjectId('672aa0000000000000000001');
@@ -56,21 +90,31 @@ describe('SyncService Patient Gender Normalization & Sync Boundary', () => {
       updateOne: vi.fn().mockResolvedValue({}),
     };
 
-    const MockPatientModel = vi.fn().mockImplementation(function (this: any, doc: any) {
-      Object.assign(this, doc);
-      this._id = doc._id || new Types.ObjectId();
-      this.version = doc.version || 1;
+    const mockModelFn = vi.fn().mockImplementation(function (
+      this: Partial<MockPatientDocument>,
+      doc?: Record<string, unknown>,
+    ) {
+      if (doc) {
+        Object.assign(this, doc);
+      }
+      this._id = (doc?._id as Types.ObjectId) ?? new Types.ObjectId();
+      this.version = (doc?.version as number) ?? 1;
       this.save = vi.fn().mockResolvedValue(this);
       this.toObject = () => ({ ...this });
     });
 
-    MockPatientModel.create = vi.fn().mockImplementation((docs: any[]) => {
+    const MockPatientModel: MockPatientModel = Object.assign(mockModelFn, {
+      create: vi.fn(),
+      findOne: vi.fn(),
+    });
+
+    MockPatientModel.create = vi.fn().mockImplementation((docs: Record<string, unknown>[]) => {
       return Promise.resolve(
         docs.map((d) => {
-          const instance: any = {
+          const instance: MockPatientDocument = {
             ...d,
-            _id: new Types.ObjectId(),
-            version: d.version || 1,
+            _id: (d._id as Types.ObjectId) ?? new Types.ObjectId(),
+            version: (d.version as number) ?? 1,
             save: vi.fn().mockResolvedValue(d),
             toObject: () => ({ ...d, _id: instance._id }),
           };
@@ -79,9 +123,9 @@ describe('SyncService Patient Gender Normalization & Sync Boundary', () => {
       );
     });
 
-    MockPatientModel.findOne = vi.fn().mockImplementation((filter: any) => {
+    MockPatientModel.findOne = vi.fn().mockImplementation((filter: { _id?: Types.ObjectId }) => {
       if (filter._id && filter._id.equals(patientId)) {
-        const instance: any = {
+        const instance: MockPatientDocument = {
           _id: patientId,
           clinicId,
           patientId: 'P-1048',
@@ -107,7 +151,7 @@ describe('SyncService Patient Gender Normalization & Sync Boundary', () => {
       return Promise.resolve(null);
     });
 
-    mockPatientModel = MockPatientModel as any;
+    mockPatientModel = MockPatientModel;
 
     mockConsultationModel = { findOne: vi.fn().mockResolvedValue(null) };
     mockPrescriptionModel = { findOne: vi.fn().mockResolvedValue(null) };
@@ -118,17 +162,17 @@ describe('SyncService Patient Gender Normalization & Sync Boundary', () => {
     };
 
     service = new SyncService(
-      mockConnection,
-      mockChangeFeedModel,
-      mockCounterModel,
-      mockConflictModel,
-      mockIdempotencyModel,
-      mockPatientModel,
-      mockConsultationModel,
-      mockPrescriptionModel,
-      mockRevisionModel,
-      mockSeqCounterModel,
-      mockInvoiceModel,
+      mockConnection as unknown as Connection,
+      mockChangeFeedModel as unknown as Model<SyncChangeFeedDocument>,
+      mockCounterModel as unknown as Model<ClinicSyncCounterDocument>,
+      mockConflictModel as unknown as Model<SyncConflictDocument>,
+      mockIdempotencyModel as unknown as Model<IdempotencyRecordDocument>,
+      mockPatientModel as unknown as Model<PatientDocument>,
+      mockConsultationModel as unknown as Model<ConsultationDocument>,
+      mockPrescriptionModel as unknown as Model<PrescriptionDocument>,
+      mockRevisionModel as unknown as Model<PrescriptionRevisionDocument>,
+      mockSeqCounterModel as unknown as Model<ClinicSequenceCounterDocument>,
+      mockInvoiceModel as unknown as Model<InvoiceDocument>,
     );
   });
 

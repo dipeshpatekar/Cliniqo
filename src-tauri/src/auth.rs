@@ -185,6 +185,10 @@ pub struct JwtPayload {
     pub email: String,
     #[serde(rename = "fullName")]
     pub full_name: Option<String>,
+    pub phone: Option<String>,
+    pub qualification: Option<String>,
+    #[serde(rename = "registrationNumber")]
+    pub registration_number: Option<String>,
     #[serde(rename = "type")]
     pub token_type: Option<String>,
     pub iss: Option<String>,
@@ -640,6 +644,9 @@ gGFyMNydps1kewu3VAWSkgUH
             sub: sub.to_string(),
             email: email.to_string(),
             full_name: Some("Dr. Test".to_string()),
+            phone: None,
+            qualification: None,
+            registration_number: None,
             token_type: Some(token_type.unwrap_or("access").to_string()),
             iss: Some(iss.unwrap_or("cliniqo-backend").to_string()),
             aud: Some(aud.unwrap_or("cliniqo-client").to_string()),
@@ -667,6 +674,9 @@ gGFyMNydps1kewu3VAWSkgUH
             sub: sub.to_string(),
             email: email.to_string(),
             full_name: full_name.map(|s| s.to_string()),
+            phone: None,
+            qualification: None,
+            registration_number: None,
             token_type: Some("access".to_string()),
             iss: Some("cliniqo-backend".to_string()),
             aud: Some("cliniqo-client".to_string()),
@@ -1157,6 +1167,9 @@ T3hekm0XS7FminNIflwhv/xFRbGtN9RdFGWbOZx87J1yecSiqPhBx0+19bu/0M1A
             sub: "doc_123".to_string(),
             email: "doc@clinic.com".to_string(),
             full_name: Some("Dr. Test".to_string()),
+            phone: None,
+            qualification: None,
+            registration_number: None,
             token_type: None, // Missing token_type claim
             iss: Some("cliniqo-backend".to_string()),
             aud: Some("cliniqo-client".to_string()),

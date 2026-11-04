@@ -5,8 +5,11 @@ import { Button, Field, TextInput, SelectInput } from "../common"
 import {
   type DesktopSessionContext,
   type ClinicProfile,
+  type DoctorProfile,
   getClinicProfile,
   saveClinicProfile,
+  getDoctorProfile,
+  saveDoctorProfile,
 } from "../../desktop/desktop-bridge"
 
 export interface SettingsProfileProps {
@@ -52,6 +55,65 @@ export function SettingsProfile({
     desktopSession?.doctor_email || "",
   )
   const [locationLink, setLocationLink] = useState("")
+
+  // Doctor profile form state
+  const [docFullName, setDocFullName] = useState(
+    desktopSession?.doctor_name || "",
+  )
+  const [docGender, setDocGender] = useState("Male")
+  const [docQualification, setDocQualification] = useState("")
+  const [docRegistrationNumber, setDocRegistrationNumber] = useState("")
+  const [docMobile, setDocMobile] = useState("")
+  const [docEmail, setDocEmail] = useState(desktopSession?.doctor_email || "")
+
+  useEffect(() => {
+    if (clinic || !desktopSession?.doctor_id) return
+    getDoctorProfile(desktopSession.doctor_id).then((profile) => {
+      if (profile) {
+        if (profile.full_name) setDocFullName(profile.full_name)
+        if (profile.gender) setDocGender(profile.gender)
+        if (profile.qualification) setDocQualification(profile.qualification)
+        if (profile.registration_number)
+          setDocRegistrationNumber(profile.registration_number)
+        if (profile.phone) setDocMobile(profile.phone)
+        if (profile.email) setDocEmail(profile.email)
+      }
+    })
+  }, [clinic, desktopSession?.doctor_id])
+
+  useEffect(() => {
+    if (clinic || !onSave) return
+    onSave(async () => {
+      if (!desktopSession?.doctor_id) return true
+      try {
+        await saveDoctorProfile({
+          doctor_id: desktopSession.doctor_id,
+          full_name: docFullName.trim() || desktopSession.doctor_name,
+          email: docEmail.trim() || desktopSession.doctor_email,
+          phone: docMobile.trim(),
+          qualification: docQualification.trim(),
+          registration_number: docRegistrationNumber.trim(),
+          gender: docGender || "Male",
+        })
+        return true
+      } catch (err) {
+        console.error("Failed to save doctor profile:", err)
+        return false
+      }
+    })
+  }, [
+    clinic,
+    onSave,
+    desktopSession?.doctor_id,
+    desktopSession?.doctor_name,
+    desktopSession?.doctor_email,
+    docFullName,
+    docGender,
+    docQualification,
+    docRegistrationNumber,
+    docMobile,
+    docEmail,
+  ])
 
   useEffect(() => {
     if (!clinic || !desktopSession?.clinic_id) return
@@ -208,39 +270,48 @@ export function SettingsProfile({
           <>
             <Field label="Full name">
               <TextInput
-                defaultValue={doctorName}
+                value={docFullName}
+                onChange={(e) => setDocFullName(e.target.value)}
                 placeholder="Enter your full name"
               />
             </Field>
             <Field label="Gender">
-              <SelectInput defaultValue="Male" style={{ height: "40px" }}>
-                <option>Female</option>
-                <option>Male</option>
-                <option>Non-binary</option>
-                <option>Prefer not to say</option>
+              <SelectInput
+                value={docGender}
+                onChange={(e) => setDocGender(e.target.value)}
+                style={{ height: "40px" }}
+              >
+                <option value="Male">Male</option>
+                <option value="Female">Female</option>
+                <option value="Non-binary">Non-binary</option>
+                <option value="Prefer not to say">Prefer not to say</option>
               </SelectInput>
             </Field>
             <Field label="Qualifications">
               <TextInput
-                defaultValue=""
+                value={docQualification}
+                onChange={(e) => setDocQualification(e.target.value)}
                 placeholder="e.g. MBBS, MD"
               />
             </Field>
             <Field label="Registration number">
               <TextInput
-                defaultValue=""
+                value={docRegistrationNumber}
+                onChange={(e) => setDocRegistrationNumber(e.target.value)}
                 placeholder="e.g. MMC 2024/01/1234"
               />
             </Field>
             <Field label="Mobile number">
               <TextInput
-                defaultValue=""
+                value={docMobile}
+                onChange={(e) => setDocMobile(e.target.value)}
                 placeholder="+91 00000 00000"
               />
             </Field>
             <Field label="Email">
               <TextInput
-                defaultValue={desktopSession?.doctor_email || ""}
+                value={docEmail}
+                onChange={(e) => setDocEmail(e.target.value)}
                 placeholder="doctor@clinic.com"
               />
             </Field>

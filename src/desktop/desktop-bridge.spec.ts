@@ -28,8 +28,23 @@ describe("Desktop Bridge (Tauri 2 Frontend Integration)", () => {
   const win = typeof window !== "undefined" ? window as any : globalThis as any
   const originalTauri = win.__TAURI_INTERNALS__
 
+  let storageMap: Record<string, string> = {}
+
   beforeEach(() => {
     delete win.__TAURI_INTERNALS__
+    storageMap = {}
+    win.localStorage = {
+      getItem: (k: string) => storageMap[k] || null,
+      setItem: (k: string, v: string) => {
+        storageMap[k] = v
+      },
+      removeItem: (k: string) => {
+        delete storageMap[k]
+      },
+      clear: () => {
+        storageMap = {}
+      },
+    }
     ;(globalThis as any).window = win
   })
 
@@ -760,6 +775,83 @@ describe("Desktop Bridge (Tauri 2 Frontend Integration)", () => {
       expect(result.isOfflineCache).toBe(true)
 
       vi.doUnmock("@tauri-apps/api/core")
+    })
+
+    it("persists and retrieves doctor profile credentials via desktop IPC", async () => {
+      win.__TAURI_INTERNALS__ = {}
+      const mockDoctor = {
+        doctor_id: "doc-123",
+        full_name: "Dr. Dipesh Patekar",
+        email: "doctor@cliniqo.test",
+        phone: "+91 9876543210",
+        qualification: "MBBS, MD",
+        registration_number: "MMC 2024/01/9999",
+        gender: "Male",
+        updated_at: "2026-11-04T00:00:00Z",
+      }
+
+      vi.doMock("@tauri-apps/api/core", () => ({
+        invoke: vi.fn().mockImplementation((cmd: string, args: any) => {
+          if (cmd === "save_doctor_profile") {
+            expect(args.args.doctor_id).toBe("doc-123")
+            expect(args.args.qualification).toBe("MBBS, MD")
+            expect(args.args.registration_number).toBe("MMC 2024/01/9999")
+            return Promise.resolve(mockDoctor)
+          }
+          if (cmd === "get_doctor_profile") {
+            expect(args.doctorId).toBe("doc-123")
+            return Promise.resolve(mockDoctor)
+          }
+          return Promise.resolve(null)
+        }),
+      }))
+
+      const { saveDoctorProfile, getDoctorProfile } = await import("./desktop-bridge")
+      const saved = await saveDoctorProfile({
+        doctor_id: "doc-123",
+        full_name: "Dr. Dipesh Patekar",
+        email: "doctor@cliniqo.test",
+        phone: "+91 9876543210",
+        qualification: "MBBS, MD",
+        registration_number: "MMC 2024/01/9999",
+        gender: "Male",
+      })
+
+      expect(saved).not.toBeNull()
+      expect(saved?.qualification).toBe("MBBS, MD")
+      expect(saved?.registration_number).toBe("MMC 2024/01/9999")
+      expect(saved?.phone).toBe("+91 9876543210")
+
+      const fetched = await getDoctorProfile("doc-123")
+      expect(fetched).not.toBeNull()
+      expect(fetched?.qualification).toBe("MBBS, MD")
+      expect(fetched?.registration_number).toBe("MMC 2024/01/9999")
+
+      vi.doUnmock("@tauri-apps/api/core")
+    })
+
+    it("falls back to localStorage for doctor profile when Tauri internals absent", async () => {
+      delete win.__TAURI_INTERNALS__
+      const { saveDoctorProfile, getDoctorProfile } = await import("./desktop-bridge")
+
+      const saved = await saveDoctorProfile({
+        doctor_id: "doc-web-test",
+        full_name: "Dr. Web Test",
+        email: "web@cliniqo.test",
+        phone: "+91 9999988888",
+        qualification: "MBBS, DNB",
+        registration_number: "KMC 2024/555",
+        gender: "Female",
+      })
+
+      expect(saved).not.toBeNull()
+      expect(saved?.qualification).toBe("MBBS, DNB")
+      expect(saved?.phone).toBe("+91 9999988888")
+
+      const loaded = await getDoctorProfile("doc-web-test")
+      expect(loaded).not.toBeNull()
+      expect(loaded?.full_name).toBe("Dr. Web Test")
+      expect(loaded?.registration_number).toBe("KMC 2024/555")
     })
   })
 })

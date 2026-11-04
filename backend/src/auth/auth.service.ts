@@ -2,6 +2,7 @@ import {
   Injectable,
   UnauthorizedException,
   BadRequestException,
+  NotFoundException,
   ConflictException,
   ServiceUnavailableException,
   Logger,
@@ -23,6 +24,7 @@ import { DoctorStatus, AUTH_DEFAULTS } from "./auth.constants.js"
 import {
   LoginDto,
   RegisterDto,
+  UpdateDoctorProfileDto,
   RefreshTokenDto,
   ForgotPasswordDto,
   ResetPasswordDto,
@@ -160,6 +162,10 @@ export class AuthService {
         id: doctor._id.toString(),
         email: doctor.email,
         fullName: doctor.fullName,
+        phone: doctor.phone,
+        qualification: doctor.qualification,
+        registrationNumber: doctor.registrationNumber || doctor.licenseNumber,
+        gender: doctor.gender,
         status: doctor.status,
       },
     }
@@ -191,10 +197,17 @@ export class AuthService {
 
     // 3. Hash password using Argon2id
     const passwordHash = await this.passwordService.hashPassword(dto.password)
+    const qualification = dto.qualification?.trim() || dto.qualifications?.trim() || undefined
+    const registrationNumber = dto.registrationNumber?.trim() || dto.licenseNumber?.trim() || undefined
+
     const doctor = new this.doctorModel({
       fullName: dto.fullName.trim(),
       email,
       phone: dto.phone?.trim() || undefined,
+      qualification,
+      registrationNumber,
+      licenseNumber: registrationNumber,
+      gender: dto.gender?.trim() || undefined,
       passwordHash,
       status: DoctorStatus.ACTIVE,
       failedLoginAttempts: 0,
@@ -244,8 +257,74 @@ export class AuthService {
         email: doctor.email,
         fullName: doctor.fullName,
         phone: doctor.phone,
+        qualification: doctor.qualification,
+        registrationNumber: doctor.registrationNumber || doctor.licenseNumber,
+        gender: doctor.gender,
         status: doctor.status,
       },
+    }
+  }
+
+  /**
+   * Retrieves profile details for an authenticated doctor.
+   */
+  async getProfile(doctorId: string) {
+    const doctor = await this.doctorModel.findById(doctorId)
+    if (!doctor || doctor.status === DoctorStatus.DISABLED) {
+      throw new NotFoundException("Doctor profile not found.")
+    }
+    return {
+      id: doctor._id.toString(),
+      email: doctor.email,
+      fullName: doctor.fullName,
+      phone: doctor.phone,
+      qualification: doctor.qualification,
+      registrationNumber: doctor.registrationNumber || doctor.licenseNumber,
+      gender: doctor.gender,
+      status: doctor.status,
+    }
+  }
+
+  /**
+   * Updates profile details for an authenticated doctor non-destructively.
+   */
+  async updateProfile(doctorId: string, dto: UpdateDoctorProfileDto) {
+    const doctor = await this.doctorModel.findById(doctorId)
+    if (!doctor || doctor.status === DoctorStatus.DISABLED) {
+      throw new NotFoundException("Doctor profile not found.")
+    }
+
+    // Preserve existing doctor records. Do not overwrite valid data with empty values.
+    if (dto.fullName && dto.fullName.trim()) {
+      doctor.fullName = dto.fullName.trim()
+    }
+    if (dto.phone !== undefined && dto.phone.trim()) {
+      doctor.phone = dto.phone.trim()
+    }
+    const qualification = dto.qualification?.trim() || dto.qualifications?.trim()
+    if (qualification) {
+      doctor.qualification = qualification
+    }
+    const regNum = dto.registrationNumber?.trim() || dto.licenseNumber?.trim()
+    if (regNum) {
+      doctor.registrationNumber = regNum
+      doctor.licenseNumber = regNum
+    }
+    if (dto.gender && dto.gender.trim()) {
+      doctor.gender = dto.gender.trim()
+    }
+
+    await doctor.save()
+
+    return {
+      id: doctor._id.toString(),
+      email: doctor.email,
+      fullName: doctor.fullName,
+      phone: doctor.phone,
+      qualification: doctor.qualification,
+      registrationNumber: doctor.registrationNumber || doctor.licenseNumber,
+      gender: doctor.gender,
+      status: doctor.status,
     }
   }
 

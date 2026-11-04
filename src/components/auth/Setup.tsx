@@ -9,6 +9,7 @@ import {
   createClinic,
   refreshAuthTokens,
   getApiBaseUrl,
+  saveDoctorProfile,
   type DesktopSessionContext,
   type CreateClinicInput,
   type CreateClinicResult,
@@ -272,6 +273,24 @@ export function Setup({
             fullName || doctor?.fullName || sessionProp?.doctor_name || "Doctor",
           role: "OWNER",
           expires_at: Math.floor(Date.now() / 1000) + 3600 * 24,
+        }
+      }
+
+      // Persist the collected doctor profile details (qualifications, registration number, mobile, gender)
+      const targetDoctorId = doctorId || session?.doctor_id || ""
+      if (targetDoctorId) {
+        try {
+          await saveDoctorProfile({
+            doctor_id: targetDoctorId,
+            full_name: fullName.trim() || session?.doctor_name || "Doctor",
+            email: email.trim() || session?.doctor_email || "",
+            phone: mobile.trim(),
+            qualification: qualifications.trim(),
+            registration_number: registrationNumber.trim(),
+            gender: gender || "Male",
+          })
+        } catch (profileErr) {
+          console.warn("[Cliniqo Desktop] Failed to persist doctor profile credentials during setup:", profileErr)
         }
       }
 

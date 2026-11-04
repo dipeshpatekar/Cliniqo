@@ -326,6 +326,43 @@ pub const MIGRATION_V7_SQL: &str = r#"
 CREATE INDEX IF NOT EXISTS idx_cat_cache_product ON local_catalogue_cache_v1(product_name);
 "#;
 
+/// Migration V8: Introduces local doctor profile persistence for durable credentials (qualification, registration_number, mobile, gender).
+pub const MIGRATION_V8_SQL: &str = r#"
+CREATE TABLE IF NOT EXISTS local_doctor_profile (
+    doctor_id TEXT PRIMARY KEY,
+    full_name TEXT NOT NULL,
+    email TEXT NOT NULL,
+    phone TEXT NOT NULL DEFAULT '',
+    qualification TEXT NOT NULL DEFAULT '',
+    registration_number TEXT NOT NULL DEFAULT '',
+    gender TEXT NOT NULL DEFAULT 'Male',
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+"#;
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DoctorProfileRecord {
+    pub doctor_id: String,
+    pub full_name: String,
+    pub email: String,
+    pub phone: String,
+    pub qualification: String,
+    pub registration_number: String,
+    pub gender: String,
+    pub updated_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SaveDoctorProfileArgs {
+    pub doctor_id: String,
+    pub full_name: String,
+    pub email: String,
+    pub phone: Option<String>,
+    pub qualification: Option<String>,
+    pub registration_number: Option<String>,
+    pub gender: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ClinicProfileRecord {
     pub clinic_id: String,
@@ -575,6 +612,7 @@ pub struct FormularyRecord {
     pub active_ingredient: Option<String>,
     pub formulation: String,
     pub strength: String,
+    #[serde(rename = "default_dosage", alias = "default_dose")]
     pub default_dose: Option<String>,
     pub default_route: Option<String>,
     pub default_frequency: Option<String>,
@@ -592,7 +630,9 @@ pub struct SaveFormularyArgs {
     pub name: String,
     pub active_ingredient: Option<String>,
     pub formulation: String,
+    #[serde(default)]
     pub strength: String,
+    #[serde(default, alias = "default_dosage")]
     pub default_dose: Option<String>,
     pub default_route: Option<String>,
     pub default_frequency: Option<String>,

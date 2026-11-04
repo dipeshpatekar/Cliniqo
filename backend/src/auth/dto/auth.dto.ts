@@ -34,6 +34,58 @@ export class RegisterDto {
   @IsOptional()
   @IsString({ message: "Phone must be a string." })
   phone?: string
+
+  @IsOptional()
+  @IsString({ message: "Qualification must be a string." })
+  qualification?: string
+
+  @IsOptional()
+  @IsString({ message: "Qualifications must be a string." })
+  qualifications?: string
+
+  @IsOptional()
+  @IsString({ message: "Registration number must be a string." })
+  registrationNumber?: string
+
+  @IsOptional()
+  @IsString({ message: "License number must be a string." })
+  licenseNumber?: string
+
+  @IsOptional()
+  @IsString({ message: "Gender must be a string." })
+  gender?: string
+}
+
+export class UpdateDoctorProfileDto {
+  @IsOptional()
+  @IsString({ message: "Full name must be a string." })
+  @MinLength(3, { message: "Full name must be at least 3 characters long." })
+  @MaxLength(120, { message: "Full name cannot exceed 120 characters." })
+  fullName?: string
+
+  @IsOptional()
+  @IsString({ message: "Phone must be a string." })
+  phone?: string
+
+  @IsOptional()
+  @IsString({ message: "Qualification must be a string." })
+  qualification?: string
+
+  @IsOptional()
+  @IsString({ message: "Qualifications must be a string." })
+  qualifications?: string
+
+  @IsOptional()
+  @IsString({ message: "Registration number must be a string." })
+  registrationNumber?: string
+
+  @IsOptional()
+  @IsString({ message: "License number must be a string." })
+  licenseNumber?: string
+
+  @IsOptional()
+  @IsString({ message: "Gender must be a string." })
+  gender?: string
 }
 
 /**

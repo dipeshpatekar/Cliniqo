@@ -5,7 +5,8 @@ use thiserror::Error;
 use crate::crypto::{decrypt_payload, encrypt_payload, CryptoError};
 use crate::crypto::key_manager::DatabaseEncryptionKey;
 use super::schema::{
-    CatalogueCacheStats, ClinicalData, ClinicProfileRecord, ConflictStatus, ConsultationRecord, DecryptedOutboxItem, EncryptedBillingData,
+    CatalogueCacheStats, ClinicalData, ClinicProfileRecord, ConflictStatus, ConsultationRecord, DecryptedOutboxItem,
+    DoctorProfileRecord, EncryptedBillingData,
     FormularyRecord, InvoiceItem, InvoiceRecord, LocalCatalogueItem, PatientDemographics, PatientRecord,
     PrescriptionRecord, SaveCatalogueCacheItemArgs, SaveFormularyArgs, SaveInvoiceArgs, SyncConflictRecord, SyncFeedChangeItem,
     SyncOutboxSummary, SyncStateRecord,
@@ -2828,12 +2829,26 @@ impl DbOperations {
     }
 
     /// Adds or updates an entry in the local clinical formulary catalogue.
+    /// Uses clinic-scoped matching on clinic_id, name, and formulation to avoid duplicates.
     pub fn save_formulary_item(
         conn: &mut Connection,
         clinic_id: &str,
         args: SaveFormularyArgs,
     ) -> Result<String, DatabaseOpError> {
-        let item_id = args.id.unwrap_or_else(|| Uuid::new_v4().to_string());
+        let item_id = match args.id {
+            Some(ref id) if !id.trim().is_empty() => id.trim().to_string(),
+            _ => {
+                let existing_id: Option<String> = conn
+                    .query_row(
+                        "SELECT id FROM local_formulary_v2 WHERE clinic_id = ?1 AND LOWER(TRIM(name)) = LOWER(TRIM(?2)) AND LOWER(TRIM(formulation)) = LOWER(TRIM(?3)) LIMIT 1",
+                        params![clinic_id, args.name.trim(), args.formulation.trim()],
+                        |row| row.get(0),
+                    )
+                    .optional()?;
+                existing_id.unwrap_or_else(|| Uuid::new_v4().to_string())
+            }
+        };
+
         let exists: bool = conn
             .query_row(
                 "SELECT EXISTS(SELECT 1 FROM local_formulary_v2 WHERE clinic_id = ?1 AND id = ?2)",
@@ -2876,14 +2891,14 @@ impl DbOperations {
                 r#"
                 UPDATE local_formulary_v2 SET
                     name = ?1,
-                    active_ingredient = ?2,
+                    active_ingredient = COALESCE(?2, active_ingredient),
                     formulation = ?3,
-                    strength = ?4,
-                    default_dose = ?5,
-                    default_route = ?6,
-                    default_frequency = ?7,
-                    default_duration = ?8,
-                    default_instructions = ?9,
+                    strength = CASE WHEN ?4 != '' THEN ?4 ELSE strength END,
+                    default_dose = COALESCE(?5, default_dose),
+                    default_route = COALESCE(?6, default_route),
+                    default_frequency = COALESCE(?7, default_frequency),
+                    default_duration = COALESCE(?8, default_duration),
+                    default_instructions = COALESCE(?9, default_instructions),
                     is_active = 1,
                     updated_at = CURRENT_TIMESTAMP
                 WHERE clinic_id = ?10 AND id = ?11
@@ -3286,6 +3301,68 @@ impl DbOperations {
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
             Err(e) => Err(DatabaseOpError::Sqlite(e)),
         }
+    }
+
+    /// Upserts a local doctor profile record into SQLite for durable offline credentials.
+    /// Preserves existing credentials without overwriting valid data with empty values.
+    pub fn upsert_doctor_profile(
+        conn: &Connection,
+        profile: &DoctorProfileRecord,
+    ) -> Result<(), DatabaseOpError> {
+        conn.execute(
+            r#"
+            INSERT INTO local_doctor_profile (
+                doctor_id, full_name, email, phone, qualification, registration_number, gender, updated_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, CURRENT_TIMESTAMP)
+            ON CONFLICT(doctor_id) DO UPDATE SET
+                full_name = CASE WHEN excluded.full_name != '' THEN excluded.full_name ELSE local_doctor_profile.full_name END,
+                email = CASE WHEN excluded.email != '' THEN excluded.email ELSE local_doctor_profile.email END,
+                phone = CASE WHEN excluded.phone != '' THEN excluded.phone ELSE local_doctor_profile.phone END,
+                qualification = CASE WHEN excluded.qualification != '' THEN excluded.qualification ELSE local_doctor_profile.qualification END,
+                registration_number = CASE WHEN excluded.registration_number != '' THEN excluded.registration_number ELSE local_doctor_profile.registration_number END,
+                gender = CASE WHEN excluded.gender != '' THEN excluded.gender ELSE local_doctor_profile.gender END,
+                updated_at = CURRENT_TIMESTAMP
+            "#,
+            params![
+                profile.doctor_id,
+                profile.full_name,
+                profile.email,
+                profile.phone,
+                profile.qualification,
+                profile.registration_number,
+                profile.gender,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Retrieves a local doctor profile record by doctor_id.
+    pub fn get_doctor_profile(
+        conn: &Connection,
+        doctor_id: &str,
+    ) -> Result<Option<DoctorProfileRecord>, DatabaseOpError> {
+        let mut stmt = conn.prepare(
+            r#"
+            SELECT doctor_id, full_name, email, phone, qualification, registration_number, gender, updated_at
+            FROM local_doctor_profile
+            WHERE doctor_id = ?1
+            "#,
+        )?;
+        let res = stmt
+            .query_row(params![doctor_id], |row| {
+                Ok(DoctorProfileRecord {
+                    doctor_id: row.get(0)?,
+                    full_name: row.get(1)?,
+                    email: row.get(2)?,
+                    phone: row.get(3)?,
+                    qualification: row.get(4)?,
+                    registration_number: row.get(5)?,
+                    gender: row.get(6)?,
+                    updated_at: row.get(7)?,
+                })
+            })
+            .optional()?;
+        Ok(res)
     }
 
 
@@ -5349,5 +5426,104 @@ mod tests {
         let refetched = DbOperations::get_clinic_profile(&conn, clinic_id).unwrap().expect("found");
         assert_eq!(refetched.name, "Dr. Patekar Advanced Clinic");
         assert_eq!(refetched.phone, "+91 9999999999");
+    }
+
+    #[test]
+    fn test_doctor_profile_persistence_and_non_destructive_update() {
+        let (conn, _dek) = setup_test_db();
+        let doctor_id = "doc-test-101";
+
+        // Initial check: profile does not exist
+        let initial = DbOperations::get_doctor_profile(&conn, doctor_id).unwrap();
+        assert!(initial.is_none());
+
+        // Upsert doctor profile
+        let profile = DoctorProfileRecord {
+            doctor_id: doctor_id.to_string(),
+            full_name: "Dr. Dipesh Patekar".to_string(),
+            email: "dipesh@cliniqo.test".to_string(),
+            phone: "+91 9876543210".to_string(),
+            qualification: "MBBS, MD (Medicine)".to_string(),
+            registration_number: "MMC 2024/05/98765".to_string(),
+            gender: "Male".to_string(),
+            updated_at: None,
+        };
+
+        DbOperations::upsert_doctor_profile(&conn, &profile).unwrap();
+
+        // Retrieve and verify
+        let fetched = DbOperations::get_doctor_profile(&conn, doctor_id).unwrap().expect("found");
+        assert_eq!(fetched.doctor_id, doctor_id);
+        assert_eq!(fetched.full_name, "Dr. Dipesh Patekar");
+        assert_eq!(fetched.email, "dipesh@cliniqo.test");
+        assert_eq!(fetched.phone, "+91 9876543210");
+        assert_eq!(fetched.qualification, "MBBS, MD (Medicine)");
+        assert_eq!(fetched.registration_number, "MMC 2024/05/98765");
+        assert_eq!(fetched.gender, "Male");
+        assert!(fetched.updated_at.is_some());
+
+        // Non-destructive update: empty values must NOT overwrite existing valid credentials
+        let partial_update = DoctorProfileRecord {
+            doctor_id: doctor_id.to_string(),
+            full_name: "".to_string(),
+            email: "".to_string(),
+            phone: "+91 9123456789".to_string(),
+            qualification: "".to_string(),
+            registration_number: "".to_string(),
+            gender: "".to_string(),
+            updated_at: None,
+        };
+        DbOperations::upsert_doctor_profile(&conn, &partial_update).unwrap();
+
+        let refetched = DbOperations::get_doctor_profile(&conn, doctor_id).unwrap().expect("found");
+        assert_eq!(refetched.phone, "+91 9123456789");
+        assert_eq!(refetched.full_name, "Dr. Dipesh Patekar", "Existing full name must be preserved");
+        assert_eq!(refetched.qualification, "MBBS, MD (Medicine)", "Existing qualification must be preserved");
+        assert_eq!(refetched.registration_number, "MMC 2024/05/98765", "Existing registration number must be preserved");
+    }
+
+    #[test]
+    fn test_formulary_item_deduplication_by_name_and_formulation() {
+        let (mut conn, _dek) = setup_test_db();
+        let clinic_id = "clinic-dedup-1";
+
+        let args1 = SaveFormularyArgs {
+            id: None,
+            clinic_id: clinic_id.to_string(),
+            name: "Amoxicillin".to_string(),
+            active_ingredient: Some("Amoxicillin Trihydrate".to_string()),
+            formulation: "Capsule".to_string(),
+            strength: "500 mg".to_string(),
+            default_dose: Some("1 cap".to_string()),
+            default_route: Some("Oral".to_string()),
+            default_frequency: Some("TID".to_string()),
+            default_duration: Some("5 days".to_string()),
+            default_instructions: Some("After food".to_string()),
+        };
+
+        let id1 = DbOperations::save_formulary_item(&mut conn, clinic_id, args1).unwrap();
+
+        // Save again with same name & formulation (case-insensitive) but updated strength
+        let args2 = SaveFormularyArgs {
+            id: None,
+            clinic_id: clinic_id.to_string(),
+            name: "amoxicillin ".to_string(),
+            active_ingredient: None,
+            formulation: "Capsule ".to_string(),
+            strength: "625 mg".to_string(),
+            default_dose: None,
+            default_route: None,
+            default_frequency: None,
+            default_duration: None,
+            default_instructions: None,
+        };
+
+        let id2 = DbOperations::save_formulary_item(&mut conn, clinic_id, args2).unwrap();
+        assert_eq!(id1, id2, "Must reuse existing ID and deduplicate entry");
+
+        let items = DbOperations::get_formulary_items(&conn, clinic_id).unwrap();
+        assert_eq!(items.len(), 1, "There must only be 1 formulary item");
+        assert_eq!(items[0].strength, "625 mg");
+        assert_eq!(items[0].active_ingredient.as_deref(), Some("Amoxicillin Trihydrate"), "Non-destructive update preserves existing active ingredient");
     }
 }

@@ -110,6 +110,60 @@ describe("Consultation Components & UX", () => {
       expect(html).toContain("Paracetamol")
       expect(html).toContain("Finalize prescription")
     })
+
+    it("confirms 'Additional directions' section is removed for oral formulations", () => {
+      const rawHtml = renderToString(
+        <Consultation
+          go={() => {}}
+          patient={samplePatient}
+          clinicalLibrary={library}
+          vitals={sampleVitals}
+          onVitalsChange={() => {}}
+          data={sampleData} // medicine is Tablet
+          onDataChange={() => {}}
+        />,
+      )
+      const html = rawHtml.replace(/<!-- -->/g, "")
+
+      expect(html).not.toContain("Additional directions")
+      expect(html).not.toContain("Application instructions")
+    })
+
+    it("renders 'Application instructions' only for topical formulations and not 'Additional directions'", () => {
+      const topicalData: ConsultationData = {
+        ...sampleData,
+        medicines: [
+          {
+            id: 1,
+            name: "Mupirocin",
+            formulation: "Ointment",
+            strength: "2%",
+            dose: "",
+            route: "Topical",
+            frequency: "Twice daily",
+            duration: "7 days",
+            food: "",
+            directions: "Apply thin layer to affected area",
+            activeIngredient: "Mupirocin",
+          },
+        ],
+      }
+      const rawHtml = renderToString(
+        <Consultation
+          go={() => {}}
+          patient={samplePatient}
+          clinicalLibrary={library}
+          vitals={sampleVitals}
+          onVitalsChange={() => {}}
+          data={topicalData}
+          onDataChange={() => {}}
+        />,
+      )
+      const html = rawHtml.replace(/<!-- -->/g, "")
+
+      expect(html).not.toContain("Additional directions")
+      expect(html).toContain("Application instructions (Required)")
+    })
   })
 
   describe("PrescriptionPreview", () => {

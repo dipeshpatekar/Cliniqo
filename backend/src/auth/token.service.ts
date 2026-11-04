@@ -16,6 +16,9 @@ export interface AccessTokenPayload {
   email: string;
   fullName: string;
   status: DoctorStatus;
+  phone?: string;
+  qualification?: string;
+  registrationNumber?: string;
   type: 'access';
   iat?: number;
   exp?: number;
@@ -115,6 +118,10 @@ export class TokenService {
     email: string;
     fullName: string;
     status: DoctorStatus;
+    phone?: string;
+    qualification?: string;
+    registrationNumber?: string;
+    licenseNumber?: string;
   }): Promise<string> {
     const authConfig = this.configService.validateAuthConfig();
 
@@ -123,6 +130,9 @@ export class TokenService {
       email: doctor.email,
       fullName: doctor.fullName,
       status: doctor.status,
+      phone: doctor.phone,
+      qualification: doctor.qualification,
+      registrationNumber: doctor.registrationNumber || doctor.licenseNumber,
       type: 'access',
     };
 

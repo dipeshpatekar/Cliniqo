@@ -1155,9 +1155,9 @@ mod tests {
         // Run all migrations including v7 on startup
         MigrationRunner::run_migrations(&mut conn, &dek).expect("migrations succeed");
 
-        // Verify schema_migrations has version 7
+        // Verify schema_migrations has version 7 or higher
         let max_version: i32 = conn.query_row("SELECT MAX(version) FROM schema_migrations", [], |r| r.get(0)).unwrap();
-        assert_eq!(max_version, 7, "Migration v7 must be applied");
+        assert!(max_version >= 7, "Migration v7 or higher must be applied");
 
         // In app startup runtime, reconcile_and_seed_local_catalogue runs:
         let seeded = reconcile_and_seed_local_catalogue(&mut conn, None).unwrap();
@@ -1167,6 +1167,203 @@ mod tests {
         let total: i64 = conn.query_row("SELECT COUNT(*) FROM local_catalogue_cache_v1", [], |r| r.get(0)).unwrap();
         assert_eq!(total, 104_367, "Catalogue must be reconciled to 104,367");
         assert!(is_catalogue_reconciled(&conn), "Catalogue must be marked reconciled");
+    }
+
+    #[test]
+    fn test_complete_windows_v7_changes_verification() {
+        use crate::crypto::key_manager::DatabaseEncryptionKey;
+        use crate::db::migrations::MigrationRunner;
+        use crate::db::schema::{DoctorProfileRecord, SaveFormularyArgs};
+
+        let mut conn = Connection::open_in_memory().unwrap();
+        let dek = DatabaseEncryptionKey::new([0x88u8; 32]);
+
+        // 1. FRESH INSTALLATION: Apply all migrations up to V8
+        MigrationRunner::run_migrations(&mut conn, &dek).expect("Migrations run successfully");
+
+        let max_version: i32 = conn.query_row("SELECT MAX(version) FROM schema_migrations", [], |r| r.get(0)).unwrap();
+        assert_eq!(max_version, 8, "All migrations up to V8 must be applied");
+
+        // Auto-seed on fresh installation
+        let seeded = reconcile_and_seed_local_catalogue(&mut conn, None).unwrap();
+        assert_eq!(seeded, 104_367, "Must seed all 104,367 CDCI records");
+
+        let generics: i64 = conn.query_row("SELECT COUNT(*) FROM local_catalogue_cache_v1 WHERE item_type = 'GENERIC'", [], |r| r.get(0)).unwrap();
+        let brands: i64 = conn.query_row("SELECT COUNT(*) FROM local_catalogue_cache_v1 WHERE item_type = 'BRAND'", [], |r| r.get(0)).unwrap();
+        let products: i64 = conn.query_row("SELECT COUNT(*) FROM local_catalogue_cache_v1 WHERE item_type = 'PRODUCT'", [], |r| r.get(0)).unwrap();
+        let total: i64 = conn.query_row("SELECT COUNT(*) FROM local_catalogue_cache_v1", [], |r| r.get(0)).unwrap();
+
+        assert_eq!(generics, 10_305, "Generics count must be exactly 10,305");
+        assert_eq!(brands, 93_911, "Brands count must be exactly 93,911");
+        assert_eq!(products, 151, "Standalone products count must be exactly 151");
+        assert_eq!(total, 104_367, "Total catalogue count must be exactly 104,367");
+
+        // 2. OFFLINE MEDICINE SEARCH: Verify immediate local search without network
+        let calpol = DbOperations::search_local_catalogue(&conn, "Calpol", 5, None).unwrap();
+        assert!(!calpol.is_empty(), "Calpol must be found offline");
+        assert!(calpol.iter().any(|m| m.name.starts_with("Calpol")));
+
+        let paracetamol = DbOperations::search_local_catalogue(&conn, "Paracetamol", 5, None).unwrap();
+        assert!(!paracetamol.is_empty(), "Paracetamol must be found offline");
+
+        let thand_go = DbOperations::search_local_catalogue(&conn, "Thand Go", 5, None).unwrap();
+        assert!(!thand_go.is_empty(), "Standalone product 'Thand Go' must be found offline");
+        assert_eq!(thand_go[0].item_type, "PRODUCT");
+
+        let kuffex = DbOperations::search_local_catalogue(&conn, "Kuffex", 5, None).unwrap();
+        assert!(!kuffex.is_empty(), "Standalone product 'Kuffex' must be found offline");
+        assert_eq!(kuffex[0].item_type, "PRODUCT");
+
+        // 3. DOCTOR CREDENTIALS PERSISTENCE: Qualification, registration number, mobile persist
+        let doctor_id = "doc-win-test-404";
+        let doc_record = DoctorProfileRecord {
+            doctor_id: doctor_id.to_string(),
+            full_name: "Dr. Dipesh Patekar".to_string(),
+            email: "dipesh@cliniqo.test".to_string(),
+            phone: "+91 9876543210".to_string(),
+            qualification: "MBBS, MD (Medicine)".to_string(),
+            registration_number: "MMC 2024/09/8888".to_string(),
+            gender: "Male".to_string(),
+            updated_at: None,
+        };
+
+        DbOperations::upsert_doctor_profile(&conn, &doc_record).unwrap();
+
+        let loaded_doc = DbOperations::get_doctor_profile(&conn, doctor_id).unwrap().expect("doctor profile found");
+        assert_eq!(loaded_doc.qualification, "MBBS, MD (Medicine)");
+        assert_eq!(loaded_doc.registration_number, "MMC 2024/09/8888");
+        assert_eq!(loaded_doc.phone, "+91 9876543210");
+        assert_eq!(loaded_doc.gender, "Male");
+
+        // Non-destructive update: Empty values do not wipe existing credentials
+        let empty_update = DoctorProfileRecord {
+            doctor_id: doctor_id.to_string(),
+            full_name: "".to_string(),
+            email: "".to_string(),
+            phone: "+91 9999900000".to_string(),
+            qualification: "".to_string(),
+            registration_number: "".to_string(),
+            gender: "".to_string(),
+            updated_at: None,
+        };
+        DbOperations::upsert_doctor_profile(&conn, &empty_update).unwrap();
+
+        let preserved_doc = DbOperations::get_doctor_profile(&conn, doctor_id).unwrap().expect("doctor profile found");
+        assert_eq!(preserved_doc.phone, "+91 9999900000");
+        assert_eq!(preserved_doc.qualification, "MBBS, MD (Medicine)", "Qualification preserved");
+        assert_eq!(preserved_doc.registration_number, "MMC 2024/09/8888", "Registration number preserved");
+        assert_eq!(preserved_doc.full_name, "Dr. Dipesh Patekar", "Full name preserved");
+
+        // 4. CUSTOM MEDICINE AUTO-SAVE TO CLINICAL LIBRARY
+        let clinic_id = "clinic-win-test-1";
+        let custom_med = SaveFormularyArgs {
+            id: None,
+            clinic_id: clinic_id.to_string(),
+            name: "Herbal Cold Relief".to_string(),
+            active_ingredient: Some("Tulsi + Adhatoda Extract".to_string()),
+            formulation: "Syrup".to_string(),
+            strength: "100 ml".to_string(),
+            default_dose: Some("10 ml".to_string()),
+            default_route: Some("Oral".to_string()),
+            default_frequency: Some("TID".to_string()),
+            default_duration: Some("5 days".to_string()),
+            default_instructions: Some("After food".to_string()),
+        };
+
+        let formulary_id = DbOperations::save_formulary_item(&mut conn, clinic_id, custom_med).unwrap();
+        assert!(!formulary_id.is_empty());
+
+        let formulary_items = DbOperations::get_formulary_items(&conn, clinic_id).unwrap();
+        assert_eq!(formulary_items.len(), 1);
+        assert_eq!(formulary_items[0].name, "Herbal Cold Relief");
+        assert_eq!(formulary_items[0].formulation, "Syrup");
+        assert_eq!(formulary_items[0].active_ingredient.as_deref(), Some("Tulsi + Adhatoda Extract"));
+
+        // Deduplication on re-prescribing the same custom medicine
+        let custom_med_rerun = SaveFormularyArgs {
+            id: None,
+            clinic_id: clinic_id.to_string(),
+            name: " herbal cold relief ".to_string(),
+            active_ingredient: None,
+            formulation: "Syrup".to_string(),
+            strength: "100 ml".to_string(),
+            default_dose: Some("10 ml".to_string()),
+            default_route: Some("Oral".to_string()),
+            default_frequency: Some("TID".to_string()),
+            default_duration: Some("7 days".to_string()),
+            default_instructions: None,
+        };
+
+        let deduplicated_id = DbOperations::save_formulary_item(&mut conn, clinic_id, custom_med_rerun).unwrap();
+        assert_eq!(deduplicated_id, formulary_id, "Reuses existing ID and avoids duplication");
+
+        let items_after_dedup = DbOperations::get_formulary_items(&conn, clinic_id).unwrap();
+        assert_eq!(items_after_dedup.len(), 1, "Only 1 entry in Clinical Library");
+
+        // 5. EXISTING CLINICAL DATA REMAINS INTACT
+        let patient_id = DbOperations::insert_patient(
+            &mut conn,
+            &dek,
+            clinic_id,
+            "P-WIN-001",
+            "Amitabh V. Verma",
+            "+91 9820011223",
+            "MALE",
+            Some("1980-05-12"),
+            46,
+            &["Sulfa drugs".to_string()],
+            &["Asthma".to_string()],
+            Some("Sensitive history notes"),
+        ).unwrap();
+
+        let patients = DbOperations::get_patients(&conn, &dek, clinic_id).unwrap();
+        assert_eq!(patients.len(), 1);
+        assert_eq!(patients[0].id, patient_id);
+        assert_eq!(patients[0].name, "Amitabh V. Verma");
+        assert_eq!(patients[0].allergies, vec!["Sulfa drugs"]);
+
+        let consult_id = DbOperations::insert_consultation(
+            &mut conn,
+            &dek,
+            clinic_id,
+            &patient_id,
+            doctor_id,
+            "2026-11-04",
+            "Severe bronchial cough",
+            "Acute Bronchitis",
+            Some(r#"{"vitals":{"heartRate":"76"}}"#),
+        ).unwrap();
+
+        let consults = DbOperations::get_consultations(&conn, &dek, clinic_id).unwrap();
+        assert_eq!(consults.len(), 1);
+        assert_eq!(consults[0].id, consult_id);
+        assert_eq!(consults[0].chief_complaint, "Severe bronchial cough");
+        assert_eq!(consults[0].diagnosis, "Acute Bronchitis");
+
+        // Prescription snapshot remains immutable
+        let rx_json = r#"[{"name":"Herbal Cold Relief","formulation":"Syrup","dose":"10 ml"}]"#;
+        let rx_id = DbOperations::insert_prescription(
+            &mut conn,
+            &dek,
+            clinic_id,
+            &consult_id,
+            &patient_id,
+            doctor_id,
+            "RX-WIN-9901",
+            rx_json,
+        ).unwrap();
+
+        let rxs = DbOperations::get_prescriptions(&conn, &dek, clinic_id).unwrap();
+        assert_eq!(rxs.len(), 1);
+        assert_eq!(rxs[0].id, rx_id);
+        assert_eq!(rxs[0].items_json.as_deref(), Some(rx_json));
+
+        // 6. RESTART IDEMPOTENCY: Repeated seed execution creates zero duplicates and returns in < 1ms
+        let rerun_count = reconcile_and_seed_local_catalogue(&mut conn, None).unwrap();
+        assert_eq!(rerun_count, 104_367);
+
+        let final_count: i64 = conn.query_row("SELECT COUNT(*) FROM local_catalogue_cache_v1", [], |r| r.get(0)).unwrap();
+        assert_eq!(final_count, 104_367, "Count must remain exactly 104,367 on app restart");
     }
 }
 

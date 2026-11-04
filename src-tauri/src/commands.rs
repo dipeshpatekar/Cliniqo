@@ -128,6 +128,7 @@ struct BackendLoginResponse {
     access_token: String,
     #[serde(rename = "refreshToken")]
     refresh_token: Option<String>,
+    doctor: Option<RegisteredDoctorInfo>,
 }
 
 #[tauri::command]
@@ -269,6 +270,24 @@ pub async fn login_desktop(
         }
     }
 
+    // Persist authenticated doctor credentials to local SQLite for durable offline profile
+    if let Some(ref doc) = login_data.doctor {
+        let conn = state.db.get_connection();
+        let _ = crate::db::operations::DbOperations::upsert_doctor_profile(
+            &conn,
+            &crate::db::schema::DoctorProfileRecord {
+                doctor_id: doc.id.clone(),
+                full_name: doc.full_name.clone(),
+                email: doc.email.clone(),
+                phone: doc.phone.clone().unwrap_or_default(),
+                qualification: doc.qualification.clone().unwrap_or_default(),
+                registration_number: doc.registration_number.clone().unwrap_or_default(),
+                gender: doc.gender.clone().unwrap_or_else(|| "Male".to_string()),
+                updated_at: None,
+            },
+        );
+    }
+
     // 2. Fetch authoritative clinic memberships from backend using access token
     let my_clinics_url = format!("{base_url}/clinics/my-clinics");
     let clinics_resp = client
@@ -360,6 +379,10 @@ pub struct RegisterDesktopInput {
     pub email: String,
     pub password: String,
     pub phone: Option<String>,
+    pub qualification: Option<String>,
+    #[serde(rename = "registrationNumber")]
+    pub registration_number: Option<String>,
+    pub gender: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -369,6 +392,10 @@ pub struct RegisteredDoctorInfo {
     #[serde(rename = "fullName")]
     pub full_name: String,
     pub phone: Option<String>,
+    pub qualification: Option<String>,
+    #[serde(rename = "registrationNumber")]
+    pub registration_number: Option<String>,
+    pub gender: Option<String>,
     pub status: Option<String>,
 }
 
@@ -403,6 +430,9 @@ pub async fn register_desktop(
             "email": input.email.trim(),
             "password": input.password,
             "phone": input.phone.as_ref().map(|p| p.trim()),
+            "qualification": input.qualification.as_ref().map(|p| p.trim()),
+            "registrationNumber": input.registration_number.as_ref().map(|p| p.trim()),
+            "gender": input.gender.as_ref().map(|p| p.trim()),
         }))
         .send()
         .await
@@ -426,6 +456,24 @@ pub async fn register_desktop(
         if !rt.trim().is_empty() {
             let _ = state.key_mgr.save_refresh_token(rt);
         }
+    }
+
+    // Immediately persist newly registered doctor credentials to local SQLite
+    {
+        let conn = state.db.get_connection();
+        let _ = crate::db::operations::DbOperations::upsert_doctor_profile(
+            &conn,
+            &crate::db::schema::DoctorProfileRecord {
+                doctor_id: reg_data.doctor.id.clone(),
+                full_name: reg_data.doctor.full_name.clone(),
+                email: reg_data.doctor.email.clone(),
+                phone: reg_data.doctor.phone.clone().unwrap_or_default(),
+                qualification: reg_data.doctor.qualification.clone().unwrap_or_default(),
+                registration_number: reg_data.doctor.registration_number.clone().unwrap_or_default(),
+                gender: reg_data.doctor.gender.clone().unwrap_or_else(|| "Male".to_string()),
+                updated_at: None,
+            },
+        );
     }
 
     // Immediately establish the native session for the newly registered doctor
@@ -472,6 +520,24 @@ pub async fn login_desktop_session(
                 log::warn!("Failed to persist refresh token to secure key store: {e}");
             }
         }
+    }
+
+    // If JWT claims contain doctor profile credentials, persist to local SQLite
+    if let Ok(claims) = state.session_mgr.verify_jwt(&token) {
+        let conn = state.db.get_connection();
+        let _ = crate::db::operations::DbOperations::upsert_doctor_profile(
+            &conn,
+            &crate::db::schema::DoctorProfileRecord {
+                doctor_id: claims.sub,
+                full_name: claims.full_name.unwrap_or_else(|| session.doctor_name.clone()),
+                email: claims.email,
+                phone: claims.phone.unwrap_or_default(),
+                qualification: claims.qualification.unwrap_or_default(),
+                registration_number: claims.registration_number.unwrap_or_default(),
+                gender: "Male".to_string(),
+                updated_at: None,
+            },
+        );
     }
 
     let _ = state.key_mgr.save_active_clinic_id(&clinic_id);
@@ -965,6 +1031,139 @@ pub async fn save_clinic_profile(
                             "postalCode": record.postal_code,
                             "country": record.country,
                         }
+                    }))
+                    .send()
+                    .await;
+            }
+        }
+    }
+
+    Ok(record)
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SaveDoctorProfileCommandArgs {
+    pub doctor_id: Option<String>,
+    pub full_name: Option<String>,
+    pub email: Option<String>,
+    pub phone: Option<String>,
+    pub qualification: Option<String>,
+    pub registration_number: Option<String>,
+    pub gender: Option<String>,
+}
+
+#[tauri::command]
+pub async fn get_doctor_profile(
+    state: State<'_, AppState>,
+    doctor_id: Option<String>,
+) -> Result<Option<crate::db::schema::DoctorProfileRecord>, String> {
+    let target_id = doctor_id.or_else(|| state.session_mgr.get_session().map(|s| s.doctor_id));
+    let doctor_id = match target_id {
+        Some(id) if !id.trim().is_empty() => id,
+        _ => return Ok(None),
+    };
+
+    let local_profile = {
+        let conn = state.db.get_connection();
+        crate::db::operations::DbOperations::get_doctor_profile(&conn, &doctor_id)
+            .map_err(|e| format!("Failed to read doctor profile: {e}"))?
+    };
+
+    if local_profile.is_some() {
+        return Ok(local_profile);
+    }
+
+    // If not found in SQLite yet, query backend if active access token exists
+    if let Some(token) = state.session_mgr.get_access_token() {
+        if let Ok(base_url) = crate::config::get_trusted_backend_url() {
+            if let Ok(client) = crate::config::create_secure_http_client(Duration::from_secs(5)) {
+                let url = format!("{base_url}/auth/profile");
+                if let Ok(resp) = client.get(&url).bearer_auth(&token).send().await {
+                    if resp.status().is_success() {
+                        if let Ok(json) = resp.json::<serde_json::Value>().await {
+                            let rec = crate::db::schema::DoctorProfileRecord {
+                                doctor_id: json.get("id").or_else(|| json.get("doctorId")).and_then(|v| v.as_str()).unwrap_or(&doctor_id).to_string(),
+                                full_name: json.get("fullName").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                                email: json.get("email").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                                phone: json.get("phone").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                                qualification: json.get("qualification").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                                registration_number: json.get("registrationNumber").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                                gender: json.get("gender").and_then(|v| v.as_str()).unwrap_or("Male").to_string(),
+                                updated_at: None,
+                            };
+                            {
+                                let conn = state.db.get_connection();
+                                let _ = crate::db::operations::DbOperations::upsert_doctor_profile(&conn, &rec);
+                            }
+                            return Ok(Some(rec));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(None)
+}
+
+#[tauri::command]
+pub async fn save_doctor_profile(
+    state: State<'_, AppState>,
+    args: SaveDoctorProfileCommandArgs,
+) -> Result<crate::db::schema::DoctorProfileRecord, String> {
+    let session = state.session_mgr.get_session();
+    let doctor_id = args.doctor_id
+        .or_else(|| session.as_ref().map(|s| s.doctor_id.clone()))
+        .filter(|s| !s.trim().is_empty())
+        .ok_or_else(|| "Doctor ID is required to save doctor profile".to_string())?;
+
+    let full_name = args.full_name
+        .or_else(|| session.as_ref().map(|s| s.doctor_name.clone()))
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+
+    let email = args.email
+        .or_else(|| session.as_ref().map(|s| s.doctor_email.clone()))
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+
+    let phone = args.phone.unwrap_or_default().trim().to_string();
+    let qualification = args.qualification.unwrap_or_default().trim().to_string();
+    let registration_number = args.registration_number.unwrap_or_default().trim().to_string();
+    let gender = args.gender.unwrap_or_else(|| "Male".to_string()).trim().to_string();
+
+    let record = crate::db::schema::DoctorProfileRecord {
+        doctor_id: doctor_id.clone(),
+        full_name,
+        email,
+        phone,
+        qualification,
+        registration_number,
+        gender,
+        updated_at: None,
+    };
+
+    {
+        let conn = state.db.get_connection();
+        crate::db::operations::DbOperations::upsert_doctor_profile(&conn, &record)
+            .map_err(|e| format!("Failed to update local doctor profile: {e}"))?;
+    }
+
+    if let Some(token) = state.session_mgr.get_access_token() {
+        if let Ok(base_url) = crate::config::get_trusted_backend_url() {
+            if let Ok(client) = crate::config::create_secure_http_client(Duration::from_secs(10)) {
+                let url = format!("{base_url}/auth/profile");
+                let _ = client
+                    .patch(&url)
+                    .bearer_auth(&token)
+                    .json(&serde_json::json!({
+                        "fullName": record.full_name,
+                        "phone": record.phone,
+                        "qualification": record.qualification,
+                        "registrationNumber": record.registration_number,
+                        "gender": record.gender,
                     }))
                     .send()
                     .await;

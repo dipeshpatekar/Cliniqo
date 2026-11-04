@@ -89,6 +89,7 @@ export function SettingsPage({
   const [tab, setTab] = useState(initialTab)
   const [saved, setSaved] = useState(false)
   const saveClinicProfileHandlerRef = useRef<(() => Promise<boolean>) | null>(null)
+  const saveDoctorProfileHandlerRef = useRef<(() => Promise<boolean>) | null>(null)
 
   const sections = [
     { label: "Doctor profile", icon: UserRound },
@@ -143,6 +144,9 @@ export function SettingsPage({
               description="Details shown on prescriptions and clinic records."
               clinic={false}
               desktopSession={desktopSession}
+              onSave={(handler) => {
+                saveDoctorProfileHandlerRef.current = handler
+              }}
             />
           )}
           {tab === "Clinic profile" && (
@@ -213,6 +217,12 @@ export function SettingsPage({
                 onClick={async () => {
                   if (tab === "Clinic profile" && saveClinicProfileHandlerRef.current) {
                     const ok = await saveClinicProfileHandlerRef.current()
+                    if (ok) {
+                      setSaved(true)
+                      window.setTimeout(() => setSaved(false), 1800)
+                    }
+                  } else if (tab === "Doctor profile" && saveDoctorProfileHandlerRef.current) {
+                    const ok = await saveDoctorProfileHandlerRef.current()
                     if (ok) {
                       setSaved(true)
                       window.setTimeout(() => setSaved(false), 1800)

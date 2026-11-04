@@ -5,6 +5,7 @@ use crate::crypto::{encrypt_payload, CryptoError};
 use super::schema::{
     ClinicalData, PatientDemographics, CREATE_MIGRATIONS_TABLE, MIGRATION_V1_SQL, MIGRATION_V2_SQL,
     MIGRATION_V3_SQL, MIGRATION_V4_SQL, MIGRATION_V5_SQL, MIGRATION_V6_SQL, MIGRATION_V7_SQL,
+    MIGRATION_V8_SQL,
 };
 
 #[derive(Error, Debug)]
@@ -21,7 +22,7 @@ pub enum MigrationError {
     #[error("Migration transaction failed: {0}")]
     TransactionError(String),
 
-    #[error("Unsupported schema version: database is at version {0}, but this client only supports up to version 7. Please update the application.")]
+    #[error("Unsupported schema version: database is at version {0}, but this client only supports up to version 8. Please update the application.")]
     UnsupportedSchemaVersion(i32),
 }
 
@@ -73,7 +74,7 @@ impl MigrationRunner {
             )
             .unwrap_or(0);
 
-        if max_version > 7 {
+        if max_version > 8 {
             return Err(MigrationError::UnsupportedSchemaVersion(max_version));
         }
 
@@ -186,6 +187,21 @@ impl MigrationRunner {
             log::info!("Applying local offline SQLite migration v7 (CDCI ProductMaster 104,367 backfill & reconciliation)...");
             Self::migrate_to_v7(conn)?;
             log::info!("Migration v7 applied successfully. Catalogue reconciliation complete.");
+        }
+
+        // 10. Check if v8 (Doctor profile persistence) has already been applied
+        let v8_applied: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = 8)",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or(false);
+
+        if !v8_applied {
+            log::info!("Applying local offline SQLite migration v8 (Doctor profile credentials persistence)...");
+            Self::migrate_to_v8(conn)?;
+            log::info!("Migration v8 applied successfully. Local doctor profile active.");
         }
 
         Ok(())
@@ -617,6 +633,17 @@ impl MigrationRunner {
 
         Ok(())
     }
+
+    fn migrate_to_v8(conn: &mut Connection) -> Result<(), MigrationError> {
+        let tx = conn.transaction()?;
+        tx.execute_batch(MIGRATION_V8_SQL)?;
+        tx.execute(
+            "INSERT INTO schema_migrations (version, name, checksum) VALUES (?1, ?2, ?3)",
+            params![8, "doctor_profile_persistence_v8", "v8_cliniqo_doctor_profile_schema"],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -697,7 +724,7 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(max_version, 7);
+        assert_eq!(max_version, 8);
 
         let v7_exists: bool = conn
             .query_row(
@@ -707,6 +734,15 @@ mod tests {
             )
             .unwrap();
         assert!(v7_exists, "Migration v7 must exist after running migrations");
+
+        let v8_exists: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = 8)",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(v8_exists, "Migration v8 must exist after running migrations");
 
         let table_exists: bool = conn
             .query_row(
@@ -725,5 +761,14 @@ mod tests {
             )
             .unwrap();
         assert!(clinic_table_exists, "local_clinic_profile table must exist after v6 migration");
+
+        let doctor_table_exists: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='local_doctor_profile')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(doctor_table_exists, "local_doctor_profile table must exist after v8 migration");
     }
 }

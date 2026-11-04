@@ -57,6 +57,24 @@ export class Doctor {
   licenseNumber?: string;
 
   @Prop({
+    trim: true,
+    default: null,
+  })
+  qualification?: string;
+
+  @Prop({
+    trim: true,
+    default: null,
+  })
+  registrationNumber?: string;
+
+  @Prop({
+    trim: true,
+    default: null,
+  })
+  gender?: string;
+
+  @Prop({
     type: String,
     enum: Object.values(DoctorStatus),
     default: DoctorStatus.PENDING_VERIFICATION,

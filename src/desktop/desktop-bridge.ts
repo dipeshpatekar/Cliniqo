@@ -1156,8 +1156,10 @@ export async function getClinicProfile(
   }
 
   try {
-    const raw = localStorage.getItem(`cliniqo_clinic_profile_${clinicId}`)
-    if (raw) return JSON.parse(raw)
+    if (typeof window !== "undefined" && window.localStorage) {
+      const raw = window.localStorage.getItem(`cliniqo_clinic_profile_${clinicId}`)
+      if (raw) return JSON.parse(raw)
+    }
   } catch {}
   return null
 }
@@ -1179,10 +1181,73 @@ export async function saveClinicProfile(
     updated_at: new Date().toISOString(),
   }
   try {
-    localStorage.setItem(
-      `cliniqo_clinic_profile_${args.clinic_id}`,
-      JSON.stringify(saved),
-    )
+    if (typeof window !== "undefined" && window.localStorage) {
+      window.localStorage.setItem(
+        `cliniqo_clinic_profile_${args.clinic_id}`,
+        JSON.stringify(saved),
+      )
+    }
+  } catch {}
+  return saved
+}
+
+export interface DoctorProfile {
+  doctor_id: string
+  full_name: string
+  email: string
+  phone: string
+  qualification: string
+  registration_number: string
+  gender: string
+  updated_at?: string | null
+}
+
+export async function getDoctorProfile(
+  doctorId?: string,
+): Promise<DoctorProfile | null> {
+  if (isTauriDesktop()) {
+    try {
+      return await invokeTauri<DoctorProfile | null>("get_doctor_profile", {
+        doctorId: doctorId || null,
+      })
+    } catch (e) {
+      console.warn("Failed to retrieve doctor profile from desktop SQLite:", e)
+      return null
+    }
+  }
+
+  try {
+    if (typeof window !== "undefined" && window.localStorage) {
+      const raw = window.localStorage.getItem(`cliniqo_doctor_profile_${doctorId || "default"}`)
+      if (raw) return JSON.parse(raw)
+    }
+  } catch {}
+  return null
+}
+
+export async function saveDoctorProfile(
+  args: Omit<DoctorProfile, "updated_at">,
+): Promise<DoctorProfile | null> {
+  if (isTauriDesktop()) {
+    try {
+      return await invokeTauri<DoctorProfile>("save_doctor_profile", { args })
+    } catch (e) {
+      console.warn("Failed to persist doctor profile to desktop SQLite:", e)
+      return null
+    }
+  }
+
+  const saved: DoctorProfile = {
+    ...args,
+    updated_at: new Date().toISOString(),
+  }
+  try {
+    if (typeof window !== "undefined" && window.localStorage) {
+      window.localStorage.setItem(
+        `cliniqo_doctor_profile_${args.doctor_id || "default"}`,
+        JSON.stringify(saved),
+      )
+    }
   } catch {}
   return saved
 }

@@ -127,6 +127,8 @@ pub fn run() {
             commands::start_catalogue_sync,
             commands::get_clinic_profile,
             commands::save_clinic_profile,
+            commands::get_doctor_profile,
+            commands::save_doctor_profile,
         ])
         .run(tauri::generate_context!())
         .expect("error while building tauri application");

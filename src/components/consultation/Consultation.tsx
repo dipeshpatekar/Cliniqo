@@ -52,6 +52,7 @@ import { CompactField } from "./CompactField"
 import {
   isTauriDesktop,
   getLocalFormulary,
+  saveLocalFormularyItem,
   saveLocalConsultation,
   saveLocalPrescription,
   searchCatalogue,
@@ -385,6 +386,45 @@ export function Consultation({
             prescription_number: rxNumber,
             items_json: JSON.stringify(data.medicines),
           })
+
+          // Auto-add valid custom medicines to Clinical Medicine Library (local_formulary_v2)
+          let addedCustom = false
+          for (const m of data.medicines) {
+            const isCustomMed = m.isCustom || !m.sourceIdentifier
+            if (
+              isCustomMed &&
+              m.name.trim() &&
+              m.formulation.trim() &&
+              validateMedicineFormulation(m).valid
+            ) {
+              try {
+                await saveLocalFormularyItem({
+                  clinic_id: desktopSession.clinic_id,
+                  name: m.name.trim(),
+                  formulation: m.formulation.trim(),
+                  strength: m.strength?.trim() || "",
+                  active_ingredient: m.activeIngredient?.trim() || null,
+                  default_dosage: m.dose?.trim() || null,
+                  default_route: m.route?.trim() || null,
+                  default_frequency: m.frequency?.trim() || null,
+                  default_duration: m.duration?.trim() || null,
+                  default_instructions: m.directions?.trim() || null,
+                })
+                addedCustom = true
+              } catch (formularyErr) {
+                console.warn(
+                  "[Cliniqo Desktop] Failed to auto-save custom medicine to formulary:",
+                  formularyErr,
+                )
+              }
+            }
+          }
+
+          if (addedCustom) {
+            getLocalFormulary(desktopSession.clinic_id)
+              .then((items) => setLocalFormulary(items))
+              .catch(() => {})
+          }
         }
         setShowFinalize(false)
         go("preview")
@@ -1062,30 +1102,24 @@ export function Consultation({
                               </SelectInput>
                             </Field>
                           )}
-                          <Field
-                            label={
-                              topicalFormulations.has(medicine.formulation)
-                                ? "Application instructions (Required)"
-                                : "Additional directions"
-                            }
-                            className="med-directions"
-                          >
-                            <TextInput
-                              value={medicine.directions}
-                              onChange={(e) =>
-                                updateMedicine(
-                                  medicine.id,
-                                  "directions",
-                                  e.target.value,
-                                )
-                              }
-                              placeholder={
-                                topicalFormulations.has(medicine.formulation)
-                                  ? "Site, amount, and method of application"
-                                  : "Optional directions"
-                              }
-                            />
-                          </Field>
+                          {topicalFormulations.has(medicine.formulation) && (
+                            <Field
+                              label="Application instructions (Required)"
+                              className="med-directions"
+                            >
+                              <TextInput
+                                value={medicine.directions}
+                                onChange={(e) =>
+                                  updateMedicine(
+                                    medicine.id,
+                                    "directions",
+                                    e.target.value,
+                                  )
+                                }
+                                placeholder="Site, amount, and method of application"
+                              />
+                            </Field>
+                          )}
                         </>
                       )}
                     </div>

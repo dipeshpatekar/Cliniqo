@@ -5,7 +5,7 @@ use crate::crypto::{encrypt_payload, CryptoError};
 use super::schema::{
     ClinicalData, PatientDemographics, CREATE_MIGRATIONS_TABLE, MIGRATION_V1_SQL, MIGRATION_V2_SQL,
     MIGRATION_V3_SQL, MIGRATION_V4_SQL, MIGRATION_V5_SQL, MIGRATION_V6_SQL, MIGRATION_V7_SQL,
-    MIGRATION_V8_SQL,
+    MIGRATION_V8_SQL, MIGRATION_V9_SQL,
 };
 
 #[derive(Error, Debug)]
@@ -22,7 +22,7 @@ pub enum MigrationError {
     #[error("Migration transaction failed: {0}")]
     TransactionError(String),
 
-    #[error("Unsupported schema version: database is at version {0}, but this client only supports up to version 8. Please update the application.")]
+    #[error("Unsupported schema version: database is at version {0}, but this client only supports up to version 9. Please update the application.")]
     UnsupportedSchemaVersion(i32),
 }
 
@@ -74,7 +74,7 @@ impl MigrationRunner {
             )
             .unwrap_or(0);
 
-        if max_version > 8 {
+        if max_version > 9 {
             return Err(MigrationError::UnsupportedSchemaVersion(max_version));
         }
 
@@ -202,6 +202,21 @@ impl MigrationRunner {
             log::info!("Applying local offline SQLite migration v8 (Doctor profile credentials persistence)...");
             Self::migrate_to_v8(conn)?;
             log::info!("Migration v8 applied successfully. Local doctor profile active.");
+        }
+
+        // 11. Check if v9 (Inventory stock tracking) has been applied
+        let v9_applied: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = 9)",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or(false);
+
+        if !v9_applied {
+            log::info!("Applying local offline SQLite migration v9 (Inventory stock tracking)...");
+            Self::migrate_to_v9(conn)?;
+            log::info!("Migration v9 applied successfully. Local inventory stock active.");
         }
 
         Ok(())
@@ -644,6 +659,17 @@ impl MigrationRunner {
         tx.commit()?;
         Ok(())
     }
+
+    fn migrate_to_v9(conn: &mut Connection) -> Result<(), MigrationError> {
+        let tx = conn.transaction()?;
+        tx.execute_batch(MIGRATION_V9_SQL)?;
+        tx.execute(
+            "INSERT INTO schema_migrations (version, name, checksum) VALUES (?1, ?2, ?3)",
+            params![9, "inventory_stock_tracking_v9", "v9_cliniqo_inventory_stock_schema"],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -724,7 +750,7 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(max_version, 8);
+        assert_eq!(max_version, 9);
 
         let v7_exists: bool = conn
             .query_row(

@@ -1609,6 +1609,61 @@ pub fn delete_local_formulary_item(
     DbOperations::delete_formulary_item(&mut conn, &clinic_id, &id).map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+pub fn import_inventory_stock(
+    state: State<'_, AppState>,
+    clinic_id: String,
+    items: Vec<crate::db::schema::StockItemInput>,
+    overwrite: Option<bool>,
+    source_report: Option<String>,
+) -> Result<crate::db::schema::StockImportSummary, String> {
+    let _session = state
+        .session_mgr
+        .validate_session(Some(&clinic_id))
+        .map_err(|e| e.to_string())?;
+
+    let mut conn = state.db.get_connection();
+    DbOperations::import_stock_records(
+        &mut conn,
+        &clinic_id,
+        items,
+        overwrite.unwrap_or(false),
+        source_report.as_deref(),
+    )
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn get_inventory_stock(
+    state: State<'_, AppState>,
+    clinic_id: String,
+    query: Option<String>,
+) -> Result<Vec<crate::db::schema::StockItemRecord>, String> {
+    let _session = state
+        .session_mgr
+        .validate_session(Some(&clinic_id))
+        .map_err(|e| e.to_string())?;
+
+    let conn = state.db.get_connection();
+    DbOperations::get_stock_records(&conn, &clinic_id, query.as_deref())
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn get_inventory_stock_summary(
+    state: State<'_, AppState>,
+    clinic_id: String,
+) -> Result<crate::db::schema::StockSummaryRecord, String> {
+    let _session = state
+        .session_mgr
+        .validate_session(Some(&clinic_id))
+        .map_err(|e| e.to_string())?;
+
+    let conn = state.db.get_connection();
+    DbOperations::get_stock_summary(&conn, &clinic_id)
+        .map_err(|e| e.to_string())
+}
+
 fn percent_encode_query(val: &str) -> String {
     let mut out = String::new();
     for b in val.bytes() {

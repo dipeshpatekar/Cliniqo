@@ -8,7 +8,8 @@ use super::schema::{
     CatalogueCacheStats, ClinicalData, ClinicProfileRecord, ConflictStatus, ConsultationRecord, DecryptedOutboxItem,
     DoctorProfileRecord, EncryptedBillingData,
     FormularyRecord, InvoiceItem, InvoiceRecord, LocalCatalogueItem, PatientDemographics, PatientRecord,
-    PrescriptionRecord, SaveCatalogueCacheItemArgs, SaveFormularyArgs, SaveInvoiceArgs, SyncConflictRecord, SyncFeedChangeItem,
+    PrescriptionRecord, SaveCatalogueCacheItemArgs, SaveFormularyArgs, SaveInvoiceArgs, StockImportSummary,
+    StockItemInput, StockItemRecord, StockSummaryRecord, SyncConflictRecord, SyncFeedChangeItem,
     SyncOutboxSummary, SyncStateRecord,
 };
 
@@ -3366,6 +3367,223 @@ impl DbOperations {
     }
 
 
+    /// Imports batch/inventory stock records for a clinic.
+    /// Deduplicates by (clinic_id, LOWER(TRIM(product_name)), LOWER(TRIM(unit)), LOWER(TRIM(company))).
+    /// If overwrite is false, existing items are safely skipped and counted in `skipped`.
+    /// If overwrite is true, existing item quantities and values are updated safely.
+    pub fn import_stock_records(
+        conn: &mut Connection,
+        clinic_id: &str,
+        items: Vec<StockItemInput>,
+        overwrite: bool,
+        source_report: Option<&str>,
+    ) -> Result<StockImportSummary, DatabaseOpError> {
+        let default_source = "STOCK REPORT (18-10-26)";
+        let report_name = source_report.unwrap_or(default_source);
+        let mut successful = 0;
+        let mut skipped = 0;
+        let mut failed = 0;
+        let mut total_quantity = 0.0;
+        let mut total_value = 0.0;
+        let mut errors = Vec::new();
+
+        let tx = conn.transaction()?;
+
+        for item in items {
+            let p_name = item.product_name.trim();
+            if p_name.is_empty() {
+                failed += 1;
+                errors.push("Skipped item with empty product name".to_string());
+                continue;
+            }
+            if item.quantity < 0.0 {
+                failed += 1;
+                errors.push(format!("Product '{}' has negative quantity", p_name));
+                continue;
+            }
+
+            let unit = item.unit.trim();
+            let company = item.company.trim();
+
+            let existing_row: Option<(String, f64, Option<f64>)> = tx
+                .query_row(
+                    r#"
+                    SELECT id, quantity, value
+                    FROM local_inventory_stock_v1
+                    WHERE clinic_id = ?1
+                      AND LOWER(TRIM(product_name)) = LOWER(TRIM(?2))
+                      AND LOWER(TRIM(unit)) = LOWER(TRIM(?3))
+                      AND LOWER(TRIM(company)) = LOWER(TRIM(?4))
+                    LIMIT 1
+                    "#,
+                    params![clinic_id, p_name, unit, company],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .optional()?;
+
+            match existing_row {
+                Some((id, _old_qty, _old_val)) => {
+                    if !overwrite {
+                        skipped += 1;
+                    } else {
+                        tx.execute(
+                            r#"
+                            UPDATE local_inventory_stock_v1
+                            SET quantity = ?1,
+                                value = ?2,
+                                batch_number = COALESCE(?3, batch_number),
+                                source_report = ?4,
+                                updated_at = CURRENT_TIMESTAMP
+                            WHERE clinic_id = ?5 AND id = ?6
+                            "#,
+                            params![
+                                item.quantity,
+                                item.value,
+                                item.batch_number.as_deref().map(str::trim),
+                                report_name,
+                                clinic_id,
+                                id,
+                            ],
+                        )?;
+                        successful += 1;
+                        total_quantity += item.quantity;
+                        if let Some(v) = item.value {
+                            total_value += v;
+                        }
+                    }
+                }
+                None => {
+                    let new_id = Uuid::new_v4().to_string();
+                    tx.execute(
+                        r#"
+                        INSERT INTO local_inventory_stock_v1 (
+                            id, clinic_id, product_name, unit, company,
+                            quantity, value, batch_number, source_report,
+                            created_at, updated_at
+                        ) VALUES (
+                            ?1, ?2, ?3, ?4, ?5,
+                            ?6, ?7, ?8, ?9,
+                            CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                        )
+                        "#,
+                        params![
+                            new_id,
+                            clinic_id,
+                            p_name,
+                            unit,
+                            company,
+                            item.quantity,
+                            item.value,
+                            item.batch_number.as_deref().map(str::trim),
+                            report_name,
+                        ],
+                    )?;
+                    successful += 1;
+                    total_quantity += item.quantity;
+                    if let Some(v) = item.value {
+                        total_value += v;
+                    }
+                }
+            }
+        }
+
+        tx.commit()?;
+
+        Ok(StockImportSummary {
+            total_records: successful + skipped + failed,
+            successful,
+            skipped,
+            failed,
+            total_quantity,
+            total_value,
+            errors,
+        })
+    }
+
+    /// Queries inventory stock records for a clinic with optional substring filter.
+    pub fn get_stock_records(
+        conn: &Connection,
+        clinic_id: &str,
+        query: Option<&str>,
+    ) -> Result<Vec<StockItemRecord>, DatabaseOpError> {
+        let (sql, filter) = match query.map(str::trim).filter(|q| !q.is_empty()) {
+            Some(q) => (
+                r#"
+                SELECT id, clinic_id, product_name, unit, company,
+                       quantity, value, batch_number, source_report,
+                       created_at, updated_at
+                FROM local_inventory_stock_v1
+                WHERE clinic_id = ?1
+                  AND (product_name LIKE ?2 OR company LIKE ?2 OR unit LIKE ?2)
+                ORDER BY product_name ASC
+                "#,
+                Some(format!("%{}%", q)),
+            ),
+            None => (
+                r#"
+                SELECT id, clinic_id, product_name, unit, company,
+                       quantity, value, batch_number, source_report,
+                       created_at, updated_at
+                FROM local_inventory_stock_v1
+                WHERE clinic_id = ?1
+                ORDER BY product_name ASC
+                "#,
+                None,
+            ),
+        };
+
+        let mut stmt = conn.prepare(sql)?;
+        let rows = match filter {
+            Some(f) => stmt.query_map(params![clinic_id, f], Self::map_stock_row)?,
+            None => stmt.query_map(params![clinic_id], Self::map_stock_row)?,
+        };
+
+        let mut records = Vec::new();
+        for row in rows {
+            records.push(row?);
+        }
+        Ok(records)
+    }
+
+    /// Computes summary metrics for clinic inventory stock (total products, total quantity, total value).
+    pub fn get_stock_summary(
+        conn: &Connection,
+        clinic_id: &str,
+    ) -> Result<StockSummaryRecord, DatabaseOpError> {
+        let summary = conn.query_row(
+            r#"
+            SELECT COUNT(*), COALESCE(SUM(quantity), 0.0), COALESCE(SUM(value), 0.0)
+            FROM local_inventory_stock_v1
+            WHERE clinic_id = ?1
+            "#,
+            params![clinic_id],
+            |row| {
+                Ok(StockSummaryRecord {
+                    total_products: row.get::<_, i64>(0)? as usize,
+                    total_quantity: row.get(1)?,
+                    total_value: row.get(2)?,
+                })
+            },
+        )?;
+        Ok(summary)
+    }
+
+    fn map_stock_row(row: &rusqlite::Row) -> rusqlite::Result<StockItemRecord> {
+        Ok(StockItemRecord {
+            id: row.get(0)?,
+            clinic_id: row.get(1)?,
+            product_name: row.get(2)?,
+            unit: row.get(3)?,
+            company: row.get(4)?,
+            quantity: row.get(5)?,
+            value: row.get(6)?,
+            batch_number: row.get(7)?,
+            source_report: row.get(8)?,
+            created_at: row.get(9)?,
+            updated_at: row.get(10)?,
+        })
+    }
+
     fn map_invoice_row(
         row: &rusqlite::Row,
     ) -> rusqlite::Result<RawInvoiceRow> {
@@ -5525,5 +5743,119 @@ mod tests {
         assert_eq!(items.len(), 1, "There must only be 1 formulary item");
         assert_eq!(items[0].strength, "625 mg");
         assert_eq!(items[0].active_ingredient.as_deref(), Some("Amoxicillin Trihydrate"), "Non-destructive update preserves existing active ingredient");
+    }
+
+    #[test]
+    fn test_inventory_stock_import_deduplication_and_separation() {
+        let (mut conn, _dek) = setup_test_db();
+        let clinic_id = "clinic-stock-test-1";
+
+        let sample_items = vec![
+            StockItemInput {
+                product_name: "6D BODYPROOF".to_string(),
+                unit: "TAB".to_string(),
+                company: "EMRYS".to_string(),
+                quantity: 180.0,
+                value: Some(1745.88),
+                batch_number: None,
+            },
+            StockItemInput {
+                product_name: "SLISHINE 20GM".to_string(),
+                unit: "CREAM".to_string(),
+                company: "SILVE".to_string(),
+                quantity: 4.0,
+                value: None, // Missing value preserved accurately
+                batch_number: None,
+            },
+            StockItemInput {
+                product_name: "A TO Z DROPS".to_string(),
+                unit: "15 ML".to_string(),
+                company: "ALK".to_string(),
+                quantity: 3.0,
+                value: Some(348.03),
+                batch_number: None,
+            },
+        ];
+
+        // 1. Initial import with overwrite = false
+        let summary1 = DbOperations::import_stock_records(
+            &mut conn,
+            clinic_id,
+            sample_items.clone(),
+            false,
+            Some("STOCK REPORT (18-10-26)"),
+        )
+        .expect("initial import succeeds");
+
+        assert_eq!(summary1.successful, 3);
+        assert_eq!(summary1.skipped, 0);
+        assert_eq!(summary1.failed, 0);
+        assert_eq!(summary1.total_quantity, 187.0);
+        assert!((summary1.total_value - 2093.91).abs() < 0.001);
+
+        // 2. Re-import the exact same data without overwrite: must skip all duplicates!
+        let summary2 = DbOperations::import_stock_records(
+            &mut conn,
+            clinic_id,
+            sample_items.clone(),
+            false,
+            Some("STOCK REPORT (18-10-26)"),
+        )
+        .expect("second import succeeds");
+
+        assert_eq!(summary2.successful, 0, "No duplicate records should be created");
+        assert_eq!(summary2.skipped, 3, "All 3 existing records must be safely skipped");
+        assert_eq!(summary2.failed, 0);
+
+        // 3. Verify records in database
+        let records = DbOperations::get_stock_records(&conn, clinic_id, None).unwrap();
+        assert_eq!(records.len(), 3);
+        assert_eq!(records[0].product_name, "6D BODYPROOF");
+        assert_eq!(records[0].quantity, 180.0);
+        assert_eq!(records[0].value, Some(1745.88));
+
+        // Verify SLISHINE 20GM has None value preserved
+        let slishine = records.iter().find(|r| r.product_name == "SLISHINE 20GM").unwrap();
+        assert_eq!(slishine.quantity, 4.0);
+        assert_eq!(slishine.value, None, "Missing source value must be preserved as None");
+
+        // 4. Overwrite mode: updating quantity when explicitly requested
+        let updated_items = vec![
+            StockItemInput {
+                product_name: "6D BODYPROOF".to_string(),
+                unit: "TAB".to_string(),
+                company: "EMRYS".to_string(),
+                quantity: 200.0, // updated from 180 to 200
+                value: Some(1940.00),
+                batch_number: Some("BATCH-001".to_string()),
+            },
+        ];
+        let summary3 = DbOperations::import_stock_records(
+            &mut conn,
+            clinic_id,
+            updated_items,
+            true, // explicit overwrite
+            Some("STOCK REPORT (18-10-26)"),
+        )
+        .unwrap();
+        assert_eq!(summary3.successful, 1);
+        assert_eq!(summary3.skipped, 0);
+
+        let records_after = DbOperations::get_stock_records(&conn, clinic_id, Some("BODYPROOF")).unwrap();
+        assert_eq!(records_after.len(), 1);
+        assert_eq!(records_after[0].quantity, 200.0);
+        assert_eq!(records_after[0].value, Some(1940.00));
+        assert_eq!(records_after[0].batch_number.as_deref(), Some("BATCH-001"));
+
+        // 5. Test summary computation
+        let stats = DbOperations::get_stock_summary(&conn, clinic_id).unwrap();
+        assert_eq!(stats.total_products, 3);
+        assert_eq!(stats.total_quantity, 207.0); // 200 + 4 + 3
+
+        // 6. Strict architectural isolation: inventory tables do NOT touch formulary or catalogue tables
+        let formulary_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM local_formulary_v2 WHERE clinic_id = ?1", params![clinic_id], |r| r.get(0))
+            .unwrap();
+        assert_eq!(formulary_count, 0, "Inventory stock must not populate local_formulary_v2");
     }
 }

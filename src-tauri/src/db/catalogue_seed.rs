@@ -1178,11 +1178,11 @@ mod tests {
         let mut conn = Connection::open_in_memory().unwrap();
         let dek = DatabaseEncryptionKey::new([0x88u8; 32]);
 
-        // 1. FRESH INSTALLATION: Apply all migrations up to V8
+        // 1. FRESH INSTALLATION: Apply all migrations up to V9
         MigrationRunner::run_migrations(&mut conn, &dek).expect("Migrations run successfully");
 
         let max_version: i32 = conn.query_row("SELECT MAX(version) FROM schema_migrations", [], |r| r.get(0)).unwrap();
-        assert_eq!(max_version, 8, "All migrations up to V8 must be applied");
+        assert_eq!(max_version, 9, "All migrations up to V9 must be applied");
 
         // Auto-seed on fresh installation
         let seeded = reconcile_and_seed_local_catalogue(&mut conn, None).unwrap();

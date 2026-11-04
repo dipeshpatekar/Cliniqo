@@ -340,6 +340,26 @@ CREATE TABLE IF NOT EXISTS local_doctor_profile (
 );
 "#;
 
+/// Migration V9: Introduces local inventory stock tracking for physical clinic supplies & pharmacy stock.
+pub const MIGRATION_V9_SQL: &str = r#"
+CREATE TABLE IF NOT EXISTS local_inventory_stock_v1 (
+    id TEXT PRIMARY KEY,
+    clinic_id TEXT NOT NULL,
+    product_name TEXT NOT NULL,
+    unit TEXT NOT NULL DEFAULT '',
+    company TEXT NOT NULL DEFAULT '',
+    quantity REAL NOT NULL DEFAULT 0,
+    value REAL NULL,
+    batch_number TEXT NULL,
+    source_report TEXT NOT NULL DEFAULT 'STOCK REPORT (18-10-26)',
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_inventory_stock_clinic ON local_inventory_stock_v1(clinic_id);
+CREATE INDEX IF NOT EXISTS idx_inventory_stock_product ON local_inventory_stock_v1(clinic_id, product_name);
+"#;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DoctorProfileRecord {
     pub doctor_id: String,
@@ -693,5 +713,49 @@ pub struct CatalogueCacheStats {
     pub generic_count: i64,
     pub verified_count: i64,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StockItemInput {
+    pub product_name: String,
+    pub unit: String,
+    pub company: String,
+    pub quantity: f64,
+    pub value: Option<f64>,
+    pub batch_number: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StockItemRecord {
+    pub id: String,
+    pub clinic_id: String,
+    pub product_name: String,
+    pub unit: String,
+    pub company: String,
+    pub quantity: f64,
+    pub value: Option<f64>,
+    pub batch_number: Option<String>,
+    pub source_report: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StockImportSummary {
+    pub total_records: usize,
+    pub successful: usize,
+    pub skipped: usize,
+    pub failed: usize,
+    pub total_quantity: f64,
+    pub total_value: f64,
+    pub errors: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StockSummaryRecord {
+    pub total_products: usize,
+    pub total_quantity: f64,
+    pub total_value: f64,
+}
+
 
 

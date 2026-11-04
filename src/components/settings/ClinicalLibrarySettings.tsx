@@ -1,4 +1,4 @@
-import { useState } from "react"
+import { useState, useEffect } from "react"
 import { Plus, ShieldCheck } from "lucide-react"
 import type {
   ClinicalLibrary,
@@ -11,6 +11,7 @@ import { Button, Field, TextInput, SelectInput } from "../common"
 import {
   isTauriDesktop,
   saveLocalFormularyItem,
+  getLocalFormulary,
   type DesktopSessionContext,
 } from "../../desktop/desktop-bridge"
 
@@ -34,6 +35,35 @@ export function ClinicalLibrarySettings({
   const [medicineStrength, setMedicineStrength] = useState("")
   const [activeIngredient, setActiveIngredient] = useState("")
   const [defaultInstructions, setDefaultInstructions] = useState("")
+
+  useEffect(() => {
+    if (!isTauriDesktop() || !desktopSession?.clinic_id) return
+    let mounted = true
+    getLocalFormulary(desktopSession.clinic_id)
+      .then((items) => {
+        if (!mounted || !items) return
+        for (const f of items) {
+          onAddMedicine({
+            id: f.id,
+            name: f.name,
+            formulation: f.formulation,
+            strength: f.strength || "",
+            activeIngredient: f.active_ingredient || undefined,
+            defaultDosage: f.default_dosage || undefined,
+            defaultRoute: f.default_route || undefined,
+            defaultFrequency: f.default_frequency || undefined,
+            defaultDuration: f.default_duration || undefined,
+            defaultInstructions: f.default_instructions || undefined,
+          })
+        }
+      })
+      .catch((err) => {
+        console.warn("Failed to load local formulary in Settings:", err)
+      })
+    return () => {
+      mounted = false
+    }
+  }, [desktopSession?.clinic_id])
 
   const addItem = () => {
     const value = newItem.trim()
@@ -236,10 +266,14 @@ export function ClinicalLibrarySettings({
           </strong>
           <p style={{ fontSize: "12px", lineHeight: "1.5" }}>
             Reference drug terminology provided under{" "}
-            <strong>Creative Commons Attribution 4.0 International (CC BY 4.0)</strong>{" "}
-            by the National Resource Centre for EHR Standards (NRCeS), Centre for
-            Development of Advanced Computing (C-DAC) Pune. Includes SNOMED CT®
-            International Release terms; authorized territorial use in India. Raw master flat files remain strictly outside client distributions.
+            <strong>
+              Creative Commons Attribution 4.0 International (CC BY 4.0)
+            </strong>{" "}
+            by the National Resource Centre for EHR Standards (NRCeS), Centre
+            for Development of Advanced Computing (C-DAC) Pune. Includes SNOMED
+            CT® International Release terms; authorized territorial use in
+            India. Raw master flat files remain strictly outside client
+            distributions.
           </p>
         </div>
       </div>

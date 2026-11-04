@@ -57,6 +57,7 @@ import {
   getLocalPatients,
   saveLocalPatient,
   deleteLocalPatient,
+  getLocalFormulary,
   getSyncStatus,
   startCatalogueSync,
   type DesktopSessionContext,
@@ -225,6 +226,72 @@ export default function App() {
     }
   }
 
+  const loadAndMergeLocalFormulary = async (clinicId: string) => {
+    try {
+      const items = await getLocalFormulary(clinicId)
+      if (items && items.length > 0) {
+        setClinicalLibrary((prevLibrary) => {
+          let updated = false
+          const defs = [...prevLibrary.MedicineDefinitions]
+          const meds = [...prevLibrary.Medicines]
+
+          for (const item of items) {
+            const trimmedName = item.name.trim()
+            const trimmedFormulation = item.formulation.trim()
+            const trimmedStrength = (item.strength || "").trim()
+
+            const idx = defs.findIndex(
+              (d) =>
+                d.name.trim().toLowerCase() === trimmedName.toLowerCase() &&
+                d.formulation.trim().toLowerCase() ===
+                  trimmedFormulation.toLowerCase() &&
+                (d.strength || "").trim().toLowerCase() ===
+                  trimmedStrength.toLowerCase(),
+            )
+
+            if (idx === -1) {
+              defs.push({
+                id: item.id,
+                name: trimmedName,
+                formulation: trimmedFormulation,
+                strength: trimmedStrength,
+                activeIngredient: item.active_ingredient || undefined,
+                defaultDosage: item.default_dosage || undefined,
+                defaultRoute: item.default_route || undefined,
+                defaultFrequency: item.default_frequency || undefined,
+                defaultDuration: item.default_duration || undefined,
+                defaultInstructions: item.default_instructions || undefined,
+              })
+              if (
+                !meds.some(
+                  (m) => m.trim().toLowerCase() === trimmedName.toLowerCase(),
+                )
+              ) {
+                meds.push(trimmedName)
+              }
+              updated = true
+            } else if (item.active_ingredient && !defs[idx].activeIngredient) {
+              defs[idx] = {
+                ...defs[idx],
+                activeIngredient: item.active_ingredient,
+              }
+              updated = true
+            }
+          }
+
+          if (!updated) return prevLibrary
+          return {
+            ...prevLibrary,
+            Medicines: meds,
+            MedicineDefinitions: defs,
+          }
+        })
+      }
+    } catch (err) {
+      console.warn("[Cliniqo Desktop] Failed to load local formulary:", err)
+    }
+  }
+
   // Desktop session bootstrap: check active in-memory session or restore via DPAPI refresh token
   useEffect(() => {
     if (!isTauriDesktop()) return
@@ -257,6 +324,7 @@ export default function App() {
               setPage((curr) =>
                 curr === "login" || curr === "register" ? "dashboard" : curr,
               )
+              loadAndMergeLocalFormulary(active.clinic_id).catch(() => {})
               startCatalogueSync().catch(() => {})
             } else {
               // Incomplete onboarding: session established but clinic not created yet
@@ -301,6 +369,9 @@ export default function App() {
               }
               setPage((curr) =>
                 curr === "login" || curr === "register" ? "dashboard" : curr,
+              )
+              loadAndMergeLocalFormulary(restored.session.clinic_id).catch(
+                () => {},
               )
               startCatalogueSync().catch(() => {})
             } else {
@@ -363,9 +434,8 @@ export default function App() {
     const effectiveSession =
       sessionOverride !== undefined
         ? sessionOverride
-        : (desktopSessionRef.current || desktopSession)
-    const effectiveOnboarding =
-      onboardingDoctorRef.current || onboardingDoctor
+        : desktopSessionRef.current || desktopSession
+    const effectiveOnboarding = onboardingDoctorRef.current || onboardingDoctor
 
     // Desktop Route Guard:
     // When running inside Tauri desktop container, do not allow navigation to protected pages without verified session
@@ -689,6 +759,7 @@ export default function App() {
         err,
       )
     }
+    loadAndMergeLocalFormulary(session.clinic_id).catch(() => {})
     startCatalogueSync().catch(() => {})
     go("dashboard", session)
   }
@@ -702,21 +773,57 @@ export default function App() {
 
   const addMedicineDefinition = (medicine: ClinicalMedicineDefinition) => {
     setClinicalLibrary((library) => {
-      const exists = library.MedicineDefinitions.some(
+      const trimmedName = medicine.name.trim()
+      const trimmedFormulation = medicine.formulation.trim()
+      const trimmedStrength = (medicine.strength || "").trim()
+
+      const existingIndex = library.MedicineDefinitions.findIndex(
         (item) =>
-          item.name.toLowerCase() === medicine.name.toLowerCase() &&
-          item.formulation === medicine.formulation &&
-          item.strength === medicine.strength,
+          item.name.trim().toLowerCase() === trimmedName.toLowerCase() &&
+          item.formulation.trim().toLowerCase() ===
+            trimmedFormulation.toLowerCase() &&
+          (item.strength || "").trim().toLowerCase() ===
+            trimmedStrength.toLowerCase(),
       )
-      if (exists) return library
+
+      if (existingIndex >= 0) {
+        const existing = library.MedicineDefinitions[existingIndex]
+        const updatedItem: ClinicalMedicineDefinition = {
+          ...existing,
+          activeIngredient:
+            medicine.activeIngredient || existing.activeIngredient,
+          defaultDosage: medicine.defaultDosage || existing.defaultDosage,
+          defaultRoute: medicine.defaultRoute || existing.defaultRoute,
+          defaultFrequency:
+            medicine.defaultFrequency || existing.defaultFrequency,
+          defaultDuration: medicine.defaultDuration || existing.defaultDuration,
+          defaultInstructions:
+            medicine.defaultInstructions || existing.defaultInstructions,
+        }
+        const updatedDefs = [...library.MedicineDefinitions]
+        updatedDefs[existingIndex] = updatedItem
+        return {
+          ...library,
+          MedicineDefinitions: updatedDefs,
+        }
+      }
+
       return {
         ...library,
         Medicines: library.Medicines.some(
-          (item) => item.toLowerCase() === medicine.name.toLowerCase(),
+          (item) => item.trim().toLowerCase() === trimmedName.toLowerCase(),
         )
           ? library.Medicines
-          : [...library.Medicines, medicine.name],
-        MedicineDefinitions: [...library.MedicineDefinitions, medicine],
+          : [...library.Medicines, trimmedName],
+        MedicineDefinitions: [
+          ...library.MedicineDefinitions,
+          {
+            ...medicine,
+            name: trimmedName,
+            formulation: trimmedFormulation,
+            strength: trimmedStrength,
+          },
+        ],
       }
     })
   }
@@ -858,6 +965,7 @@ export default function App() {
         onVitalsChange={updateVital}
         data={consultationData}
         onDataChange={setConsultationData}
+        onAddMedicine={addMedicineDefinition}
         desktopSession={desktopSession}
       />
     )

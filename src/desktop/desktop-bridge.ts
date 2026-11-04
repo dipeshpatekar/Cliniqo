@@ -330,7 +330,7 @@ export async function registerDoctor(
       netErr?.code === "ECONNREFUSED"
     const message = isFetchFail
       ? `Unable to connect to the Cliniqo authentication server at ${baseUrl}. Please check your internet connection or verify the server is running.`
-      : (netErr?.message || "Registration request failed")
+      : netErr?.message || "Registration request failed"
     const err = new Error(message)
     ;(err as any).isNetworkError = true
     throw err
@@ -390,7 +390,7 @@ export async function createClinic(
       netErr?.code === "ECONNREFUSED"
     const message = isFetchFail
       ? `Unable to connect to the Cliniqo server at ${baseUrl}. Please check your network connection.`
-      : (netErr?.message || "Failed to create clinic")
+      : netErr?.message || "Failed to create clinic"
     const err = new Error(message)
     ;(err as any).isNetworkError = true
     throw err
@@ -438,7 +438,7 @@ export async function refreshAuthTokens(
       netErr?.code === "ECONNREFUSED"
     const message = isFetchFail
       ? `Unable to connect to the Cliniqo server at ${baseUrl}. Please check your network connection.`
-      : (netErr?.message || "Failed to refresh authentication session")
+      : netErr?.message || "Failed to refresh authentication session"
     const err = new Error(message)
     ;(err as any).isNetworkError = true
     throw err
@@ -789,6 +789,206 @@ export async function deleteLocalFormularyItem(
   return result !== null
 }
 
+export interface StockItemInput {
+  product_name: string
+  unit: string
+  company: string
+  quantity: number
+  value?: number | null
+  batch_number?: string | null
+}
+
+export interface StockItemRecord {
+  id: string
+  clinic_id: string
+  product_name: string
+  unit: string
+  company: string
+  quantity: number
+  value: number | null
+  batch_number: string | null
+  source_report: string
+  created_at: string
+  updated_at: string
+}
+
+export interface StockImportSummary {
+  total_records: number
+  successful: number
+  skipped: number
+  failed: number
+  total_quantity: number
+  total_value: number
+  errors: string[]
+}
+
+export interface StockSummaryRecord {
+  total_products: number
+  total_quantity: number
+  total_value: number
+}
+
+export async function importInventoryStock(
+  clinicId: string,
+  items: StockItemInput[],
+  overwrite = false,
+  sourceReport?: string,
+): Promise<StockImportSummary> {
+  if (isTauriDesktop()) {
+    const result = await invokeTauri<StockImportSummary>(
+      "import_inventory_stock",
+      {
+        clinicId,
+        items,
+        overwrite,
+        sourceReport: sourceReport || null,
+      },
+    )
+    if (result) return result
+  }
+
+  // Safe Web / Mock fallback for tests and development
+  let successful = 0
+  let skipped = 0
+  let failed = 0
+  let total_quantity = 0
+  let total_value = 0
+  const errors: string[] = []
+
+  const storageKey = `cliniqo-inventory-${clinicId}`
+  const existing: StockItemRecord[] = JSON.parse(
+    (typeof window !== "undefined" &&
+      window.localStorage?.getItem(storageKey)) ||
+      "[]",
+  )
+
+  for (const item of items) {
+    if (!item.product_name || !item.product_name.trim()) {
+      failed++
+      errors.push("Skipped item with empty product name")
+      continue
+    }
+    if (item.quantity < 0) {
+      failed++
+      errors.push(`Product '${item.product_name}' has negative quantity`)
+      continue
+    }
+
+    const idx = existing.findIndex(
+      (e) =>
+        e.product_name.trim().toLowerCase() ===
+          item.product_name.trim().toLowerCase() &&
+        e.unit.trim().toLowerCase() === item.unit.trim().toLowerCase() &&
+        e.company.trim().toLowerCase() === item.company.trim().toLowerCase(),
+    )
+
+    if (idx >= 0) {
+      if (!overwrite) {
+        skipped++
+      } else {
+        existing[idx].quantity = item.quantity
+        existing[idx].value = item.value ?? null
+        existing[idx].batch_number =
+          item.batch_number ?? existing[idx].batch_number
+        existing[idx].source_report =
+          sourceReport || existing[idx].source_report
+        existing[idx].updated_at = new Date().toISOString()
+        successful++
+        total_quantity += item.quantity
+        if (item.value != null) total_value += item.value
+      }
+    } else {
+      existing.push({
+        id: `mock-inv-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        clinic_id: clinicId,
+        product_name: item.product_name.trim(),
+        unit: item.unit.trim(),
+        company: item.company.trim(),
+        quantity: item.quantity,
+        value: item.value ?? null,
+        batch_number: item.batch_number ?? null,
+        source_report: sourceReport || "STOCK REPORT (18-10-26)",
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      })
+      successful++
+      total_quantity += item.quantity
+      if (item.value != null) total_value += item.value
+    }
+  }
+
+  if (typeof window !== "undefined" && window.localStorage) {
+    window.localStorage.setItem(storageKey, JSON.stringify(existing))
+  }
+
+  return {
+    total_records: successful + skipped + failed,
+    successful,
+    skipped,
+    failed,
+    total_quantity,
+    total_value,
+    errors,
+  }
+}
+
+export async function getInventoryStock(
+  clinicId: string,
+  query?: string,
+): Promise<StockItemRecord[]> {
+  if (isTauriDesktop()) {
+    const result = await invokeTauri<StockItemRecord[]>("get_inventory_stock", {
+      clinicId,
+      query: query || null,
+    })
+    if (result) return result
+  }
+
+  const storageKey = `cliniqo-inventory-${clinicId}`
+  const list: StockItemRecord[] = JSON.parse(
+    (typeof window !== "undefined" &&
+      window.localStorage?.getItem(storageKey)) ||
+      "[]",
+  )
+  if (!query || !query.trim()) return list
+  const q = query.trim().toLowerCase()
+  return list.filter(
+    (item) =>
+      item.product_name.toLowerCase().includes(q) ||
+      item.company.toLowerCase().includes(q) ||
+      item.unit.toLowerCase().includes(q),
+  )
+}
+
+export async function getInventoryStockSummary(
+  clinicId: string,
+): Promise<StockSummaryRecord> {
+  if (isTauriDesktop()) {
+    const result = await invokeTauri<StockSummaryRecord>(
+      "get_inventory_stock_summary",
+      { clinicId },
+    )
+    if (result) return result
+  }
+
+  const storageKey = `cliniqo-inventory-${clinicId}`
+  const list: StockItemRecord[] = JSON.parse(
+    (typeof window !== "undefined" &&
+      window.localStorage?.getItem(storageKey)) ||
+      "[]",
+  )
+  const total_quantity = list.reduce(
+    (sum, item) => sum + (item.quantity || 0),
+    0,
+  )
+  const total_value = list.reduce((sum, item) => sum + (item.value || 0), 0)
+  return {
+    total_products: list.length,
+    total_quantity,
+    total_value,
+  }
+}
+
 export interface LocalCatalogueCacheRecord {
   id: string
   item_type: string
@@ -917,7 +1117,11 @@ export async function searchCatalogue(
 
   // In desktop mode, SQLite cache is high-speed, local, encrypted, and offline-first
   if (isDesktop) {
-    const localItems = await searchLocalCatalogueCache(query, limit, formulation)
+    const localItems = await searchLocalCatalogueCache(
+      query,
+      limit,
+      formulation,
+    )
     return {
       items: localItems,
       total: localItems.length,
@@ -1157,7 +1361,9 @@ export async function getClinicProfile(
 
   try {
     if (typeof window !== "undefined" && window.localStorage) {
-      const raw = window.localStorage.getItem(`cliniqo_clinic_profile_${clinicId}`)
+      const raw = window.localStorage.getItem(
+        `cliniqo_clinic_profile_${clinicId}`,
+      )
       if (raw) return JSON.parse(raw)
     }
   } catch {}
@@ -1218,7 +1424,9 @@ export async function getDoctorProfile(
 
   try {
     if (typeof window !== "undefined" && window.localStorage) {
-      const raw = window.localStorage.getItem(`cliniqo_doctor_profile_${doctorId || "default"}`)
+      const raw = window.localStorage.getItem(
+        `cliniqo_doctor_profile_${doctorId || "default"}`,
+      )
       if (raw) return JSON.parse(raw)
     }
   } catch {}

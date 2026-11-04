@@ -513,7 +513,9 @@ describe("Desktop Bridge (Tauri 2 Frontend Integration)", () => {
     })
 
     it("formats TypeError: Failed to fetch into actionable diagnostic message with target URL", async () => {
-      globalThis.fetch = vi.fn().mockRejectedValue(new TypeError("Failed to fetch"))
+      globalThis.fetch = vi
+        .fn()
+        .mockRejectedValue(new TypeError("Failed to fetch"))
 
       const { registerDoctor, getApiBaseUrl } = await import("./desktop-bridge")
       const targetUrl = getApiBaseUrl()
@@ -532,7 +534,9 @@ describe("Desktop Bridge (Tauri 2 Frontend Integration)", () => {
 
       expect(caughtError).toBeDefined()
       expect(caughtError.isNetworkError).toBe(true)
-      expect(caughtError.message).toContain("Unable to connect to the Cliniqo authentication server at")
+      expect(caughtError.message).toContain(
+        "Unable to connect to the Cliniqo authentication server at",
+      )
       expect(caughtError.message).toContain(targetUrl)
       expect(caughtError.message).not.toBe("Failed to fetch")
     })
@@ -563,7 +567,9 @@ describe("Desktop Bridge (Tauri 2 Frontend Integration)", () => {
         }),
       }))
 
-      const { registerDoctor, getTrustedApiUrl } = await import("./desktop-bridge")
+      const { registerDoctor, getTrustedApiUrl } = await import(
+        "./desktop-bridge"
+      )
       const desktopResult = await registerDoctor({
         fullName: "Dr. Desktop",
         email: "desktop@clinic.com",
@@ -664,7 +670,8 @@ describe("Desktop Bridge (Tauri 2 Frontend Integration)", () => {
           item_type: "BRAND",
           name: "Amoxyclav 625 Tablet",
           brand_name: "Amoxyclav 625",
-          generic_name: "Amoxicillin and Clavulanic Acid 500 mg + 125 mg Tablet",
+          generic_name:
+            "Amoxicillin and Clavulanic Acid 500 mg + 125 mg Tablet",
           product_name: "Amoxyclav 625 Tablet",
           dosage_form: "Tablet",
           route: "Oral",
@@ -712,7 +719,12 @@ describe("Desktop Bridge (Tauri 2 Frontend Integration)", () => {
       }))
 
       const { searchCatalogue } = await import("./desktop-bridge")
-      const result = await searchCatalogue("xyz_not_found", undefined, 20, "Tablet")
+      const result = await searchCatalogue(
+        "xyz_not_found",
+        undefined,
+        20,
+        "Tablet",
+      )
 
       expect(result.items.length).toBe(0)
       expect(result.isOfflineCache).toBe(false)
@@ -734,14 +746,19 @@ describe("Desktop Bridge (Tauri 2 Frontend Integration)", () => {
 
       vi.doMock("@tauri-apps/api/core", () => ({
         invoke: vi.fn().mockImplementation((cmd: string) => {
-          if (cmd === "get_catalogue_sync_status" || cmd === "start_catalogue_sync") {
+          if (
+            cmd === "get_catalogue_sync_status" ||
+            cmd === "start_catalogue_sync"
+          ) {
             return Promise.resolve(mockStatus)
           }
           return Promise.resolve(null)
         }),
       }))
 
-      const { getCatalogueSyncStatus, startCatalogueSync } = await import("./desktop-bridge")
+      const { getCatalogueSyncStatus, startCatalogueSync } = await import(
+        "./desktop-bridge"
+      )
       const status = await getCatalogueSyncStatus()
       expect(status).not.toBeNull()
       expect(status?.status).toBe("SYNCING")
@@ -768,7 +785,11 @@ describe("Desktop Bridge (Tauri 2 Frontend Integration)", () => {
       }))
 
       const { getCatalogueStrengths } = await import("./desktop-bridge")
-      const result = await getCatalogueStrengths("Amoxyclav", undefined, "Tablet")
+      const result = await getCatalogueStrengths(
+        "Amoxyclav",
+        undefined,
+        "Tablet",
+      )
 
       expect(result.strengths).toEqual(["625 mg", "1000 mg"])
       expect(result.isSingleMatch).toBe(false)
@@ -806,7 +827,9 @@ describe("Desktop Bridge (Tauri 2 Frontend Integration)", () => {
         }),
       }))
 
-      const { saveDoctorProfile, getDoctorProfile } = await import("./desktop-bridge")
+      const { saveDoctorProfile, getDoctorProfile } = await import(
+        "./desktop-bridge"
+      )
       const saved = await saveDoctorProfile({
         doctor_id: "doc-123",
         full_name: "Dr. Dipesh Patekar",
@@ -832,7 +855,9 @@ describe("Desktop Bridge (Tauri 2 Frontend Integration)", () => {
 
     it("falls back to localStorage for doctor profile when Tauri internals absent", async () => {
       delete win.__TAURI_INTERNALS__
-      const { saveDoctorProfile, getDoctorProfile } = await import("./desktop-bridge")
+      const { saveDoctorProfile, getDoctorProfile } = await import(
+        "./desktop-bridge"
+      )
 
       const saved = await saveDoctorProfile({
         doctor_id: "doc-web-test",
@@ -852,6 +877,87 @@ describe("Desktop Bridge (Tauri 2 Frontend Integration)", () => {
       expect(loaded).not.toBeNull()
       expect(loaded?.full_name).toBe("Dr. Web Test")
       expect(loaded?.registration_number).toBe("KMC 2024/555")
+    })
+  })
+
+  describe("Inventory & Stock Management Bridge", () => {
+    it("imports stock items safely with duplicate prevention and summary reporting", async () => {
+      const {
+        importInventoryStock,
+        getInventoryStock,
+        getInventoryStockSummary,
+      } = await import("./desktop-bridge")
+
+      const clinicId = "clinic-inv-spec-1"
+
+      const sampleBatch = [
+        {
+          product_name: "6D BODYPROOF",
+          unit: "TAB",
+          company: "EMRYS",
+          quantity: 180,
+          value: 1745.88,
+        },
+        {
+          product_name: "SLISHINE 20GM",
+          unit: "CREAM",
+          company: "SILVE",
+          quantity: 4,
+          value: null, // missing field preserved accurately
+        },
+        {
+          product_name: "A TO Z DROPS",
+          unit: "15 ML",
+          company: "ALK",
+          quantity: 3,
+          value: 348.03,
+        },
+      ]
+
+      // 1. Initial import
+      const summary1 = await importInventoryStock(clinicId, sampleBatch, false)
+      expect(summary1.successful).toBe(3)
+      expect(summary1.skipped).toBe(0)
+      expect(summary1.failed).toBe(0)
+      expect(summary1.total_quantity).toBe(187)
+      expect(Math.abs(summary1.total_value - 2093.91)).toBeLessThan(0.01)
+
+      // 2. Second import without overwrite -> all existing items safely skipped
+      const summary2 = await importInventoryStock(clinicId, sampleBatch, false)
+      expect(summary2.successful).toBe(0)
+      expect(summary2.skipped).toBe(3)
+      expect(summary2.failed).toBe(0)
+
+      // 3. Query stock items
+      const items = await getInventoryStock(clinicId)
+      expect(items.length).toBe(3)
+      const slishine = items.find((i) => i.product_name === "SLISHINE 20GM")
+      expect(slishine).toBeDefined()
+      expect(slishine?.value).toBeNull()
+
+      // 4. Substring query filter
+      const filtered = await getInventoryStock(clinicId, "BODYPROOF")
+      expect(filtered.length).toBe(1)
+      expect(filtered[0].product_name).toBe("6D BODYPROOF")
+
+      // 5. Explicit overwrite updates quantities
+      const updated = [
+        {
+          product_name: "6D BODYPROOF",
+          unit: "TAB",
+          company: "EMRYS",
+          quantity: 250,
+          value: 2400.0,
+        },
+      ]
+      const summary3 = await importInventoryStock(clinicId, updated, true)
+      expect(summary3.successful).toBe(1)
+      expect(summary3.skipped).toBe(0)
+
+      // 6. Summary metrics
+      const stats = await getInventoryStockSummary(clinicId)
+      expect(stats.total_products).toBe(3)
+      expect(stats.total_quantity).toBe(257) // 250 + 4 + 3
     })
   })
 })

@@ -314,23 +314,42 @@ export async function registerDoctor(
 
   const baseUrl = getApiBaseUrl()
   const url = `${baseUrl}/auth/register`
-  let res: Response
-  try {
-    res = await fetch(url, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(input),
-    })
-  } catch (netErr: any) {
+  let res: Response | null = null
+  let lastNetErr: any = null
+
+  const maxAttempts = 3
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      res = await fetch(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(input),
+      })
+      break
+    } catch (netErr: any) {
+      lastNetErr = netErr
+      const isFetchFail =
+        netErr?.message === "Failed to fetch" ||
+        netErr?.name === "TypeError" ||
+        netErr?.code === "ECONNREFUSED"
+      if (attempt < maxAttempts && isFetchFail) {
+        await new Promise((r) => setTimeout(r, attempt * 1000))
+        continue
+      }
+      break
+    }
+  }
+
+  if (!res) {
     const isFetchFail =
-      netErr?.message === "Failed to fetch" ||
-      netErr?.name === "TypeError" ||
-      netErr?.code === "ECONNREFUSED"
+      lastNetErr?.message === "Failed to fetch" ||
+      lastNetErr?.name === "TypeError" ||
+      lastNetErr?.code === "ECONNREFUSED"
     const message = isFetchFail
       ? `Unable to connect to the Cliniqo authentication server at ${baseUrl}. Please check your internet connection or verify the server is running.`
-      : netErr?.message || "Registration request failed"
+      : lastNetErr?.message || "Registration request failed"
     const err = new Error(message)
     ;(err as any).isNetworkError = true
     throw err
@@ -339,6 +358,25 @@ export async function registerDoctor(
   const data = await res.json().catch(() => ({}))
 
   if (!res.ok) {
+    if (res.status === 409) {
+      // Conflict recovery: verify if doctor was registered during an interrupted connection
+      try {
+        const loginRes = await fetch(`${baseUrl}/auth/login`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email: input.email, password: input.password }),
+        })
+        if (loginRes.ok) {
+          const loginData = await loginRes.json()
+          if (loginData?.accessToken && loginData?.doctor) {
+            return loginData as RegisterDoctorResult
+          }
+        }
+      } catch {
+        // Fall through to 409 error
+      }
+    }
+
     let message = data?.message
     if (Array.isArray(message)) {
       message = message.join(", ")

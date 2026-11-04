@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type ComponentType, type ReactNode } from "react"
 import { cn } from "../../utils/cn"
+import cliniqoLogo from "../../assets/logo.png"
 import {
   Check,
   ChevronDown,
@@ -390,7 +391,13 @@ export function Logo({ large = false }: { large?: boolean }) {
   return (
     <div className={cn("logo-lockup", large && "logo-large")}>
       <span className="logo-mark">
-        <HeartPulse size={large ? 24 : 20} strokeWidth={2.25} />
+        <img
+          src={cliniqoLogo}
+          alt="Cliniqo"
+          className="logo-img"
+          width={large ? 44 : 36}
+          height={large ? 44 : 36}
+        />
       </span>
       <span>
         <strong>Cliniqo</strong>

@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from "react"
+import { useState, useRef, useEffect, type FormEvent } from "react"
 import { cn } from "../../utils/cn"
 import { Button, IconButton, Logo } from "../common"
 import type { Page } from "../../types"
@@ -40,6 +40,13 @@ export function Register({ go, onRegisterSuccess }: RegisterProps) {
   const [errorMessage, setErrorMessage] = useState("")
   const [status, setStatus] =
     useState<"idle" | "loading" | "success" | "duplicate" | "failure">("idle")
+  const isSubmittingRef = useRef(false)
+
+  // Non-blocking ping to pre-warm backend (e.g. Render spin-up) while user fills out form
+  useEffect(() => {
+    fetch(`${getApiBaseUrl()}/health`, { method: "GET" }).catch(() => {})
+  }, [])
+
   const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
   const passwordChecks = [
     password.length >= 8,
@@ -65,7 +72,7 @@ export function Register({ go, onRegisterSuccess }: RegisterProps) {
 
   const submit = async (event: FormEvent) => {
     event.preventDefault()
-    if (status === "loading") return
+    if (isSubmittingRef.current || status === "loading") return
 
     const nextErrors: Record<string, string> = {}
     if (!fullName.trim()) nextErrors.fullName = "Enter your full name"
@@ -89,6 +96,7 @@ export function Register({ go, onRegisterSuccess }: RegisterProps) {
     setErrors({})
     setErrorMessage("")
     setStatus("loading")
+    isSubmittingRef.current = true
 
     try {
       const result = await registerDoctor({
@@ -150,6 +158,8 @@ export function Register({ go, onRegisterSuccess }: RegisterProps) {
           )
         }
       }
+    } finally {
+      isSubmittingRef.current = false
     }
   }
 

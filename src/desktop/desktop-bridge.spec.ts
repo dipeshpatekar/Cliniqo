@@ -422,13 +422,22 @@ describe("Desktop Bridge (Tauri 2 Frontend Integration)", () => {
       )
     })
 
-    it("registerDoctor throws Conflict error when status is 409", async () => {
-      globalThis.fetch = (vi.fn().mockResolvedValue({
-        ok: false,
-        status: 409,
-        json: async () => ({
-          message: "An account with this email address already exists.",
-        }),
+    it("registerDoctor throws Conflict error when status is 409 and login fails", async () => {
+      globalThis.fetch = (vi.fn().mockImplementation((url: string) => {
+        if (url.includes("/auth/login")) {
+          return Promise.resolve({
+            ok: false,
+            status: 401,
+            json: async () => ({ message: "Invalid email or password" }),
+          })
+        }
+        return Promise.resolve({
+          ok: false,
+          status: 409,
+          json: async () => ({
+            message: "An account with this email address already exists.",
+          }),
+        })
       }) as any)
 
       const { registerDoctor } = await import("./desktop-bridge")
@@ -439,6 +448,73 @@ describe("Desktop Bridge (Tauri 2 Frontend Integration)", () => {
           password: "SecurePassword123!",
         }),
       ).rejects.toThrow("An account with this email address already exists.")
+    })
+
+    it("registerDoctor seamlessly recovers on 409 Conflict if login succeeds (interrupted attempt)", async () => {
+      const recoveredResult = {
+        accessToken: "recovered-jwt-token",
+        refreshToken: "recovered-refresh-token",
+        doctor: {
+          id: "doc-recovered",
+          email: "interrupted@clinic.com",
+          fullName: "Dr. Interrupted",
+        },
+      }
+
+      globalThis.fetch = (vi.fn().mockImplementation((url: string) => {
+        if (url.includes("/auth/login")) {
+          return Promise.resolve({
+            ok: true,
+            status: 200,
+            json: async () => recoveredResult,
+          })
+        }
+        return Promise.resolve({
+          ok: false,
+          status: 409,
+          json: async () => ({ message: "An account with this email address already exists." }),
+        })
+      }) as any)
+
+      const { registerDoctor } = await import("./desktop-bridge")
+      const result = await registerDoctor({
+        fullName: "Dr. Interrupted",
+        email: "interrupted@clinic.com",
+        password: "SecurePassword123!",
+      })
+
+      expect(result.accessToken).toBe("recovered-jwt-token")
+      expect(result.doctor.id).toBe("doc-recovered")
+    })
+
+    it("registerDoctor retries transient network errors before succeeding", async () => {
+      let callCount = 0
+      const successResult = {
+        accessToken: "retry-success-token",
+        doctor: { id: "doc-retry", fullName: "Dr. Retry", email: "retry@clinic.com" },
+      }
+
+      globalThis.fetch = (vi.fn().mockImplementation((url: string) => {
+        callCount++
+        if (callCount === 1) {
+          return Promise.reject(new TypeError("Failed to fetch"))
+        }
+        return Promise.resolve({
+          ok: true,
+          status: 201,
+          json: async () => successResult,
+        })
+      }) as any)
+
+      const { registerDoctor } = await import("./desktop-bridge")
+      const result = await registerDoctor({
+        fullName: "Dr. Retry",
+        email: "retry@clinic.com",
+        password: "SecurePassword123!",
+      })
+
+      expect(callCount).toBe(2)
+      expect(result.accessToken).toBe("retry-success-token")
     })
 
     it("createClinic posts to /clinics with Bearer token", async () => {

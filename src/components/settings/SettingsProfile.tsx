@@ -1,5 +1,5 @@
-import { useState, useEffect } from "react"
-import { Building2, Upload } from "lucide-react"
+import { useState, useEffect, useRef } from "react"
+import { Building2, Upload, AlertCircle } from "lucide-react"
 import { Button, Field, TextInput, SelectInput } from "../common"
 
 import {
@@ -65,6 +65,122 @@ export function SettingsProfile({
   const [docRegistrationNumber, setDocRegistrationNumber] = useState("")
   const [docMobile, setDocMobile] = useState("")
   const [docEmail, setDocEmail] = useState(desktopSession?.doctor_email || "")
+
+  // File upload state for Doctor Photo & Clinic Logo
+  const fileInputRef = useRef<HTMLInputElement | null>(null)
+  const [fileError, setFileError] = useState("")
+
+  const [doctorPhoto, setDoctorPhoto] = useState<string | null>(() => {
+    if (typeof window === "undefined" || !window.localStorage) return null
+    return (
+      (desktopSession?.doctor_id &&
+        window.localStorage.getItem(
+          `cliniqo_doctor_photo_${desktopSession.doctor_id}`,
+        )) ||
+      window.localStorage.getItem("cliniqo_doctor_photo") ||
+      null
+    )
+  })
+
+  const [clinicLogo, setClinicLogo] = useState<string | null>(() => {
+    if (typeof window === "undefined" || !window.localStorage) return null
+    return (
+      (desktopSession?.clinic_id &&
+        window.localStorage.getItem(
+          `cliniqo_clinic_logo_${desktopSession.clinic_id}`,
+        )) ||
+      window.localStorage.getItem("cliniqo_clinic_logo") ||
+      null
+    )
+  })
+
+  useEffect(() => {
+    if (typeof window === "undefined" || !window.localStorage) return
+    if (desktopSession?.doctor_id) {
+      const stored = window.localStorage.getItem(
+        `cliniqo_doctor_photo_${desktopSession.doctor_id}`,
+      )
+      if (stored) setDoctorPhoto(stored)
+    }
+  }, [desktopSession?.doctor_id])
+
+  useEffect(() => {
+    if (typeof window === "undefined" || !window.localStorage) return
+    if (desktopSession?.clinic_id) {
+      const stored = window.localStorage.getItem(
+        `cliniqo_clinic_logo_${desktopSession.clinic_id}`,
+      )
+      if (stored) setClinicLogo(stored)
+    }
+  }, [desktopSession?.clinic_id])
+
+  const handleFileSelect = (file?: File) => {
+    if (!file) return
+    if (!["image/png", "image/jpeg"].includes(file.type)) {
+      setFileError("Upload a PNG or JPG image.")
+      return
+    }
+    if (file.size > 2 * 1024 * 1024) {
+      setFileError("Image must be smaller than 2 MB.")
+      return
+    }
+    const reader = new FileReader()
+    reader.onload = () => {
+      const dataUrl = String(reader.result)
+      if (clinic) {
+        setClinicLogo(dataUrl)
+        if (typeof window !== "undefined" && window.localStorage) {
+          window.localStorage.setItem("cliniqo_clinic_logo", dataUrl)
+          if (desktopSession?.clinic_id) {
+            window.localStorage.setItem(
+              `cliniqo_clinic_logo_${desktopSession.clinic_id}`,
+              dataUrl,
+            )
+          }
+        }
+      } else {
+        setDoctorPhoto(dataUrl)
+        if (typeof window !== "undefined" && window.localStorage) {
+          window.localStorage.setItem("cliniqo_doctor_photo", dataUrl)
+          if (desktopSession?.doctor_id) {
+            window.localStorage.setItem(
+              `cliniqo_doctor_photo_${desktopSession.doctor_id}`,
+              dataUrl,
+            )
+          }
+        }
+      }
+      setFileError("")
+    }
+    reader.onerror = () =>
+      setFileError("We couldn’t read that image. Please try another file.")
+    reader.readAsDataURL(file)
+  }
+
+  const handleRemoveImage = () => {
+    if (clinic) {
+      setClinicLogo(null)
+      if (typeof window !== "undefined" && window.localStorage) {
+        window.localStorage.removeItem("cliniqo_clinic_logo")
+        if (desktopSession?.clinic_id) {
+          window.localStorage.removeItem(
+            `cliniqo_clinic_logo_${desktopSession.clinic_id}`,
+          )
+        }
+      }
+    } else {
+      setDoctorPhoto(null)
+      if (typeof window !== "undefined" && window.localStorage) {
+        window.localStorage.removeItem("cliniqo_doctor_photo")
+        if (desktopSession?.doctor_id) {
+          window.localStorage.removeItem(
+            `cliniqo_doctor_photo_${desktopSession.doctor_id}`,
+          )
+        }
+      }
+    }
+    setFileError("")
+  }
 
   useEffect(() => {
     if (clinic || !desktopSession?.doctor_id) return
@@ -189,23 +305,58 @@ export function SettingsProfile({
         <span
           className={clinic ? "clinic-logo-placeholder" : "photo-placeholder"}
         >
-          {clinic ? <Building2 size={24} /> : doctorInitials}
+          {clinic ? (
+            clinicLogo ? (
+              <img src={clinicLogo} alt="Clinic logo" />
+            ) : (
+              <Building2 size={24} />
+            )
+          ) : doctorPhoto ? (
+            <img src={doctorPhoto} alt="Doctor profile" />
+          ) : (
+            doctorInitials
+          )}
         </span>
         <div>
           <strong>{clinic ? "Clinic logo" : "Profile photo"}</strong>
           <p>PNG or JPG, up to 2 MB</p>
         </div>
+        <input
+          ref={fileInputRef}
+          className="sr-only"
+          type="file"
+          accept="image/png,image/jpeg"
+          onChange={(event) => {
+            handleFileSelect(event.target.files?.[0])
+            event.target.value = ""
+          }}
+        />
+        {(clinic ? clinicLogo : doctorPhoto) && (
+          <Button
+            type="button"
+            size="sm"
+            variant="ghost"
+            onClick={handleRemoveImage}
+          >
+            Remove
+          </Button>
+        )}
         <Button
+          type="button"
           size="sm"
           variant="secondary"
           icon={Upload}
-          onClick={() =>
-            window.alert("Image picker opened in the production application.")
-          }
+          onClick={() => fileInputRef.current?.click()}
         >
-          Upload
+          {(clinic ? clinicLogo : doctorPhoto) ? "Replace" : "Upload"}
         </Button>
       </div>
+      {fileError && (
+        <div className="photo-upload-error" role="alert">
+          <AlertCircle size={15} />
+          {fileError}
+        </div>
+      )}
       <div className="form-grid two">
         {clinic ? (
           <>

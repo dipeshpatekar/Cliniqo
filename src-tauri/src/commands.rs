@@ -423,24 +423,113 @@ pub async fn register_desktop(
     let client = crate::config::create_secure_http_client(Duration::from_secs(35))?;
 
     let register_url = format!("{base_url}/auth/register");
-    let resp = client
-        .post(&register_url)
-        .json(&serde_json::json!({
-            "fullName": input.full_name.trim(),
-            "email": input.email.trim(),
-            "password": input.password,
-            "phone": input.phone.as_ref().map(|p| p.trim()),
-            "qualification": input.qualification.as_ref().map(|p| p.trim()),
-            "registrationNumber": input.registration_number.as_ref().map(|p| p.trim()),
-            "gender": input.gender.as_ref().map(|p| p.trim()),
-        }))
-        .send()
-        .await
-        .map_err(|e| format!("Authentication server unreachable ({base_url}): {e}"))?;
+    let payload = serde_json::json!({
+        "fullName": input.full_name.trim(),
+        "email": input.email.trim(),
+        "password": input.password,
+        "phone": input.phone.as_ref().map(|p| p.trim()),
+        "qualification": input.qualification.as_ref().map(|p| p.trim()),
+        "registrationNumber": input.registration_number.as_ref().map(|p| p.trim()),
+        "gender": input.gender.as_ref().map(|p| p.trim()),
+    });
+
+    let max_attempts = 3;
+    let mut last_transport_err: Option<String> = None;
+    let mut resp_opt: Option<reqwest::Response> = None;
+
+    for attempt in 1..=max_attempts {
+        match client.post(&register_url).json(&payload).send().await {
+            Ok(resp) => {
+                resp_opt = Some(resp);
+                break;
+            }
+            Err(e) => {
+                let is_transport_error = e.is_connect() || e.is_timeout() || e.is_request();
+                let err_str = format!("{e}");
+                last_transport_err = Some(err_str.clone());
+                log::warn!(
+                    "[register_desktop] Attempt {attempt}/{max_attempts} failed with transport error: {err_str}"
+                );
+                if attempt < max_attempts && is_transport_error {
+                    let delay_ms = attempt * 1200;
+                    tokio::time::sleep(Duration::from_millis(delay_ms as u64)).await;
+                    continue;
+                } else {
+                    break;
+                }
+            }
+        }
+    }
+
+    let resp = match resp_opt {
+        Some(r) => r,
+        None => {
+            let detail = last_transport_err.unwrap_or_else(|| "unknown network error".to_string());
+            return Err(format!("Authentication server unreachable ({base_url}): {detail}"));
+        }
+    };
 
     let status = resp.status();
     if !status.is_success() {
         if status == reqwest::StatusCode::CONFLICT {
+            // Attempt conflict recovery: check if the account was successfully created during
+            // a preceding attempt that experienced network interruption before receiving the response.
+            let login_url = format!("{base_url}/auth/login");
+            if let Ok(login_resp) = client
+                .post(&login_url)
+                .json(&serde_json::json!({
+                    "email": input.email.trim(),
+                    "password": input.password,
+                }))
+                .send()
+                .await
+            {
+                if login_resp.status().is_success() {
+                    if let Ok(login_data) = login_resp.json::<BackendLoginResponse>().await {
+                        if let Some(doc) = login_data.doctor {
+                            if let Some(ref rt) = login_data.refresh_token {
+                                if !rt.trim().is_empty() {
+                                    let _ = state.key_mgr.save_refresh_token(rt);
+                                }
+                            }
+
+                            {
+                                let conn = state.db.get_connection();
+                                let _ = crate::db::operations::DbOperations::upsert_doctor_profile(
+                                    &conn,
+                                    &crate::db::schema::DoctorProfileRecord {
+                                        doctor_id: doc.id.clone(),
+                                        full_name: doc.full_name.clone(),
+                                        email: doc.email.clone(),
+                                        phone: doc.phone.clone().unwrap_or_default(),
+                                        qualification: doc.qualification.clone().unwrap_or_default(),
+                                        registration_number: doc.registration_number.clone().unwrap_or_default(),
+                                        gender: doc.gender.clone().unwrap_or_else(|| "Male".to_string()),
+                                        updated_at: None,
+                                    },
+                                );
+                            }
+
+                            let session = login_with_auto_key_sync(
+                                &state.session_mgr,
+                                &state.key_mgr,
+                                &login_data.access_token,
+                                "",
+                                "OWNER",
+                            )
+                            .await
+                            .map_err(|e| format!("Failed to establish native doctor session: {e}"))?;
+
+                            return Ok(RegisterDesktopResult {
+                                access_token: login_data.access_token,
+                                refresh_token: login_data.refresh_token,
+                                doctor: doc,
+                                session: Some(session),
+                            });
+                        }
+                    }
+                }
+            }
             return Err("An account with this email address already exists.".to_string());
         }
         let body_text = resp.text().await.unwrap_or_default();

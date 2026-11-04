@@ -1,4 +1,4 @@
-import { useState, useEffect, type FormEvent } from "react"
+import { useState, useEffect, useRef, type FormEvent } from "react"
 import { Button, Field, Logo, SelectInput, TextInput } from "../common"
 import type { Page } from "../../types"
 import {
@@ -83,6 +83,70 @@ export function Setup({
   const [clinicEmail, setClinicEmail] = useState(
     sessionProp?.doctor_email || doctor?.email || "",
   )
+
+  // Step 1: Doctor Photo State
+  const photoInputRef = useRef<HTMLInputElement | null>(null)
+  const [profilePhoto, setProfilePhoto] = useState<string | null>(() => {
+    if (typeof window === "undefined" || !window.localStorage) return null
+    return window.localStorage.getItem("cliniqo_doctor_photo") || null
+  })
+  const [photoError, setPhotoError] = useState("")
+
+  // Step 2: Clinic Logo State
+  const logoInputRef = useRef<HTMLInputElement | null>(null)
+  const [clinicLogo, setClinicLogo] = useState<string | null>(() => {
+    if (typeof window === "undefined" || !window.localStorage) return null
+    return window.localStorage.getItem("cliniqo_clinic_logo") || null
+  })
+  const [logoError, setLogoError] = useState("")
+
+  const uploadPhoto = (file?: File) => {
+    if (!file) return
+    if (!["image/png", "image/jpeg"].includes(file.type)) {
+      setPhotoError("Upload a PNG or JPG image.")
+      return
+    }
+    if (file.size > 2 * 1024 * 1024) {
+      setPhotoError("Profile photo must be smaller than 2 MB.")
+      return
+    }
+    const reader = new FileReader()
+    reader.onload = () => {
+      const dataUrl = String(reader.result)
+      setProfilePhoto(dataUrl)
+      if (typeof window !== "undefined" && window.localStorage) {
+        window.localStorage.setItem("cliniqo_doctor_photo", dataUrl)
+      }
+      setPhotoError("")
+    }
+    reader.onerror = () =>
+      setPhotoError("We couldn’t read that image. Please try another file.")
+    reader.readAsDataURL(file)
+  }
+
+  const uploadLogo = (file?: File) => {
+    if (!file) return
+    if (!["image/png", "image/jpeg"].includes(file.type)) {
+      setLogoError("Upload a PNG or JPG image.")
+      return
+    }
+    if (file.size > 2 * 1024 * 1024) {
+      setLogoError("Clinic logo must be smaller than 2 MB.")
+      return
+    }
+    const reader = new FileReader()
+    reader.onload = () => {
+      const dataUrl = String(reader.result)
+      setClinicLogo(dataUrl)
+      if (typeof window !== "undefined" && window.localStorage) {
+        window.localStorage.setItem("cliniqo_clinic_logo", dataUrl)
+      }
+      setLogoError("")
+    }
+    reader.onerror = () =>
+      setLogoError("We couldn’t read that image. Please try another file.")
+    reader.readAsDataURL(file)
+  }
 
   // Re-auth modal state for session expiry
   const [reauthPassword, setReauthPassword] = useState("")
@@ -294,6 +358,21 @@ export function Setup({
         }
       }
 
+      if (typeof window !== "undefined" && window.localStorage) {
+        if (targetDoctorId && profilePhoto) {
+          window.localStorage.setItem(
+            `cliniqo_doctor_photo_${targetDoctorId}`,
+            profilePhoto,
+          )
+        }
+        if (effectiveClinicId && clinicLogo) {
+          window.localStorage.setItem(
+            `cliniqo_clinic_logo_${effectiveClinicId}`,
+            clinicLogo,
+          )
+        }
+      }
+
       setStatus("idle")
       if (onSetupComplete) {
         onSetupComplete(session)
@@ -493,26 +572,58 @@ export function Setup({
             <>
               <div className="photo-upload">
                 <span className="photo-placeholder">
-                  <UserRound size={28} />
+                  {profilePhoto ? (
+                    <img src={profilePhoto} alt="Doctor profile" />
+                  ) : (
+                    <UserRound size={28} />
+                  )}
                 </span>
                 <div>
                   <strong>Profile photo</strong>
                   <p>PNG or JPG, up to 2 MB</p>
                 </div>
+                <input
+                  ref={photoInputRef}
+                  className="sr-only"
+                  type="file"
+                  accept="image/png,image/jpeg"
+                  onChange={(e) => {
+                    uploadPhoto(e.target.files?.[0])
+                    e.target.value = ""
+                  }}
+                />
+                {profilePhoto && (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => {
+                      setProfilePhoto(null)
+                      if (typeof window !== "undefined" && window.localStorage) {
+                        window.localStorage.removeItem("cliniqo_doctor_photo")
+                      }
+                      setPhotoError("")
+                    }}
+                  >
+                    Remove
+                  </Button>
+                )}
                 <Button
                   type="button"
                   variant="secondary"
                   size="sm"
                   icon={Upload}
-                  onClick={() =>
-                    window.alert(
-                      "Profile photo picker opened in the production application.",
-                    )
-                  }
+                  onClick={() => photoInputRef.current?.click()}
                 >
-                  Upload photo
+                  {profilePhoto ? "Replace photo" : "Upload photo"}
                 </Button>
               </div>
+              {photoError && (
+                <div className="photo-upload-error" role="alert">
+                  <AlertCircle size={15} />
+                  {photoError}
+                </div>
+              )}
               <div className="form-grid two">
                 <Field
                   label="Full name"
@@ -581,7 +692,11 @@ export function Setup({
             <>
               <div className="photo-upload">
                 <span className="clinic-logo-placeholder">
-                  <Building2 size={24} />
+                  {clinicLogo ? (
+                    <img src={clinicLogo} alt="Clinic logo" />
+                  ) : (
+                    <Building2 size={24} />
+                  )}
                 </span>
                 <div>
                   <strong>
@@ -589,20 +704,48 @@ export function Setup({
                   </strong>
                   <p>Used on printed prescriptions</p>
                 </div>
+                <input
+                  ref={logoInputRef}
+                  className="sr-only"
+                  type="file"
+                  accept="image/png,image/jpeg"
+                  onChange={(e) => {
+                    uploadLogo(e.target.files?.[0])
+                    e.target.value = ""
+                  }}
+                />
+                {clinicLogo && (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => {
+                      setClinicLogo(null)
+                      if (typeof window !== "undefined" && window.localStorage) {
+                        window.localStorage.removeItem("cliniqo_clinic_logo")
+                      }
+                      setLogoError("")
+                    }}
+                  >
+                    Remove
+                  </Button>
+                )}
                 <Button
                   type="button"
                   variant="secondary"
                   size="sm"
                   icon={Upload}
-                  onClick={() =>
-                    window.alert(
-                      "Clinic logo picker opened in the production application.",
-                    )
-                  }
+                  onClick={() => logoInputRef.current?.click()}
                 >
-                  Upload logo
+                  {clinicLogo ? "Replace logo" : "Upload logo"}
                 </Button>
               </div>
+              {logoError && (
+                <div className="photo-upload-error" role="alert">
+                  <AlertCircle size={15} />
+                  {logoError}
+                </div>
+              )}
               <div className="form-grid two">
                 <Field label="Clinic or hospital name" required>
                   <TextInput

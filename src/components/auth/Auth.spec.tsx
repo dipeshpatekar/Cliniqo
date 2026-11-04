@@ -207,6 +207,15 @@ describe("Auth Flow Regression: Registration to Profile Setup Navigation", () =>
       expect(html).not.toContain("onClick=\"() => go('login')\"")
     })
 
+    it("renders native photo upload with file input and no alert dialog in Step 1", () => {
+      const goMock = vi.fn()
+      const html = renderToString(<Setup go={goMock} doctor={null} />)
+      expect(html).toContain("Profile photo")
+      expect(html).toContain('accept="image/png,image/jpeg"')
+      expect(html).toContain("Upload photo")
+      expect(html).not.toContain("Profile photo picker opened")
+    })
+
     it("completes clinic creation and calls onSetupComplete to transition to dashboard", async () => {
       const goMock = vi.fn()
       const onSetupCompleteMock = vi.fn()

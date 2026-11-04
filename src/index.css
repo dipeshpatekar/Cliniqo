@@ -29,6 +29,17 @@
   --success: #237653;
   --success-soft: #edf8f2;
 
+  /* Interaction timing tokens */
+  --ease-spring: cubic-bezier(0.25, 1, 0.5, 1);
+  --btn-transition:
+    translate 0.26s var(--ease-spring),
+    scale 0.22s var(--ease-spring),
+    filter 0.26s ease,
+    background-color 0.24s ease,
+    border-color 0.24s ease,
+    color 0.24s ease,
+    box-shadow 0.26s var(--ease-spring);
+
   /* Glass tokens - Light theme */
   --glass-surface: rgba(255, 255, 255, 0.78);
   --glass-strong: rgba(255, 255, 255, 0.9);
@@ -74,14 +85,7 @@ button, input, select, textarea { font: inherit; }
 
 button {
   cursor: pointer;
-  transition:
-    translate 0.18s ease,
-    scale 0.18s ease,
-    filter 0.18s ease,
-    background-color 0.18s ease,
-    border-color 0.18s ease,
-    color 0.18s ease,
-    box-shadow 0.18s ease;
+  transition: var(--btn-transition);
 }
 
 button:disabled {
@@ -104,14 +108,7 @@ h1, h2, h3, p { margin: 0; }
   font-size: 13px;
   font-weight: 600;
   white-space: nowrap;
-  transition:
-    translate 0.18s ease,
-    scale 0.18s ease,
-    filter 0.18s ease,
-    background 0.15s,
-    border-color 0.15s,
-    color 0.15s,
-    box-shadow 0.18s;
+  transition: var(--btn-transition);
 }
 .btn:active:not(:disabled) { transform: translateY(1px) scale(0.985); }
 .btn-primary { background: var(--primary); color: white; box-shadow: 0 1px 2px rgba(0, 66, 70, .16), 0 2px 6px rgba(6, 141, 148, .12); }
@@ -119,26 +116,43 @@ h1, h2, h3, p { margin: 0; }
 .btn-ghost { background: transparent; color: #516166; }
 .btn-danger { background: var(--glass-surface); backdrop-filter: var(--glass-blur-sm); -webkit-backdrop-filter: var(--glass-blur-sm); color: var(--danger); border-color: #e6bcbc; }
 .btn-sm { min-height: 33px; padding: 0 11px; font-size: 12px; border-radius: 8px; }
-.icon-btn { width: 34px; height: 34px; border: 0; border-radius: 8px; background: transparent; color: #647277; display: inline-flex; align-items: center; justify-content: center; transition: background .15s ease, color .15s ease, transform .12s ease; }
-.icon-btn:active:not(:disabled) { transform: scale(0.94); }
-.text-btn { border: 0; background: transparent; color: var(--primary-dark); padding: 5px; display: inline-flex; align-items: center; gap: 4px; font-size: 12px; font-weight: 600; transition: color .15s ease, transform .12s ease; }
-.text-btn:active:not(:disabled) { transform: scale(0.97); }
+.icon-btn { width: 34px; height: 34px; border: 0; border-radius: 8px; background: transparent; color: #647277; display: inline-flex; align-items: center; justify-content: center; transition: var(--btn-transition); }
+.icon-btn:active:not(:disabled) { transform: scale(0.96); }
+.text-btn { border: 0; background: transparent; color: var(--primary-dark); padding: 5px; display: inline-flex; align-items: center; gap: 4px; font-size: 12px; font-weight: 600; transition: var(--btn-transition); }
+.text-btn:active:not(:disabled) { transform: scale(0.98); }
 
 @media (hover: hover) {
   .btn-primary:hover:not(:disabled) { background: var(--primary-dark); box-shadow: 0 3px 12px rgba(6, 141, 148, 0.28); transform: translateY(-1px); }
   .btn-secondary:hover:not(:disabled) { border-color: var(--glass-border-strong); background: var(--glass-surface-hover); color: var(--ink); box-shadow: 0 3px 8px rgba(20, 35, 38, 0.06); transform: translateY(-1px); }
   .btn-ghost:hover:not(:disabled) { background: var(--primary-soft); color: var(--primary-dark); }
   .btn-danger:hover:not(:disabled) { background: #fee2e2; border-color: #fca5a5; color: #991b1b; }
-  .icon-btn:hover:not(:disabled) { background: var(--surface-hover); color: var(--ink); transform: scale(1.04); }
+  .icon-btn:hover:not(:disabled) { background: var(--surface-hover); color: var(--ink); transform: scale(1.03); }
   .text-btn:hover:not(:disabled) { color: var(--primary); }
 }
 
 .logo-lockup { display: flex; align-items: center; gap: 10px; }
-.logo-mark { width: 36px; height: 36px; background: var(--primary); border-radius: 10px; display: inline-flex; color: white; align-items: center; justify-content: center; }
+.logo-mark {
+  width: 36px;
+  height: 36px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  background: transparent;
+}
+.logo-mark .logo-img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+}
 .logo-lockup > span:last-child { display: flex; flex-direction: column; gap: 1px; }
 .logo-lockup strong { font-size: 17px; letter-spacing: -.4px; }
 .logo-lockup small { color: var(--muted); font-size: 9px; letter-spacing: .35px; text-transform: uppercase; }
-.logo-large .logo-mark { width: 44px; height: 44px; border-radius: 12px; }
+.logo-large .logo-mark {
+  width: 44px;
+  height: 44px;
+}
 .logo-large strong { font-size: 20px; }
 
 .auth-page { min-height: 100vh; display: grid; grid-template-columns: 1.04fr .96fr; background: white; }
@@ -232,8 +246,11 @@ h1, h2, h3, p { margin: 0; }
 .setup-title p { color: var(--muted); font-size: 13px; }
 .setup-card { padding: 26px 28px; border: 1px solid var(--glass-border); background: var(--glass-surface); backdrop-filter: var(--glass-blur); -webkit-backdrop-filter: var(--glass-blur); border-radius: 12px; box-shadow: var(--glass-shadow); }
 .photo-upload { min-height: 64px; border-bottom: 1px solid var(--glass-border-subtle); padding-bottom: 22px; margin-bottom: 23px; display: flex; align-items: center; gap: 13px; }
-.photo-placeholder, .clinic-logo-placeholder { width: 52px; height: 52px; border-radius: 50%; background: #edf4f4; color: #597074; display: inline-flex; align-items: center; justify-content: center; font-weight: 600; flex: 0 0 auto; }
+.photo-placeholder, .clinic-logo-placeholder { width: 52px; height: 52px; border-radius: 50%; background: #edf4f4; color: #597074; display: inline-flex; align-items: center; justify-content: center; font-weight: 600; flex: 0 0 auto; overflow: hidden; position: relative; }
 .clinic-logo-placeholder { border-radius: 10px; }
+.photo-placeholder img { width: 100%; height: 100%; object-fit: cover; }
+.clinic-logo-placeholder img { width: 100%; height: 100%; object-fit: contain; }
+.photo-upload-error { margin-top: -14px; margin-bottom: 16px; display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--danger); font-weight: 500; }
 .photo-upload div { flex: 1; }
 .photo-upload strong { font-size: 13px; }
 .photo-upload strong em { font-style: normal; color: var(--muted); font-size: 10px; font-weight: 500; }
@@ -312,12 +329,12 @@ h1, h2, h3, p { margin: 0; }
   transition:
     padding 0.28s cubic-bezier(0.4, 0, 0.2, 1),
     gap 0.28s cubic-bezier(0.4, 0, 0.2, 1),
-    translate 0.18s ease,
-    scale 0.18s ease,
-    filter 0.18s ease,
-    background 0.15s,
-    color 0.15s,
-    box-shadow 0.18s ease;
+    translate 0.26s var(--ease-spring),
+    scale 0.22s var(--ease-spring),
+    filter 0.26s ease,
+    background 0.24s ease,
+    color 0.24s ease,
+    box-shadow 0.26s var(--ease-spring);
 }
 .nav-item > svg { flex: 0 0 auto; fill: transparent; transform-origin: center; transition: transform .18s ease, fill .18s ease; }
 .nav-item:active { transform: scale(0.98); }
@@ -1693,12 +1710,12 @@ tbody tr:hover {
 
 @media (hover: hover) and (pointer: fine) {
   button:not(:disabled):hover {
-    translate: 0 -2px;
-    filter: saturate(1.08) brightness(1.015);
+    translate: 0 -1.5px;
+    filter: saturate(1.05) brightness(1.01);
   }
 
   .btn-primary:hover {
-    box-shadow: 0 7px 18px rgba(6, 119, 125, 0.24);
+    box-shadow: 0 5px 14px rgba(6, 119, 125, 0.20);
   }
 
   :is(
@@ -1707,7 +1724,7 @@ tbody tr:hover {
     .icon-btn
   ):not(:disabled):hover {
     box-shadow:
-      0 6px 16px rgba(23, 76, 78, 0.11),
+      0 4px 12px rgba(23, 76, 78, 0.08),
       inset 0 1px 0 rgba(255, 255, 255, 0.68);
   }
 
@@ -1718,7 +1735,7 @@ tbody tr:hover {
   ):hover {
     box-shadow:
       inset 3px 0 0 rgba(6, 141, 148, 0.42),
-      0 5px 14px rgba(23, 76, 78, 0.06);
+      0 4px 12px rgba(23, 76, 78, 0.05);
   }
 
   :is(
@@ -1733,14 +1750,15 @@ tbody tr:hover {
 
 button:not(:disabled):active {
   translate: 0 0;
-  scale: 0.975;
-  filter: saturate(0.98) brightness(0.97);
+  scale: 0.985;
+  filter: saturate(0.99) brightness(0.98);
+  transition-duration: 0.12s;
 }
 
 /* Dark-mode button shadows */
 
 .dark .btn-primary:hover {
-  box-shadow: 0 7px 20px rgba(25, 170, 178, 0.22);
+  box-shadow: 0 5px 16px rgba(25, 170, 178, 0.20);
 }
 
 .dark
@@ -1750,7 +1768,7 @@ button:not(:disabled):active {
     .icon-btn
   ):not(:disabled):hover {
   box-shadow:
-    0 7px 18px rgba(0, 0, 0, 0.24),
+    0 5px 14px rgba(0, 0, 0, 0.22),
     inset 0 1px 0 rgba(255, 255, 255, 0.07);
 }
 

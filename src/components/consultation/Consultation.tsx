@@ -43,7 +43,6 @@ import {
   SelectInput,
   SearchableOptionSelect,
   type SearchOptionItem,
-  TextArea,
   Modal,
   FormSection,
 } from "../common"
@@ -71,6 +70,7 @@ export interface ConsultationProps {
   onVitalsChange: (key: keyof Vitals, value: string) => void
   data: ConsultationData
   onDataChange: (data: ConsultationData) => void
+  onAddMedicine?: (medicine: ClinicalMedicineDefinition) => void
   desktopSession?: DesktopSessionContext | null
 }
 
@@ -82,15 +82,13 @@ export function Consultation({
   onVitalsChange,
   data,
   onDataChange,
+  onAddMedicine,
   desktopSession,
 }: ConsultationProps) {
   const [saved, setSaved] = useState(false)
   const [showFinalize, setShowFinalize] = useState(false)
   const [isFinalizing, setIsFinalizing] = useState(false)
   const [finalizeError, setFinalizeError] = useState<string | null>(null)
-  const [complaintPreset, setComplaintPreset] = useState("")
-  const [durationPreset, setDurationPreset] = useState("")
-  const [diagnosisPreset, setDiagnosisPreset] = useState("")
   const [localFormulary, setLocalFormulary] =
     useState<LocalFormularyItemRecord[]>([])
   const [catalogueSuggestions, setCatalogueSuggestions] = useState<
@@ -397,25 +395,40 @@ export function Consultation({
               m.formulation.trim() &&
               validateMedicineFormulation(m).valid
             ) {
-              try {
-                await saveLocalFormularyItem({
-                  clinic_id: desktopSession.clinic_id,
-                  name: m.name.trim(),
-                  formulation: m.formulation.trim(),
-                  strength: m.strength?.trim() || "",
-                  active_ingredient: m.activeIngredient?.trim() || null,
-                  default_dosage: m.dose?.trim() || null,
-                  default_route: m.route?.trim() || null,
-                  default_frequency: m.frequency?.trim() || null,
-                  default_duration: m.duration?.trim() || null,
-                  default_instructions: m.directions?.trim() || null,
-                })
-                addedCustom = true
-              } catch (formularyErr) {
-                console.warn(
-                  "[Cliniqo Desktop] Failed to auto-save custom medicine to formulary:",
-                  formularyErr,
-                )
+              const medDef: ClinicalMedicineDefinition = {
+                name: m.name.trim(),
+                formulation: m.formulation.trim(),
+                strength: m.strength?.trim() || "",
+                activeIngredient: m.activeIngredient?.trim() || undefined,
+                defaultDosage: m.dose?.trim() || undefined,
+                defaultRoute: m.route?.trim() || undefined,
+                defaultFrequency: m.frequency?.trim() || undefined,
+                defaultDuration: m.duration?.trim() || undefined,
+                defaultInstructions: m.directions?.trim() || undefined,
+              }
+              onAddMedicine?.(medDef)
+
+              if (desktopSession?.clinic_id) {
+                try {
+                  await saveLocalFormularyItem({
+                    clinic_id: desktopSession.clinic_id,
+                    name: medDef.name,
+                    formulation: medDef.formulation,
+                    strength: medDef.strength,
+                    active_ingredient: medDef.activeIngredient || null,
+                    default_dosage: medDef.defaultDosage || null,
+                    default_route: medDef.defaultRoute || null,
+                    default_frequency: medDef.defaultFrequency || null,
+                    default_duration: medDef.defaultDuration || null,
+                    default_instructions: medDef.defaultInstructions || null,
+                  })
+                  addedCustom = true
+                } catch (formularyErr) {
+                  console.warn(
+                    "[Cliniqo Desktop] Failed to auto-save custom medicine to formulary:",
+                    formularyErr,
+                  )
+                }
               }
             }
           }
@@ -599,78 +612,37 @@ export function Consultation({
           >
             <div className="form-grid two">
               <Field label="Chief complaints" required>
-                <div className="field-stack">
-                  <SearchableOptionSelect
-                    id="chief-complaint"
-                    value={complaintPreset}
-                    options={complaintOptions}
-                    onChange={(value) => {
-                      setComplaintPreset(value)
-                      updateData({ chiefComplaint: value })
-                    }}
-                    placeholder="Select or search a common complaint"
-                    ariaLabel="Search and select chief complaint"
-                    emptyMessage="No matching complaint. Continue typing to use a custom value."
-                  />
-                  <TextArea
-                    required
-                    rows={3}
-                    value={data.chiefComplaint}
-                    onChange={(event) =>
-                      updateData({ chiefComplaint: event.target.value })
-                    }
-                    placeholder="Record the patient's primary concerns"
-                  />
-                </div>
+                <SearchableOptionSelect
+                  id="chief-complaint"
+                  value={data.chiefComplaint}
+                  options={complaintOptions}
+                  onChange={(value) => updateData({ chiefComplaint: value })}
+                  placeholder="Select or search a common complaint"
+                  ariaLabel="Search and select chief complaint"
+                  emptyMessage="No matching complaint. Continue typing to use a custom value."
+                />
               </Field>
               <Field label="Symptom duration">
-                <div className="field-stack">
-                  <SearchableOptionSelect
-                    id="symptom-duration"
-                    value={durationPreset}
-                    options={symptomDurationOptions}
-                    onChange={(value) => {
-                      setDurationPreset(value)
-                      updateData({ symptomDuration: value })
-                    }}
-                    placeholder="Select or search symptom duration"
-                    ariaLabel="Search and select symptom duration"
-                    emptyMessage="No matching duration. Continue typing to use a custom value."
-                  />
-                  <TextArea
-                    rows={3}
-                    value={data.symptomDuration}
-                    onChange={(event) =>
-                      updateData({ symptomDuration: event.target.value })
-                    }
-                    placeholder="Duration, onset, and progression"
-                  />
-                </div>
+                <SearchableOptionSelect
+                  id="symptom-duration"
+                  value={data.symptomDuration}
+                  options={symptomDurationOptions}
+                  onChange={(value) => updateData({ symptomDuration: value })}
+                  placeholder="Select or search symptom duration"
+                  ariaLabel="Search and select symptom duration"
+                  emptyMessage="No matching duration. Continue typing to use a custom value."
+                />
               </Field>
               <Field label="Diagnosis" required>
-                <div className="field-stack">
-                  <SearchableOptionSelect
-                    id="diagnosis"
-                    value={diagnosisPreset}
-                    options={diagnosisOptions}
-                    onChange={(value) => {
-                      setDiagnosisPreset(value)
-                      updateData({ diagnosis: value })
-                    }}
-                    placeholder="Select or search a diagnosis"
-                    ariaLabel="Search and select diagnosis"
-                    emptyMessage="No matching diagnosis. Continue typing to use a custom value."
-                  />
-                  <TextArea
-                    required
-                    rows={3}
-                    value={data.diagnosis}
-                    onChange={(event) =>
-                      updateData({ diagnosis: event.target.value })
-                    }
-                    placeholder="Enter diagnosis after clinical assessment"
-                  />
-                </div>
+                <SearchableOptionSelect
+                  id="diagnosis"
+                  value={data.diagnosis}
+                  options={diagnosisOptions}
+                  onChange={(value) => updateData({ diagnosis: value })}
+                  placeholder="Select or search a diagnosis"
+                  ariaLabel="Search and select diagnosis"
+                  emptyMessage="No matching diagnosis. Continue typing to use a custom value."
+                />
               </Field>
             </div>
           </FormSection>
@@ -683,8 +655,7 @@ export function Consultation({
               <div>
                 <h2>Medicines</h2>
                 <p>
-                  Add only after clinical review. Formulation determines
-                  required dosage fields.
+                  Add only after clinical review. No medicine or dose is prefilled.
                 </p>
               </div>
               <Button
@@ -797,347 +768,370 @@ export function Consultation({
                 </Button>
               </div>
             ) : (
-              data.medicines.map((medicine, index) => {
-                const doseConfig = getDoseConfig(medicine.formulation)
-                const availableStrengths = catalogueStrengthsMap[medicine.id] || []
-                const strengthOptions = [
-                  ...new Set([
-                    ...availableStrengths,
-                    ...clinicalLibrary.Strengths,
-                    ...(["Syrup", "Suspension"].includes(medicine.formulation)
-                      ? ["125 mg/5 mL", "250 mg/5 mL"]
-                      : []),
-                  ]),
-                ]
-                const doseOptions = [
-                  ...new Set([
-                    ...clinicalLibrary.Doses,
-                    ...(doseConfig.unit === "mL"
-                      ? ["2.5", "5", "10", "15"]
-                      : doseConfig.step === "0.5"
-                        ? ["0.5", "1", "1.5", "2"]
-                        : ["1", "2", "3", "4"]),
-                  ]),
-                ]
-                const frequencyOptions = [
-                  "Once daily",
-                  "Twice daily",
-                  "Three times daily",
-                  "Four times daily",
-                  "As needed",
-                ]
-                const validation = validateMedicineFormulation(medicine)
+              <div className="medicines-container">
+                {data.medicines.map((medicine, index) => {
+                  const doseConfig = getDoseConfig(medicine.formulation)
+                  const availableStrengths = catalogueStrengthsMap[medicine.id] || []
+                  const strengthOptions = [
+                    ...new Set([
+                      ...availableStrengths,
+                      ...clinicalLibrary.Strengths,
+                      ...(["Syrup", "Suspension"].includes(medicine.formulation)
+                        ? ["125 mg/5 mL", "250 mg/5 mL"]
+                        : []),
+                    ]),
+                  ]
+                  const doseOptions = [
+                    ...new Set([
+                      ...clinicalLibrary.Doses,
+                      ...(doseConfig.unit === "mL"
+                        ? ["2.5", "5", "10", "15"]
+                        : doseConfig.step === "0.5"
+                          ? ["0.5", "1", "1.5", "2"]
+                          : ["1", "2", "3", "4"]),
+                    ]),
+                  ]
+                  const frequencyOptions = [
+                    "Once daily",
+                    "Twice daily",
+                    "Three times daily",
+                    "Four times daily",
+                    "As needed",
+                  ]
+                  const validation = validateMedicineFormulation(medicine)
 
-                const rowSuggestions: SearchOptionItem[] = [
-                  ...mergedDefinitions
-                    .filter((item) => item.formulation === medicine.formulation)
-                    .map((item) => ({
-                      value: item.name,
-                      label: item.name,
-                      badge: "Formulary",
-                      subtitle: item.activeIngredient,
-                    })),
-                  ...(catalogueSuggestions[medicine.id] || []).map((cat) => {
-                    const releaseBadge =
-                      cat.releaseType && cat.releaseType !== "IMMEDIATE_RELEASE"
-                        ? cat.releaseType
-                            .replace("_RELEASE", "")
-                            .replace("GASTRO_RESISTANT", "EC")
-                            .replace("_", " ")
-                        : null
-                    const badgeText =
-                      releaseBadge || (cat.isCombination ? "Combo" : cat.type)
-                    const subtitleParts = [
-                      cat.manufacturer,
-                      cat.productName || cat.genericName,
-                    ].filter(Boolean)
+                  const rowSuggestions: SearchOptionItem[] = [
+                    ...mergedDefinitions
+                      .filter((item) => item.formulation === medicine.formulation)
+                      .map((item) => ({
+                        value: item.name,
+                        label: item.name,
+                        badge: "Formulary",
+                        subtitle: item.activeIngredient,
+                      })),
+                    ...(catalogueSuggestions[medicine.id] || []).map((cat) => {
+                      const releaseBadge =
+                        cat.releaseType && cat.releaseType !== "IMMEDIATE_RELEASE"
+                          ? cat.releaseType
+                              .replace("_RELEASE", "")
+                              .replace("GASTRO_RESISTANT", "EC")
+                              .replace("_", " ")
+                          : null
+                      const badgeText =
+                        releaseBadge || (cat.isCombination ? "Combo" : cat.type)
+                      const subtitleParts = [
+                        cat.manufacturer,
+                        cat.productName || cat.genericName,
+                      ].filter(Boolean)
 
-                    return {
-                      value: cat.name,
-                      label: cat.name,
-                      badge: badgeText,
-                      subtitle: subtitleParts.join(" • ") || undefined,
-                      meta: cat,
-                    }
-                  }),
-                ]
+                      return {
+                        value: cat.name,
+                        label: cat.name,
+                        badge: badgeText,
+                        subtitle: subtitleParts.join(" • ") || undefined,
+                        meta: cat,
+                      }
+                    }),
+                  ]
 
-                return (
-                  <div className="medicine-row" key={medicine.id}>
-                    <div className="medicine-number">{index + 1}</div>
-                    <div className="medicine-fields">
-                      <Field
-                        label="Formulation"
-                        hint={
-                          !medicine.formulation
-                            ? "Select a formulation to continue"
-                            : undefined
-                        }
-                        className={
-                          !medicine.formulation
-                            ? "med-formulation-first"
-                            : undefined
-                        }
-                      >
-                        <SelectInput
-                          value={medicine.formulation}
-                          style={{ width: "100%", height: "40px" }}
-                          onChange={(event) => {
-                            const formulation = event.target.value
-                            updateData({
-                              medicines: data.medicines.map((row) =>
-                                row.id === medicine.id
-                                  ? {
-                                      ...row,
-                                      formulation,
-                                      name: "",
-                                      strength: "",
-                                      dose: "",
-                                      route: "",
-                                      food: "",
-                                      directions: "",
-                                      activeIngredient: "",
-                                      sourceIdentifier: undefined,
-                                      sourceProvenance: undefined,
-                                      isCombination: undefined,
-                                      isStrengthVerified: undefined,
-                                      isCustom: undefined,
-                                    }
-                                  : row,
-                              ),
-                            })
-                          }}
-                        >
-                          <option value="">Select formulation</option>
-                          {clinicalLibrary.Formulations.map((option) => (
-                            <option key={option}>{option}</option>
-                          ))}
-                        </SelectInput>
-                      </Field>
-                      {medicine.formulation && (
-                        <>
-                          <Field
-                            label="Medicine name"
-                            required
-                            className="med-name"
-                          >
-                            <SearchableOptionSelect
-                              id={`medicine-${medicine.id}`}
-                              value={medicine.name}
-                              options={rowSuggestions}
-                              onChange={(value) =>
-                                handleMedicineSearch(
-                                  medicine.id,
-                                  value,
-                                  medicine.formulation,
-                                )
-                              }
-                              onSelectOption={(option) =>
-                                handleSelectMedicineOption(
-                                  medicine.id,
-                                  option,
-                                  medicine.formulation,
-                                )
-                              }
-                              placeholder="Search CDCI medicine or type custom"
-                              ariaLabel="Search and select medicine"
-                              emptyMessage={
-                                catalogueSyncStatus?.status === "SYNCING" &&
-                                (catalogueSyncStatus.downloadedCount ?? 0) === 0
-                                  ? "Catalogue is syncing in background... Continue typing to use custom name."
-                                  : "No matching medicine. Continue typing to use a custom name."
-                              }
-                            />
-                            {medicine.sourceIdentifier && (
-                              <div
-                                style={{
-                                  display: "flex",
-                                  gap: "6px",
-                                  alignItems: "center",
-                                  marginTop: "4px",
-                                  fontSize: "11px",
-                                  color: "#0284c7",
-                                }}
-                              >
-                                <CheckCircle2 size={13} />
-                                <span>
-                                  Verified CDCI Catalogue ({medicine.sourceIdentifier})
-                                </span>
-                                {medicine.isCombination && (
-                                  <span
-                                    style={{
-                                      backgroundColor: "#fef3c7",
-                                      color: "#92400e",
-                                      padding: "1px 5px",
-                                      borderRadius: "3px",
-                                      fontWeight: 600,
-                                    }}
-                                  >
-                                    Combination
-                                  </span>
-                                )}
-                              </div>
-                            )}
-                            {medicine.isCustom && medicine.name.trim() && !medicine.sourceIdentifier && (
-                              <div
-                                style={{
-                                  display: "flex",
-                                  gap: "4px",
-                                  alignItems: "center",
-                                  marginTop: "4px",
-                                  fontSize: "11px",
-                                  color: "#64748b",
-                                }}
-                              >
-                                <span>Custom uncatalogued medicine</span>
-                              </div>
-                            )}
-                            {medicine.activeIngredient && (
-                              <span className="med-active-ingredient">
-                                Active: {medicine.activeIngredient}
-                              </span>
-                            )}
-                          </Field>
-                          <Field
-                            label="Strength"
-                            hint={
-                              availableStrengths.length > 1
-                                ? `${availableStrengths.length} verified strengths available`
-                                : availableStrengths.length === 1
-                                  ? "Auto-selected verified strength"
-                                  : undefined
-                            }
-                          >
-                            <SearchableOptionSelect
-                              id={`strength-${medicine.id}`}
-                              value={medicine.strength}
-                              options={strengthOptions}
-                              onChange={(value) =>
-                                updateMedicine(medicine.id, "strength", value)
-                              }
-                              placeholder="Search or enter strength"
-                              ariaLabel="Search and select strength"
-                              emptyMessage="No matching strength. Continue typing to use a custom value."
-                            />
-                          </Field>
-
-                          <Field label="Dose" hint={`Unit: ${doseConfig.unit}`}>
-                            <SearchableOptionSelect
-                              id={`dose-${medicine.id}`}
-                              value={medicine.dose}
-                              options={doseOptions}
-                              onChange={(value) =>
-                                updateMedicine(medicine.id, "dose", value)
-                              }
-                              placeholder="Search dose"
-                              ariaLabel="Search and select dose"
-                              emptyMessage="No matching dose. Continue typing to use a custom value."
-                            />
-                          </Field>
-                          <Field label="Frequency">
-                            <SearchableOptionSelect
-                              id={`frequency-${medicine.id}`}
-                              value={medicine.frequency}
-                              options={frequencyOptions}
-                              onChange={(value) =>
-                                updateMedicine(medicine.id, "frequency", value)
-                              }
-                              placeholder="Search frequency"
-                              ariaLabel="Search and select frequency"
-                              emptyMessage="No matching frequency. Continue typing to use a custom value."
-                            />
-                          </Field>
-                          <Field label="Duration">
-                            <SearchableOptionSelect
-                              id={`duration-${medicine.id}`}
-                              value={medicine.duration}
-                              options={clinicalLibrary.Durations}
-                              onChange={(value) =>
-                                updateMedicine(medicine.id, "duration", value)
-                              }
-                              placeholder="Search duration"
-                              ariaLabel="Search and select duration"
-                              emptyMessage="No matching duration. Continue typing to use a custom value."
-                            />
-                          </Field>
-                          {medicine.formulation === "Injection" && (
-                            <Field label="Route (Required)">
-                              <SelectInput
-                                value={medicine.route}
-                                style={{ height: "40px" }}
-                                onChange={(e) =>
-                                  updateMedicine(
-                                    medicine.id,
-                                    "route",
-                                    e.target.value,
-                                  )
-                                }
-                              >
-                                <option value="">Select route</option>
-                                <option>Intravenous (IV)</option>
-                                <option>Intramuscular (IM)</option>
-                                <option>Subcutaneous (SC)</option>
-                                <option>Intradermal (ID)</option>
-                              </SelectInput>
-                            </Field>
-                          )}
-                          {oralFormulations.has(medicine.formulation) && (
-                            <Field label="Food instruction">
-                              <SelectInput
-                                value={medicine.food}
-                                style={{ height: "40px" }}
-                                onChange={(e) =>
-                                  updateMedicine(
-                                    medicine.id,
-                                    "food",
-                                    e.target.value,
-                                  )
-                                }
-                              >
-                                <option value="">Select</option>
-                                <option>Before food</option>
-                                <option>After food</option>
-                                <option>With food</option>
-                                <option>Not applicable</option>
-                              </SelectInput>
-                            </Field>
-                          )}
-                          {topicalFormulations.has(medicine.formulation) && (
+                  return (
+                    <div className="medicine-card medicine-row" key={medicine.id}>
+                      <div className="medicine-card-body">
+                        <div className="medicine-badge medicine-number">{index + 1}</div>
+                        <div className="medicine-card-content">
+                          {/* Row 1: Formulation, Medicine name, Strength, Dose */}
+                          <div className="medicine-row-primary">
                             <Field
-                              label="Application instructions (Required)"
-                              className="med-directions"
+                              label="Formulation"
+                              hint={
+                                !medicine.formulation
+                                  ? "Select a formulation to continue"
+                                  : undefined
+                              }
+                              className="med-col-formulation"
                             >
-                              <TextInput
-                                value={medicine.directions}
-                                onChange={(e) =>
-                                  updateMedicine(
-                                    medicine.id,
-                                    "directions",
-                                    e.target.value,
-                                  )
-                                }
-                                placeholder="Site, amount, and method of application"
-                              />
+                              <SelectInput
+                                value={medicine.formulation}
+                                style={{ width: "100%", height: "40px" }}
+                                onChange={(event) => {
+                                  const formulation = event.target.value
+                                  updateData({
+                                    medicines: data.medicines.map((row) =>
+                                      row.id === medicine.id
+                                        ? {
+                                            ...row,
+                                            formulation,
+                                            name: "",
+                                            strength: "",
+                                            dose: "",
+                                            route: "",
+                                            food: "",
+                                            directions: "",
+                                            activeIngredient: "",
+                                            sourceIdentifier: undefined,
+                                            sourceProvenance: undefined,
+                                            isCombination: undefined,
+                                            isStrengthVerified: undefined,
+                                            isCustom: undefined,
+                                          }
+                                        : row,
+                                    ),
+                                  })
+                                }}
+                              >
+                                <option value="">Select formulation</option>
+                                {clinicalLibrary.Formulations.map((option) => (
+                                  <option key={option}>{option}</option>
+                                ))}
+                              </SelectInput>
                             </Field>
+
+                            {medicine.formulation ? (
+                              <>
+                                <Field
+                                  label="Medicine name"
+                                  required
+                                  className="med-col-name"
+                                >
+                                  <SearchableOptionSelect
+                                    id={`medicine-${medicine.id}`}
+                                    value={medicine.name}
+                                    options={rowSuggestions}
+                                    onChange={(value) =>
+                                      handleMedicineSearch(
+                                        medicine.id,
+                                        value,
+                                        medicine.formulation,
+                                      )
+                                    }
+                                    onSelectOption={(option) =>
+                                      handleSelectMedicineOption(
+                                        medicine.id,
+                                        option,
+                                        medicine.formulation,
+                                      )
+                                    }
+                                    placeholder="Search medicine"
+                                    ariaLabel="Search and select medicine"
+                                    emptyMessage={
+                                      catalogueSyncStatus?.status === "SYNCING" &&
+                                      (catalogueSyncStatus.downloadedCount ?? 0) === 0
+                                        ? "Catalogue is syncing in background... Continue typing to use custom name."
+                                        : "No matching medicine. Continue typing to use a custom name."
+                                    }
+                                  />
+                                  {medicine.sourceIdentifier && (
+                                    <div
+                                      style={{
+                                        display: "flex",
+                                        gap: "6px",
+                                        alignItems: "center",
+                                        marginTop: "4px",
+                                        fontSize: "11px",
+                                        color: "#0284c7",
+                                      }}
+                                    >
+                                      <CheckCircle2 size={13} />
+                                      <span>
+                                        Verified CDCI Catalogue ({medicine.sourceIdentifier})
+                                      </span>
+                                      {medicine.isCombination && (
+                                        <span
+                                          style={{
+                                            backgroundColor: "#fef3c7",
+                                            color: "#92400e",
+                                            padding: "1px 5px",
+                                            borderRadius: "3px",
+                                            fontWeight: 600,
+                                          }}
+                                        >
+                                          Combination
+                                        </span>
+                                      )}
+                                    </div>
+                                  )}
+                                  {medicine.isCustom && medicine.name.trim() && !medicine.sourceIdentifier && (
+                                    <div
+                                      style={{
+                                        display: "flex",
+                                        gap: "4px",
+                                        alignItems: "center",
+                                        marginTop: "4px",
+                                        fontSize: "11px",
+                                        color: "#64748b",
+                                      }}
+                                    >
+                                      <span>Custom uncatalogued medicine</span>
+                                    </div>
+                                  )}
+                                  {medicine.activeIngredient && (
+                                    <span className="med-active-ingredient">
+                                      Active: {medicine.activeIngredient}
+                                    </span>
+                                  )}
+                                </Field>
+
+                                <Field
+                                  label="Strength"
+                                  className="med-col-strength"
+                                  hint={
+                                    availableStrengths.length > 1
+                                      ? `${availableStrengths.length} verified strengths available`
+                                      : availableStrengths.length === 1
+                                        ? "Auto-selected verified strength"
+                                        : undefined
+                                  }
+                                >
+                                  <SearchableOptionSelect
+                                    id={`strength-${medicine.id}`}
+                                    value={medicine.strength}
+                                    options={strengthOptions}
+                                    onChange={(value) =>
+                                      updateMedicine(medicine.id, "strength", value)
+                                    }
+                                    placeholder="Search strength"
+                                    ariaLabel="Search and select strength"
+                                    emptyMessage="No matching strength. Continue typing to use a custom value."
+                                  />
+                                </Field>
+
+                                <Field
+                                  label="Dose"
+                                  className="med-col-dose"
+                                  hint={doseConfig.unit ? `Unit: ${doseConfig.unit}` : undefined}
+                                >
+                                  <SearchableOptionSelect
+                                    id={`dose-${medicine.id}`}
+                                    value={medicine.dose}
+                                    options={doseOptions}
+                                    onChange={(value) =>
+                                      updateMedicine(medicine.id, "dose", value)
+                                    }
+                                    placeholder="Search dose"
+                                    ariaLabel="Search and select dose"
+                                    emptyMessage="No matching dose. Continue typing to use a custom value."
+                                  />
+                                </Field>
+                              </>
+                            ) : null}
+                          </div>
+
+                          {/* Row 2: Frequency, Duration, Food instruction / Route / Directions */}
+                          {medicine.formulation && (
+                            <div className="medicine-row-secondary">
+                              <Field label="Frequency">
+                                <SearchableOptionSelect
+                                  id={`frequency-${medicine.id}`}
+                                  value={medicine.frequency}
+                                  options={frequencyOptions}
+                                  onChange={(value) =>
+                                    updateMedicine(medicine.id, "frequency", value)
+                                  }
+                                  placeholder="Search frequency"
+                                  ariaLabel="Search and select frequency"
+                                  emptyMessage="No matching frequency. Continue typing to use a custom value."
+                                />
+                              </Field>
+
+                              <Field label="Duration">
+                                <SearchableOptionSelect
+                                  id={`duration-${medicine.id}`}
+                                  value={medicine.duration}
+                                  options={clinicalLibrary.Durations}
+                                  onChange={(value) =>
+                                    updateMedicine(medicine.id, "duration", value)
+                                  }
+                                  placeholder="Search duration"
+                                  ariaLabel="Search and select duration"
+                                  emptyMessage="No matching duration. Continue typing to use a custom value."
+                                />
+                              </Field>
+
+                              {oralFormulations.has(medicine.formulation) && (
+                                <Field label="Food instruction">
+                                  <SelectInput
+                                    value={medicine.food}
+                                    style={{ height: "40px" }}
+                                    onChange={(e) =>
+                                      updateMedicine(
+                                        medicine.id,
+                                        "food",
+                                        e.target.value,
+                                      )
+                                    }
+                                  >
+                                    <option value="">Select</option>
+                                    <option>Before food</option>
+                                    <option>After food</option>
+                                    <option>With food</option>
+                                    <option>Not applicable</option>
+                                  </SelectInput>
+                                </Field>
+                              )}
+
+                              {medicine.formulation === "Injection" && (
+                                <Field label="Route (Required)">
+                                  <SelectInput
+                                    value={medicine.route}
+                                    style={{ height: "40px" }}
+                                    onChange={(e) =>
+                                      updateMedicine(
+                                        medicine.id,
+                                        "route",
+                                        e.target.value,
+                                      )
+                                    }
+                                  >
+                                    <option value="">Select route</option>
+                                    <option>Intravenous (IV)</option>
+                                    <option>Intramuscular (IM)</option>
+                                    <option>Subcutaneous (SC)</option>
+                                    <option>Intradermal (ID)</option>
+                                  </SelectInput>
+                                </Field>
+                              )}
+
+                              {topicalFormulations.has(medicine.formulation) && (
+                                <Field
+                                  label="Application instructions (Required)"
+                                  className="med-directions"
+                                >
+                                  <TextInput
+                                    value={medicine.directions}
+                                    onChange={(e) =>
+                                      updateMedicine(
+                                        medicine.id,
+                                        "directions",
+                                        e.target.value,
+                                      )
+                                    }
+                                    placeholder="Site, amount, and method of application"
+                                  />
+                                </Field>
+                              )}
+                            </div>
                           )}
-                        </>
+                        </div>
+
+                        <IconButton
+                          label={`Remove medicine ${index + 1}`}
+                          onClick={() => removeMedicine(medicine.id)}
+                          className="medicine-remove-btn"
+                        >
+                          <Trash2 size={17} />
+                        </IconButton>
+                      </div>
+
+                      {!validation.valid && medicine.formulation && (
+                        <div className="med-validation-warning">
+                          <AlertCircle size={13} />
+                          <span>{validation.error}</span>
+                        </div>
                       )}
                     </div>
-                    {!validation.valid && medicine.formulation && (
-                      <div className="med-validation-warning">
-                        <AlertCircle size={13} />
-                        <span>{validation.error}</span>
-                      </div>
-                    )}
-                    <IconButton
-                      label={`Remove medicine ${index + 1}`}
-                      onClick={() => removeMedicine(medicine.id)}
-                    >
-                      <Trash2 size={17} />
-                    </IconButton>
-                  </div>
-                )
-              })
+                  )
+                })}
+              </div>
             )}
 
             {data.medicines.length > 0 && (

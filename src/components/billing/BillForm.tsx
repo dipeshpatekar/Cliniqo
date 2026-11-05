@@ -218,7 +218,7 @@ export function BillForm({
     <>
       <AppHeader
         title={isFinalized ? "View finalized bill" : "Create bill"}
-        subtitle={`${patient.name} · ${patient.id}`}
+        subtitle={`${patient.name} · ${patient.displayId || patient.id}`}
       >
         <IconButton
           className="topbar-back"

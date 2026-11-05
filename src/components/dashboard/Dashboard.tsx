@@ -1,3 +1,4 @@
+import { useState, useEffect } from "react"
 import { Button, IconButton, StatusPill } from "../common"
 import { AppHeader } from "../layout"
 import type { Page, Patient } from "../../types"
@@ -11,19 +12,56 @@ import {
   UserRoundPlus,
   Users,
 } from "lucide-react"
+import {
+  getLocalConsultations,
+  type LocalConsultationRecord,
+  type DesktopSessionContext,
+} from "../../desktop/desktop-bridge"
 
 export function Dashboard({
   go,
   patients,
   onOpenPatient,
+  desktopSession,
 }: {
   go: (page: Page) => void
   patients: Patient[]
   onOpenPatient: (patient: Patient) => void
+  desktopSession?: DesktopSessionContext | null
 }) {
-  const seenToday = patients.filter((patient) =>
-    patient.lastVisit.toLowerCase().startsWith("today"),
-  ).length
+  const [consultations, setConsultations] = useState<LocalConsultationRecord[]>([])
+
+  useEffect(() => {
+    if (desktopSession?.clinic_id) {
+      getLocalConsultations(desktopSession.clinic_id)
+        .then((items) => {
+          if (items) setConsultations(items)
+        })
+        .catch(() => {})
+    }
+  }, [desktopSession?.clinic_id])
+
+  const todayIso = new Date().toISOString().slice(0, 10)
+  const finalizedToday = consultations.filter(
+    (c) =>
+      c.status !== "DRAFT" &&
+      (c.consultation_date || c.updated_at || "").startsWith(todayIso),
+  )
+  const seenToday = finalizedToday.length > 0
+    ? finalizedToday.length
+    : patients.filter((patient) =>
+        patient.lastVisit.toLowerCase().startsWith("today"),
+      ).length
+
+  const finalizedConsultations = consultations
+    .filter((c) => c.status !== "DRAFT")
+    .sort((a, b) =>
+      (b.consultation_date || b.updated_at).localeCompare(
+        a.consultation_date || a.updated_at,
+      ),
+    )
+    .slice(0, 5)
+
   const allergyRecords = patients.filter(
     (patient) => patient.allergies.length > 0,
   ).length
@@ -102,7 +140,47 @@ export function Dashboard({
               </button>
             </div>
             <div className="consultation-list">
-              {patients.filter(
+              {finalizedConsultations.length > 0 ? (
+                finalizedConsultations.map((c) => {
+                  const patient = patients.find((p) => p.id === c.patient_id) || {
+                    id: c.patient_id,
+                    displayId: `PT-${c.patient_id.slice(0, 8)}`,
+                    name: "Consultation Patient",
+                    initials: "PT",
+                    age: 0,
+                    gender: "—",
+                    phone: "",
+                    lastVisit: "",
+                    allergies: [],
+                    conditions: [],
+                  }
+                  const dateStr = (c.consultation_date || c.updated_at || "").slice(0, 10)
+                  const timeLabel = dateStr === todayIso ? "Today" : dateStr || "Recorded"
+                  return (
+                    <button
+                      className="consultation-row"
+                      key={c.id}
+                      onClick={() => onOpenPatient(patient)}
+                    >
+                      <span className="avatar subtle">{patient.initials}</span>
+                      <span className="patient-cell">
+                        <strong>{patient.name}</strong>
+                        <small>
+                          {patient.displayId || patient.id} · {patient.age ? `${patient.age} yrs` : "Patient"}
+                        </small>
+                      </span>
+                      <span className="visit-reason">
+                        {c.diagnosis || c.chief_complaint || "Recorded consultation"}
+                      </span>
+                      <StatusPill tone="success">
+                        Finalized
+                      </StatusPill>
+                      <span className="time">{timeLabel}</span>
+                      <ChevronRight size={17} />
+                    </button>
+                  )
+                })
+              ) : patients.filter(
                 (patient) => patient.lastVisit !== "No visits yet",
               ).length === 0 ? (
                 <div className="p-8 text-center text-slate-500 dark:text-slate-400">
@@ -132,7 +210,7 @@ export function Dashboard({
                       <span className="patient-cell">
                         <strong>{patient.name}</strong>
                         <small>
-                          {patient.id} · {patient.age} yrs
+                          {patient.displayId || patient.id} · {patient.age} yrs
                         </small>
                       </span>
                       <span className="visit-reason">Recorded visit</span>

@@ -65,7 +65,7 @@ export function PatientProfile({
 
   return (
     <>
-      <AppHeader title="Patient profile" subtitle={`Patient ID ${patient.id}`}>
+      <AppHeader title="Patient profile" subtitle={`Patient ID ${patient.displayId || patient.id}`}>
         <IconButton
           className="topbar-back"
           label="Back to patients"
@@ -156,7 +156,7 @@ export function PatientProfile({
             <div>
               <h2>{patient.name}</h2>
               <p>
-                {patient.age} years · {patient.gender} · {patient.id}
+                {patient.age} years · {patient.gender} · {patient.displayId || patient.id}
               </p>
               <span className="last-seen">
                 <CalendarDays size={14} />{" "}
@@ -175,7 +175,7 @@ export function PatientProfile({
             <span>
               <UserRound size={16} />
               <small>Patient ID</small>
-              <strong>{patient.id}</strong>
+              <strong>{patient.displayId || patient.id}</strong>
             </span>
           </div>
         </section>

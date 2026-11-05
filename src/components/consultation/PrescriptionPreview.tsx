@@ -1,4 +1,4 @@
-import { useState } from "react"
+import { useState, useEffect } from "react"
 import {
   ArrowLeft,
   Printer,
@@ -17,7 +17,13 @@ import { formatMedicineDose } from "../../types"
 import { cn } from "../../utils/cn"
 import { Button, IconButton, Modal } from "../common"
 import { AppHeader } from "../layout"
-import type { DesktopSessionContext } from "../../desktop/desktop-bridge"
+import {
+  getClinicProfile,
+  getDoctorProfile,
+  type ClinicProfile,
+  type DoctorProfile,
+  type DesktopSessionContext,
+} from "../../desktop/desktop-bridge"
 
 export interface PrescriptionPreviewProps {
   go: (page: Page) => void
@@ -51,6 +57,29 @@ export function PrescriptionPreview({
   const [whatsapp, setWhatsapp] = useState(false)
   const [delivery, setDelivery] =
     useState<"confirm" | "sending" | "queued" | "failed">("confirm")
+
+  const [clinicProfile, setClinicProfile] = useState<ClinicProfile | null>(null)
+  const [doctorProfile, setDoctorProfile] = useState<DoctorProfile | null>(null)
+  const [clinicLogo, setClinicLogo] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (desktopSession?.clinic_id) {
+      getClinicProfile(desktopSession.clinic_id).then((p) => {
+        if (p) setClinicProfile(p)
+      })
+      if (typeof window !== "undefined" && window.localStorage) {
+        const storedLogo =
+          window.localStorage.getItem(`cliniqo_clinic_logo_${desktopSession.clinic_id}`) ||
+          window.localStorage.getItem("cliniqo_clinic_logo")
+        if (storedLogo) setClinicLogo(storedLogo)
+      }
+    }
+    if (desktopSession?.doctor_id) {
+      getDoctorProfile(desktopSession.doctor_id).then((doc) => {
+        if (doc) setDoctorProfile(doc)
+      })
+    }
+  }, [desktopSession?.clinic_id, desktopSession?.doctor_id])
 
   const send = () => {
     setDelivery("sending")
@@ -129,26 +158,48 @@ export function PrescriptionPreview({
                       !showClinicLogo && "rx-content-hidden",
                     )}
                   >
-                    <HeartPulse size={24} />
+                    {clinicLogo ? (
+                      <img
+                        src={clinicLogo}
+                        alt="Clinic logo"
+                        style={{ width: "100%", height: "100%", objectFit: "contain", borderRadius: "4px" }}
+                      />
+                    ) : (
+                      <HeartPulse size={24} />
+                    )}
                   </span>
                   <div>
-                    <h2>{desktopSession?.clinic_id ? `Clinic ${desktopSession.clinic_id}` : "Medical Clinic"}</h2>
-                    <p>{desktopSession?.clinic_id ? `Registered Clinic (${desktopSession.clinic_id})` : "Local Clinic Workspace"}</p>
-                    {desktopSession?.doctor_email && (
+                    <h2>{clinicProfile?.name || (desktopSession?.clinic_id ? `Clinic ${desktopSession.clinic_id}` : "Medical Clinic")}</h2>
+                    <p>
+                      {[clinicProfile?.street, clinicProfile?.city, clinicProfile?.state, clinicProfile?.postal_code]
+                        .filter(Boolean)
+                        .join(", ") || (desktopSession?.clinic_id ? "Registered Healthcare Facility" : "Local Clinic Workspace")}
+                    </p>
+                    {clinicProfile?.phone && (
+                      <p style={{ fontSize: "11px", color: "var(--text-muted, #64748b)" }}>
+                        Ph: {clinicProfile.phone}
+                      </p>
+                    )}
+                    {(clinicProfile?.email || desktopSession?.doctor_email) && (
                       <p>
                         <span
                           className={cn(!showClinicEmail && "rx-content-hidden")}
                         >
-                          {desktopSession.doctor_email}
+                          {clinicProfile?.email || desktopSession?.doctor_email}
                         </span>
                       </p>
                     )}
                   </div>
                 </div>
                 <div className="rx-doctor">
-                  <strong>{desktopSession?.doctor_name || "Doctor"}</strong>
-                  <span>{desktopSession ? "Registered Medical Practitioner" : "Medical Practitioner"}</span>
-                  <span>{desktopSession?.doctor_id ? `Doctor ID: ${desktopSession.doctor_id}` : "Profile Incomplete"}</span>
+                  <strong>{desktopSession?.doctor_name || doctorProfile?.full_name || "Doctor"}</strong>
+                  <span>{doctorProfile?.qualification || "Registered Medical Practitioner"}</span>
+                  {doctorProfile?.registration_number && (
+                    <span>Reg. No: {doctorProfile.registration_number}</span>
+                  )}
+                  {doctorProfile?.phone && (
+                    <span>Ph: {doctorProfile.phone}</span>
+                  )}
                 </div>
               </header>
             )}
@@ -164,7 +215,7 @@ export function PrescriptionPreview({
             </div>
             <div>
               <span>Patient ID</span>
-              <strong>{patient.id}</strong>
+              <strong>{patient.displayId || patient.id}</strong>
             </div>
             <div>
               <span>Date</span>

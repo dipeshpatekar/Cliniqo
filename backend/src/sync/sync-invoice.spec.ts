@@ -90,7 +90,7 @@ describe('SyncService Invoice Sync Mutations', () => {
       findOneAndUpdate: vi.fn().mockResolvedValue({ currentSequence: 1 }),
     };
 
-    const MockInvoiceModel = vi.fn().mockImplementation(function (this: any, doc: any) {
+    const MockInvoiceModel: any = vi.fn().mockImplementation(function (this: any, doc: any) {
       Object.assign(this, doc);
       this._id = doc._id || new Types.ObjectId();
       this.version = doc.version || 1;

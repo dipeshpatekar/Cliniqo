@@ -1497,3 +1497,378 @@ export async function saveDoctorProfile(
   } catch {}
   return saved
 }
+
+// ==========================================
+// CLINICAL LIBRARY & EXCEL IMPORT BRIDGE
+// ==========================================
+
+export interface ClinicalImportItemInput {
+  name: string
+  generic_name?: string
+  brand_name?: string
+  composition?: string
+  strength: string
+  formulation: string
+  dosage_form?: string
+  route?: string
+  manufacturer?: string
+  category?: string
+  pack_size?: string
+  mrp?: number
+  storage_instructions?: string
+  default_dosage?: string
+  default_frequency?: string
+  default_duration?: string
+  default_instructions?: string
+}
+
+export interface ClinicalImportBatchInput {
+  clinic_id: string
+  doctor_id?: string
+  file_name: string
+  items: ClinicalImportItemInput[]
+  total_rows: number
+  invalid_rows: number
+  allow_update?: boolean
+}
+
+export interface ClinicalImportSummary {
+  batch_id: string
+  file_name: string
+  total_rows: number
+  valid_rows: number
+  invalid_rows: number
+  imported_rows: number
+  skipped_rows: number
+  status: string
+  created_at: string
+}
+
+export interface ClinicalImportBatchRecord {
+  id: string
+  clinic_id: string
+  doctor_id?: string
+  file_name: string
+  total_rows: number
+  valid_rows: number
+  invalid_rows: number
+  imported_rows: number
+  skipped_rows: number
+  status: string
+  created_at: string
+  rolled_back_at?: string
+}
+
+export interface ClinicalMedicineRecord {
+  id: string
+  server_id?: string
+  clinic_id: string
+  batch_id?: string
+  name: string
+  generic_name?: string
+  brand_name?: string
+  composition?: string
+  strength: string
+  formulation: string
+  dosage_form?: string
+  route?: string
+  manufacturer?: string
+  category?: string
+  pack_size?: string
+  mrp?: number
+  storage_instructions?: string
+  default_dosage?: string
+  default_frequency?: string
+  default_duration?: string
+  default_instructions?: string
+  is_active: boolean
+  created_at: string
+  updated_at: string
+}
+
+export interface SaveClinicalMedicineArgs {
+  id?: string
+  clinic_id: string
+  name: string
+  generic_name?: string
+  brand_name?: string
+  composition?: string
+  strength: string
+  formulation: string
+  dosage_form?: string
+  route?: string
+  manufacturer?: string
+  category?: string
+  pack_size?: string
+  mrp?: number
+  storage_instructions?: string
+  default_dosage?: string
+  default_frequency?: string
+  default_duration?: string
+  default_instructions?: string
+}
+
+export async function importClinicalLibrary(
+  batch: ClinicalImportBatchInput,
+): Promise<ClinicalImportSummary> {
+  if (isTauriDesktop()) {
+    const res = await invokeTauri<ClinicalImportSummary>("import_clinical_library", {
+      clinicId: batch.clinic_id,
+      batch,
+    })
+    if (res) return res
+  }
+
+  // Web fallback: localStorage simulation
+  const batchId = `batch_${Date.now()}`
+  const now = new Date().toISOString()
+  const storageKey = `cliniqo_clinical_library_${batch.clinic_id}`
+  const batchKey = `cliniqo_clinical_batches_${batch.clinic_id}`
+
+  const existingRaw = localStorage.getItem(storageKey)
+  const existing: ClinicalMedicineRecord[] = existingRaw ? JSON.parse(existingRaw) : []
+
+  let importedRows = 0
+  let skippedRows = 0
+
+  for (const item of batch.items) {
+    const isDup = existing.some(
+      (e) =>
+        e.is_active &&
+        e.name.toLowerCase().trim() === item.name.toLowerCase().trim() &&
+        e.formulation.toLowerCase().trim() === item.formulation.toLowerCase().trim() &&
+        e.strength.toLowerCase().trim() === item.strength.toLowerCase().trim(),
+    )
+    if (isDup && !batch.allow_update) {
+      skippedRows++
+    } else {
+      importedRows++
+      existing.push({
+        id: `med_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+        clinic_id: batch.clinic_id,
+        batch_id: batchId,
+        name: item.name,
+        generic_name: item.generic_name,
+        brand_name: item.brand_name,
+        composition: item.composition,
+        strength: item.strength,
+        formulation: item.formulation,
+        dosage_form: item.dosage_form,
+        route: item.route,
+        manufacturer: item.manufacturer,
+        category: item.category,
+        pack_size: item.pack_size,
+        mrp: item.mrp,
+        storage_instructions: item.storage_instructions,
+        default_dosage: item.default_dosage,
+        default_frequency: item.default_frequency,
+        default_duration: item.default_duration,
+        default_instructions: item.default_instructions,
+        is_active: true,
+        created_at: now,
+        updated_at: now,
+      })
+    }
+  }
+
+  localStorage.setItem(storageKey, JSON.stringify(existing))
+
+  const batchesRaw = localStorage.getItem(batchKey)
+  const batches: ClinicalImportBatchRecord[] = batchesRaw ? JSON.parse(batchesRaw) : []
+  const batchRecord: ClinicalImportBatchRecord = {
+    id: batchId,
+    clinic_id: batch.clinic_id,
+    doctor_id: batch.doctor_id,
+    file_name: batch.file_name,
+    total_rows: batch.total_rows,
+    valid_rows: batch.items.length,
+    invalid_rows: batch.invalid_rows,
+    imported_rows: importedRows,
+    skipped_rows: skippedRows,
+    status: "COMPLETED",
+    created_at: now,
+  }
+  batches.unshift(batchRecord)
+  localStorage.setItem(batchKey, JSON.stringify(batches))
+
+  return {
+    batch_id: batchId,
+    file_name: batch.file_name,
+    total_rows: batch.total_rows,
+    valid_rows: batch.items.length,
+    invalid_rows: batch.invalid_rows,
+    imported_rows: importedRows,
+    skipped_rows: skippedRows,
+    status: "COMPLETED",
+    created_at: now,
+  }
+}
+
+export async function rollbackClinicalLibraryBatch(
+  clinicId: string,
+  batchId: string,
+): Promise<number> {
+  if (isTauriDesktop()) {
+    const res = await invokeTauri<number>("rollback_clinical_library_batch", {
+      clinicId,
+      batchId,
+    })
+    if (res !== null && res !== undefined) return res
+  }
+
+  const storageKey = `cliniqo_clinical_library_${clinicId}`
+  const batchKey = `cliniqo_clinical_batches_${clinicId}`
+
+  const existingRaw = localStorage.getItem(storageKey)
+  let count = 0
+  if (existingRaw) {
+    const items: ClinicalMedicineRecord[] = JSON.parse(existingRaw)
+    for (const item of items) {
+      if (item.batch_id === batchId && item.is_active) {
+        item.is_active = false
+        count++
+      }
+    }
+    localStorage.setItem(storageKey, JSON.stringify(items))
+  }
+
+  const batchesRaw = localStorage.getItem(batchKey)
+  if (batchesRaw) {
+    const batches: ClinicalImportBatchRecord[] = JSON.parse(batchesRaw)
+    const b = batches.find((x) => x.id === batchId)
+    if (b) {
+      b.status = "ROLLED_BACK"
+      b.rolled_back_at = new Date().toISOString()
+      localStorage.setItem(batchKey, JSON.stringify(batches))
+    }
+  }
+
+  return count
+}
+
+export async function getClinicalLibraryItems(
+  clinicId: string,
+  query?: string,
+  limit = 50,
+  offset = 0,
+): Promise<ClinicalMedicineRecord[]> {
+  if (isTauriDesktop()) {
+    const res = await invokeTauri<ClinicalMedicineRecord[]>("get_clinical_library_items", {
+      clinicId,
+      query: query || null,
+      limit,
+      offset,
+    })
+    if (res) return res
+  }
+
+  const storageKey = `cliniqo_clinical_library_${clinicId}`
+  const raw = localStorage.getItem(storageKey)
+  if (!raw) return []
+  let items: ClinicalMedicineRecord[] = JSON.parse(raw)
+  items = items.filter((i) => i.is_active)
+  if (query && query.trim()) {
+    const q = query.toLowerCase().trim()
+    items = items.filter(
+      (i) =>
+        i.name.toLowerCase().includes(q) ||
+        (i.generic_name && i.generic_name.toLowerCase().includes(q)) ||
+        (i.brand_name && i.brand_name.toLowerCase().includes(q)) ||
+        (i.composition && i.composition.toLowerCase().includes(q)),
+    )
+  }
+  return items.slice(offset, offset + limit)
+}
+
+export async function getClinicalLibraryBatches(
+  clinicId: string,
+): Promise<ClinicalImportBatchRecord[]> {
+  if (isTauriDesktop()) {
+    const res = await invokeTauri<ClinicalImportBatchRecord[]>("get_clinical_library_batches", {
+      clinicId,
+    })
+    if (res) return res
+  }
+
+  const batchKey = `cliniqo_clinical_batches_${clinicId}`
+  const raw = localStorage.getItem(batchKey)
+  if (!raw) return []
+  return JSON.parse(raw)
+}
+
+export async function saveClinicalLibraryItem(
+  item: SaveClinicalMedicineArgs,
+): Promise<string> {
+  if (isTauriDesktop()) {
+    const res = await invokeTauri<string>("save_clinical_library_item", {
+      clinicId: item.clinic_id,
+      item,
+    })
+    if (res) return res
+  }
+
+  const storageKey = `cliniqo_clinical_library_${item.clinic_id}`
+  const raw = localStorage.getItem(storageKey)
+  const items: ClinicalMedicineRecord[] = raw ? JSON.parse(raw) : []
+  const id = item.id || `med_${Date.now()}`
+  const now = new Date().toISOString()
+
+  const idx = items.findIndex((i) => i.id === id)
+  const record: ClinicalMedicineRecord = {
+    id,
+    clinic_id: item.clinic_id,
+    name: item.name,
+    generic_name: item.generic_name,
+    brand_name: item.brand_name,
+    composition: item.composition,
+    strength: item.strength,
+    formulation: item.formulation,
+    dosage_form: item.dosage_form,
+    route: item.route,
+    manufacturer: item.manufacturer,
+    category: item.category,
+    pack_size: item.pack_size,
+    mrp: item.mrp,
+    storage_instructions: item.storage_instructions,
+    default_dosage: item.default_dosage,
+    default_frequency: item.default_frequency,
+    default_duration: item.default_duration,
+    default_instructions: item.default_instructions,
+    is_active: true,
+    created_at: idx >= 0 ? items[idx].created_at : now,
+    updated_at: now,
+  }
+
+  if (idx >= 0) {
+    items[idx] = record
+  } else {
+    items.unshift(record)
+  }
+  localStorage.setItem(storageKey, JSON.stringify(items))
+  return id
+}
+
+export async function archiveClinicalLibraryItem(
+  clinicId: string,
+  id: string,
+): Promise<void> {
+  if (isTauriDesktop()) {
+    await invokeTauri<void>("archive_clinical_library_item", {
+      clinicId,
+      id,
+    })
+    return
+  }
+
+  const storageKey = `cliniqo_clinical_library_${clinicId}`
+  const raw = localStorage.getItem(storageKey)
+  if (!raw) return
+  const items: ClinicalMedicineRecord[] = JSON.parse(raw)
+  const item = items.find((i) => i.id === id)
+  if (item) {
+    item.is_active = false
+    item.updated_at = new Date().toISOString()
+    localStorage.setItem(storageKey, JSON.stringify(items))
+  }
+}
+

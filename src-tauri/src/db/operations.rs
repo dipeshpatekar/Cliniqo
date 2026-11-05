@@ -5,12 +5,13 @@ use thiserror::Error;
 use crate::crypto::{decrypt_payload, encrypt_payload, CryptoError};
 use crate::crypto::key_manager::DatabaseEncryptionKey;
 use super::schema::{
-    CatalogueCacheStats, ClinicalData, ClinicProfileRecord, ConflictStatus, ConsultationRecord, DecryptedOutboxItem,
-    DoctorProfileRecord, EncryptedBillingData,
+    CatalogueCacheStats, ClinicalData, ClinicalImportBatchInput, ClinicalImportBatchRecord,
+    ClinicalImportSummary, ClinicalMedicineRecord, ClinicProfileRecord,
+    ConflictStatus, ConsultationRecord, DecryptedOutboxItem, DoctorProfileRecord, EncryptedBillingData,
     FormularyRecord, InvoiceItem, InvoiceRecord, LocalCatalogueItem, PatientDemographics, PatientRecord,
-    PrescriptionRecord, SaveCatalogueCacheItemArgs, SaveFormularyArgs, SaveInvoiceArgs, StockImportSummary,
-    StockItemInput, StockItemRecord, StockSummaryRecord, SyncConflictRecord, SyncFeedChangeItem,
-    SyncOutboxSummary, SyncStateRecord,
+    PrescriptionRecord, SaveCatalogueCacheItemArgs, SaveClinicalMedicineArgs, SaveFormularyArgs,
+    SaveInvoiceArgs, StockImportSummary, StockItemInput, StockItemRecord, StockSummaryRecord,
+    SyncConflictRecord, SyncFeedChangeItem, SyncOutboxSummary, SyncStateRecord,
 };
 
 #[derive(Error, Debug)]
@@ -3114,6 +3115,75 @@ impl DbOperations {
         };
 
         let mut items = Vec::new();
+
+        // 1. Query doctor/clinic-imported Clinical Library items with highest priority
+        let clinical_sql = r#"
+            SELECT id, name, generic_name, brand_name, composition, strength, formulation,
+                   dosage_form, route, manufacturer, category, pack_size, mrp, storage_instructions,
+                   default_dosage, default_instructions, created_at
+            FROM local_clinical_library_v1
+            WHERE is_active = 1
+              AND (name LIKE ?1 OR generic_name LIKE ?1 OR brand_name LIKE ?1 OR composition LIKE ?1)
+            ORDER BY
+                CASE WHEN name LIKE ?2 THEN 0 ELSE 1 END,
+                name ASC
+            LIMIT ?3
+        "#;
+        if let Ok(mut c_stmt) = conn.prepare(clinical_sql) {
+            if let Ok(rows) = c_stmt.query_map(params![pattern, prefix_pattern, limit as i64], |row| {
+                let c_id: String = row.get(0)?;
+                let name: String = row.get(1)?;
+                let gen_name: Option<String> = row.get(2)?;
+                let b_name: Option<String> = row.get(3)?;
+                let comp: Option<String> = row.get(4)?;
+                let strength: String = row.get(5)?;
+                let form: String = row.get(6)?;
+                let d_form: Option<String> = row.get(7)?;
+                let route: Option<String> = row.get(8)?;
+                let mfg: Option<String> = row.get(9)?;
+                let cat: Option<String> = row.get(10)?;
+                let pack: Option<String> = row.get(11)?;
+                let mrp: Option<f64> = row.get(12)?;
+                let storage: Option<String> = row.get(13)?;
+                let def_dose: Option<String> = row.get(14)?;
+                let def_inst: Option<String> = row.get(15)?;
+                let created: String = row.get(16)?;
+
+                let meta = serde_json::json!({
+                    "manufacturer": mfg,
+                    "category": cat,
+                    "pack_size": pack,
+                    "mrp": mrp,
+                    "composition": comp,
+                    "storage_instructions": storage,
+                    "default_dosage": def_dose,
+                    "default_instructions": def_inst,
+                });
+
+                Ok(LocalCatalogueItem {
+                    id: format!("clinical_{}", c_id),
+                    item_type: "BRAND".to_string(),
+                    name: name.clone(),
+                    brand_name: b_name.or(Some(name.clone())),
+                    generic_name: gen_name.or(comp),
+                    product_name: Some(name),
+                    dosage_form: d_form.or(Some(form)),
+                    route,
+                    active_ingredients_json: Some(meta.to_string()),
+                    strengths_json: "[]".to_string(),
+                    raw_strength_summary: strength,
+                    is_combination: false,
+                    is_verified: true,
+                    source_provenance: "CLINICAL_LIBRARY".to_string(),
+                    cached_at: created,
+                })
+            }) {
+                for item in rows.flatten() {
+                    items.push(item);
+                }
+            }
+        }
+
         if let Some(form) = clean_form {
             let form_pattern = format!("%{}%", form);
             let rows = stmt.query_map(params![pattern, prefix_pattern, limit as i64, form_pattern], map_row)?;
@@ -3126,6 +3196,53 @@ impl DbOperations {
                 items.push(item?);
             }
         }
+
+        // Also query available pharmacy inventory stock so local stock items appear in consultation
+        let stock_sql = r#"
+            SELECT id, product_name, unit, company, quantity, batch_number, created_at
+            FROM local_inventory_stock_v1
+            WHERE (product_name LIKE ?1 OR company LIKE ?1)
+            ORDER BY
+                CASE WHEN product_name LIKE ?2 THEN 0 ELSE 1 END,
+                product_name ASC
+            LIMIT ?3
+        "#;
+        if let Ok(mut stock_stmt) = conn.prepare(stock_sql) {
+            if let Ok(rows) = stock_stmt.query_map(params![pattern, prefix_pattern, limit as i64], |row| {
+                let s_id: String = row.get(0)?;
+                let p_name: String = row.get(1)?;
+                let unit: String = row.get(2)?;
+                let company: String = row.get(3)?;
+                let qty: i64 = row.get(4)?;
+                let batch: Option<String> = row.get(5)?;
+                let created: String = row.get(6)?;
+                let batch_note = batch.map(|b| format!(" · Batch: {}", b)).unwrap_or_default();
+                let meta_json = format!(r#"{{"manufacturer":"{}","stock":{}}}"#, company.replace('"', "\\\""), qty);
+                Ok(LocalCatalogueItem {
+                    id: format!("stock_{}", s_id),
+                    item_type: "BRAND".to_string(),
+                    name: format!("{} (Stock: {} {}{})", p_name, qty, unit, batch_note),
+                    brand_name: Some(p_name.clone()),
+                    generic_name: Some(company.clone()),
+                    product_name: Some(p_name),
+                    dosage_form: Some(unit.clone()),
+                    route: None,
+                    active_ingredients_json: Some(meta_json),
+                    strengths_json: "[]".to_string(),
+                    raw_strength_summary: unit,
+                    is_combination: false,
+                    is_verified: true,
+                    source_provenance: "LOCAL_INVENTORY".to_string(),
+                    cached_at: created,
+                })
+            }) {
+                for item in rows.flatten() {
+                    items.push(item);
+                }
+            }
+        }
+
+        items.truncate(limit);
         Ok(items)
     }
 
@@ -3158,6 +3275,27 @@ impl DbOperations {
 
         let mut stmt = conn.prepare(&query_sql)?;
         let mut list = Vec::new();
+
+        // Check if strength exists in local clinical library first
+        if let Ok(mut c_stmt) = conn.prepare(
+            r#"
+            SELECT DISTINCT strength
+            FROM local_clinical_library_v1
+            WHERE is_active = 1
+              AND (name = ?1 OR generic_name = ?1 OR brand_name = ?1)
+              AND strength != ''
+            "#,
+        ) {
+            if let Ok(mut rows) = c_stmt.query(params![raw_name]) {
+                while let Ok(Some(row)) = rows.next() {
+                    if let Ok(s) = row.get::<_, String>(0) {
+                        if !list.contains(&s) {
+                            list.push(s);
+                        }
+                    }
+                }
+            }
+        }
 
         if let Some(form) = formulation {
             let mut rows = stmt.query(params![raw_name, form.trim()])?;
@@ -3581,6 +3719,522 @@ impl DbOperations {
             source_report: row.get(8)?,
             created_at: row.get(9)?,
             updated_at: row.get(10)?,
+        })
+    }
+
+    /// Imports an Excel/CSV batch of medicine records into the Clinical Library.
+    /// Preserves strict tenant isolation by clinic_id.
+    /// Deduplicates against existing active records on (clinic_id, name, formulation, strength).
+    /// Tracks complete provenance with batch_id and audit history.
+    pub fn import_clinical_library(
+        conn: &mut Connection,
+        clinic_id: &str,
+        batch: ClinicalImportBatchInput,
+    ) -> Result<ClinicalImportSummary, DatabaseOpError> {
+        let batch_id = Uuid::new_v4().to_string();
+        let total_input_rows = batch.total_rows;
+        let mut valid_rows = 0;
+        let mut invalid_rows = batch.invalid_rows;
+        let mut imported_rows = 0;
+        let mut skipped_rows = 0;
+        let allow_update = batch.allow_update.unwrap_or(false);
+
+        let tx = conn.transaction()?;
+
+        // 1. Record the import batch in local_import_batches_v1
+        tx.execute(
+            r#"
+            INSERT INTO local_import_batches_v1 (
+                id, clinic_id, doctor_id, file_name,
+                total_rows, valid_rows, invalid_rows,
+                imported_rows, skipped_rows, status,
+                created_at
+            ) VALUES (
+                ?1, ?2, ?3, ?4,
+                ?5, 0, ?6,
+                0, 0, 'COMPLETED',
+                CURRENT_TIMESTAMP
+            )
+            "#,
+            params![
+                batch_id,
+                clinic_id,
+                batch.doctor_id.as_deref().map(str::trim),
+                batch.file_name.trim(),
+                total_input_rows as i64,
+                invalid_rows as i64,
+            ],
+        )?;
+
+        // 2. Process each medicine item
+        for item in batch.items {
+            let name = item.name.trim();
+            if name.is_empty() {
+                invalid_rows += 1;
+                continue;
+            }
+            valid_rows += 1;
+
+            let strength = item.strength.trim();
+            let formulation = if item.formulation.trim().is_empty() {
+                "Tablet"
+            } else {
+                item.formulation.trim()
+            };
+
+            // Check for existing duplicate in clinic library
+            let existing_id: Option<String> = tx
+                .query_row(
+                    r#"
+                    SELECT id FROM local_clinical_library_v1
+                    WHERE clinic_id = ?1
+                      AND LOWER(TRIM(name)) = LOWER(TRIM(?2))
+                      AND LOWER(TRIM(formulation)) = LOWER(TRIM(?3))
+                      AND LOWER(TRIM(strength)) = LOWER(TRIM(?4))
+                      AND is_active = 1
+                    LIMIT 1
+                    "#,
+                    params![clinic_id, name, formulation, strength],
+                    |row| row.get(0),
+                )
+                .optional()?;
+
+            match existing_id {
+                Some(existing_item_id) => {
+                    if !allow_update {
+                        // Never silently overwrite: skip and record duplicate
+                        skipped_rows += 1;
+                    } else {
+                        // Safe update of optional non-destructive metadata
+                        tx.execute(
+                            r#"
+                            UPDATE local_clinical_library_v1 SET
+                                generic_name = COALESCE(?1, generic_name),
+                                brand_name = COALESCE(?2, brand_name),
+                                composition = COALESCE(?3, composition),
+                                dosage_form = COALESCE(?4, dosage_form),
+                                route = COALESCE(?5, route),
+                                manufacturer = COALESCE(?6, manufacturer),
+                                category = COALESCE(?7, category),
+                                pack_size = COALESCE(?8, pack_size),
+                                mrp = COALESCE(?9, mrp),
+                                storage_instructions = COALESCE(?10, storage_instructions),
+                                default_dosage = COALESCE(?11, default_dosage),
+                                default_frequency = COALESCE(?12, default_frequency),
+                                default_duration = COALESCE(?13, default_duration),
+                                default_instructions = COALESCE(?14, default_instructions),
+                                updated_at = CURRENT_TIMESTAMP
+                            WHERE clinic_id = ?15 AND id = ?16
+                            "#,
+                            params![
+                                item.generic_name.as_deref().map(str::trim),
+                                item.brand_name.as_deref().map(str::trim),
+                                item.composition.as_deref().map(str::trim),
+                                item.dosage_form.as_deref().map(str::trim),
+                                item.route.as_deref().map(str::trim),
+                                item.manufacturer.as_deref().map(str::trim),
+                                item.category.as_deref().map(str::trim),
+                                item.pack_size.as_deref().map(str::trim),
+                                item.mrp,
+                                item.storage_instructions.as_deref().map(str::trim),
+                                item.default_dosage.as_deref().map(str::trim),
+                                item.default_frequency.as_deref().map(str::trim),
+                                item.default_duration.as_deref().map(str::trim),
+                                item.default_instructions.as_deref().map(str::trim),
+                                clinic_id,
+                                existing_item_id,
+                            ],
+                        )?;
+                        imported_rows += 1;
+                    }
+                }
+                None => {
+                    let item_id = Uuid::new_v4().to_string();
+                    tx.execute(
+                        r#"
+                        INSERT INTO local_clinical_library_v1 (
+                            id, server_id, clinic_id, batch_id,
+                            name, generic_name, brand_name, composition,
+                            strength, formulation, dosage_form, route,
+                            manufacturer, category, pack_size, mrp,
+                            storage_instructions, default_dosage, default_frequency,
+                            default_duration, default_instructions,
+                            is_active, sync_status,
+                            created_at, updated_at
+                        ) VALUES (
+                            ?1, NULL, ?2, ?3,
+                            ?4, ?5, ?6, ?7,
+                            ?8, ?9, ?10, ?11,
+                            ?12, ?13, ?14, ?15,
+                            ?16, ?17, ?18,
+                            ?19, ?20,
+                            1, 'PENDING',
+                            CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                        )
+                        "#,
+                        params![
+                            item_id,
+                            clinic_id,
+                            batch_id,
+                            name,
+                            item.generic_name.as_deref().map(str::trim),
+                            item.brand_name.as_deref().map(str::trim),
+                            item.composition.as_deref().map(str::trim),
+                            strength,
+                            formulation,
+                            item.dosage_form.as_deref().map(str::trim),
+                            item.route.as_deref().map(str::trim),
+                            item.manufacturer.as_deref().map(str::trim),
+                            item.category.as_deref().map(str::trim),
+                            item.pack_size.as_deref().map(str::trim),
+                            item.mrp,
+                            item.storage_instructions.as_deref().map(str::trim),
+                            item.default_dosage.as_deref().map(str::trim),
+                            item.default_frequency.as_deref().map(str::trim),
+                            item.default_duration.as_deref().map(str::trim),
+                            item.default_instructions.as_deref().map(str::trim),
+                        ],
+                    )?;
+                    imported_rows += 1;
+                }
+            }
+        }
+
+        // 3. Update the batch summary totals
+        tx.execute(
+            r#"
+            UPDATE local_import_batches_v1 SET
+                valid_rows = ?1,
+                invalid_rows = ?2,
+                imported_rows = ?3,
+                skipped_rows = ?4
+            WHERE clinic_id = ?5 AND id = ?6
+            "#,
+            params![
+                valid_rows as i64,
+                invalid_rows as i64,
+                imported_rows as i64,
+                skipped_rows as i64,
+                clinic_id,
+                batch_id,
+            ],
+        )?;
+
+        let created_at: String = tx.query_row(
+            "SELECT created_at FROM local_import_batches_v1 WHERE id = ?1",
+            params![batch_id],
+            |row| row.get(0),
+        )?;
+
+        tx.commit()?;
+
+        Ok(ClinicalImportSummary {
+            batch_id,
+            file_name: batch.file_name,
+            total_rows: total_input_rows,
+            valid_rows,
+            invalid_rows,
+            imported_rows,
+            skipped_rows,
+            status: "COMPLETED".to_string(),
+            created_at,
+        })
+    }
+
+    /// Safely rolls back an entire import batch for a clinic.
+    /// Deactivates medicines associated with that batch without affecting manual entries or other batches.
+    pub fn rollback_clinical_library_batch(
+        conn: &mut Connection,
+        clinic_id: &str,
+        batch_id: &str,
+    ) -> Result<usize, DatabaseOpError> {
+        let tx = conn.transaction()?;
+
+        let batch_status: Option<String> = tx
+            .query_row(
+                "SELECT status FROM local_import_batches_v1 WHERE clinic_id = ?1 AND id = ?2",
+                params![clinic_id, batch_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+
+        match batch_status {
+            Some(status) => {
+                if status == "ROLLED_BACK" {
+                    return Ok(0);
+                }
+            }
+            None => return Ok(0),
+        }
+
+        let affected = tx.execute(
+            "UPDATE local_clinical_library_v1 SET is_active = 0, updated_at = CURRENT_TIMESTAMP WHERE clinic_id = ?1 AND batch_id = ?2",
+            params![clinic_id, batch_id],
+        )?;
+
+        tx.execute(
+            "UPDATE local_import_batches_v1 SET status = 'ROLLED_BACK', rolled_back_at = CURRENT_TIMESTAMP WHERE clinic_id = ?1 AND id = ?2",
+            params![clinic_id, batch_id],
+        )?;
+
+        tx.commit()?;
+        Ok(affected)
+    }
+
+    /// Queries active medicines from the Clinical Library for a clinic.
+    pub fn get_clinical_library_items(
+        conn: &Connection,
+        clinic_id: &str,
+        query: Option<&str>,
+        limit: usize,
+        offset: usize,
+    ) -> Result<Vec<ClinicalMedicineRecord>, DatabaseOpError> {
+        let limit = if limit == 0 { 50 } else { limit.min(500) };
+        let (sql, filter) = match query.map(str::trim).filter(|q| !q.is_empty()) {
+            Some(q) => (
+                r#"
+                SELECT id, server_id, clinic_id, batch_id, name, generic_name,
+                       brand_name, composition, strength, formulation, dosage_form,
+                       route, manufacturer, category, pack_size, mrp,
+                       storage_instructions, default_dosage, default_frequency,
+                       default_duration, default_instructions, is_active,
+                       created_at, updated_at
+                FROM local_clinical_library_v1
+                WHERE clinic_id = ?1 AND is_active = 1
+                  AND (name LIKE ?2 OR generic_name LIKE ?2 OR brand_name LIKE ?2 OR composition LIKE ?2 OR manufacturer LIKE ?2)
+                ORDER BY name ASC
+                LIMIT ?3 OFFSET ?4
+                "#,
+                Some(format!("%{}%", q)),
+            ),
+            None => (
+                r#"
+                SELECT id, server_id, clinic_id, batch_id, name, generic_name,
+                       brand_name, composition, strength, formulation, dosage_form,
+                       route, manufacturer, category, pack_size, mrp,
+                       storage_instructions, default_dosage, default_frequency,
+                       default_duration, default_instructions, is_active,
+                       created_at, updated_at
+                FROM local_clinical_library_v1
+                WHERE clinic_id = ?1 AND is_active = 1
+                ORDER BY name ASC
+                LIMIT ?2 OFFSET ?3
+                "#,
+                None,
+            ),
+        };
+
+        let mut stmt = conn.prepare(sql)?;
+        let rows = match filter {
+            Some(f) => stmt.query_map(params![clinic_id, f, limit as i64, offset as i64], Self::map_clinical_medicine_row)?,
+            None => stmt.query_map(params![clinic_id, limit as i64, offset as i64], Self::map_clinical_medicine_row)?,
+        };
+
+        let mut records = Vec::new();
+        for row in rows {
+            records.push(row?);
+        }
+        Ok(records)
+    }
+
+    /// Queries import batch audit history for a clinic.
+    pub fn get_clinical_library_batches(
+        conn: &Connection,
+        clinic_id: &str,
+    ) -> Result<Vec<ClinicalImportBatchRecord>, DatabaseOpError> {
+        let mut stmt = conn.prepare(
+            r#"
+            SELECT id, clinic_id, doctor_id, file_name,
+                   total_rows, valid_rows, invalid_rows,
+                   imported_rows, skipped_rows, status,
+                   created_at, rolled_back_at
+            FROM local_import_batches_v1
+            WHERE clinic_id = ?1
+            ORDER BY created_at DESC
+            LIMIT 50
+            "#,
+        )?;
+
+        let rows = stmt.query_map(params![clinic_id], Self::map_clinical_batch_row)?;
+        let mut records = Vec::new();
+        for row in rows {
+            records.push(row?);
+        }
+        Ok(records)
+    }
+
+    /// Saves or updates a single clinical medicine record manually.
+    pub fn save_clinical_library_item(
+        conn: &mut Connection,
+        clinic_id: &str,
+        item: SaveClinicalMedicineArgs,
+    ) -> Result<String, DatabaseOpError> {
+        let item_id = match item.id {
+            Some(ref id) if !id.trim().is_empty() => id.trim().to_string(),
+            _ => Uuid::new_v4().to_string(),
+        };
+
+        let exists: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM local_clinical_library_v1 WHERE clinic_id = ?1 AND id = ?2)",
+                params![clinic_id, item_id],
+                |row| row.get(0),
+            )
+            .unwrap_or(false);
+
+        if !exists {
+            conn.execute(
+                r#"
+                INSERT INTO local_clinical_library_v1 (
+                    id, server_id, clinic_id, batch_id,
+                    name, generic_name, brand_name, composition,
+                    strength, formulation, dosage_form, route,
+                    manufacturer, category, pack_size, mrp,
+                    storage_instructions, default_dosage, default_frequency,
+                    default_duration, default_instructions,
+                    is_active, sync_status,
+                    created_at, updated_at
+                ) VALUES (
+                    ?1, NULL, ?2, NULL,
+                    ?3, ?4, ?5, ?6,
+                    ?7, ?8, ?9, ?10,
+                    ?11, ?12, ?13, ?14,
+                    ?15, ?16, ?17,
+                    ?18, ?19,
+                    1, 'PENDING',
+                    CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                )
+                "#,
+                params![
+                    item_id,
+                    clinic_id,
+                    item.name.trim(),
+                    item.generic_name.as_deref().map(str::trim),
+                    item.brand_name.as_deref().map(str::trim),
+                    item.composition.as_deref().map(str::trim),
+                    item.strength.trim(),
+                    item.formulation.trim(),
+                    item.dosage_form.as_deref().map(str::trim),
+                    item.route.as_deref().map(str::trim),
+                    item.manufacturer.as_deref().map(str::trim),
+                    item.category.as_deref().map(str::trim),
+                    item.pack_size.as_deref().map(str::trim),
+                    item.mrp,
+                    item.storage_instructions.as_deref().map(str::trim),
+                    item.default_dosage.as_deref().map(str::trim),
+                    item.default_frequency.as_deref().map(str::trim),
+                    item.default_duration.as_deref().map(str::trim),
+                    item.default_instructions.as_deref().map(str::trim),
+                ],
+            )?;
+        } else {
+            conn.execute(
+                r#"
+                UPDATE local_clinical_library_v1 SET
+                    name = ?1,
+                    generic_name = ?2,
+                    brand_name = ?3,
+                    composition = ?4,
+                    strength = ?5,
+                    formulation = ?6,
+                    dosage_form = ?7,
+                    route = ?8,
+                    manufacturer = ?9,
+                    category = ?10,
+                    pack_size = ?11,
+                    mrp = ?12,
+                    storage_instructions = ?13,
+                    default_dosage = ?14,
+                    default_frequency = ?15,
+                    default_duration = ?16,
+                    default_instructions = ?17,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE clinic_id = ?18 AND id = ?19
+                "#,
+                params![
+                    item.name.trim(),
+                    item.generic_name.as_deref().map(str::trim),
+                    item.brand_name.as_deref().map(str::trim),
+                    item.composition.as_deref().map(str::trim),
+                    item.strength.trim(),
+                    item.formulation.trim(),
+                    item.dosage_form.as_deref().map(str::trim),
+                    item.route.as_deref().map(str::trim),
+                    item.manufacturer.as_deref().map(str::trim),
+                    item.category.as_deref().map(str::trim),
+                    item.pack_size.as_deref().map(str::trim),
+                    item.mrp,
+                    item.storage_instructions.as_deref().map(str::trim),
+                    item.default_dosage.as_deref().map(str::trim),
+                    item.default_frequency.as_deref().map(str::trim),
+                    item.default_duration.as_deref().map(str::trim),
+                    item.default_instructions.as_deref().map(str::trim),
+                    clinic_id,
+                    item_id,
+                ],
+            )?;
+        }
+
+        Ok(item_id)
+    }
+
+    /// Archives (soft-deletes) a medicine from the Clinical Library.
+    pub fn archive_clinical_library_item(
+        conn: &mut Connection,
+        clinic_id: &str,
+        id: &str,
+    ) -> Result<(), DatabaseOpError> {
+        conn.execute(
+            "UPDATE local_clinical_library_v1 SET is_active = 0, updated_at = CURRENT_TIMESTAMP WHERE clinic_id = ?1 AND id = ?2",
+            params![clinic_id, id],
+        )?;
+        Ok(())
+    }
+
+    fn map_clinical_medicine_row(row: &rusqlite::Row) -> rusqlite::Result<ClinicalMedicineRecord> {
+        let is_act: i32 = row.get(21)?;
+        Ok(ClinicalMedicineRecord {
+            id: row.get(0)?,
+            server_id: row.get(1)?,
+            clinic_id: row.get(2)?,
+            batch_id: row.get(3)?,
+            name: row.get(4)?,
+            generic_name: row.get(5)?,
+            brand_name: row.get(6)?,
+            composition: row.get(7)?,
+            strength: row.get(8)?,
+            formulation: row.get(9)?,
+            dosage_form: row.get(10)?,
+            route: row.get(11)?,
+            manufacturer: row.get(12)?,
+            category: row.get(13)?,
+            pack_size: row.get(14)?,
+            mrp: row.get(15)?,
+            storage_instructions: row.get(16)?,
+            default_dosage: row.get(17)?,
+            default_frequency: row.get(18)?,
+            default_duration: row.get(19)?,
+            default_instructions: row.get(20)?,
+            is_active: is_act == 1,
+            created_at: row.get(22)?,
+            updated_at: row.get(23)?,
+        })
+    }
+
+    fn map_clinical_batch_row(row: &rusqlite::Row) -> rusqlite::Result<ClinicalImportBatchRecord> {
+        Ok(ClinicalImportBatchRecord {
+            id: row.get(0)?,
+            clinic_id: row.get(1)?,
+            doctor_id: row.get(2)?,
+            file_name: row.get(3)?,
+            total_rows: row.get(4)?,
+            valid_rows: row.get(5)?,
+            invalid_rows: row.get(6)?,
+            imported_rows: row.get(7)?,
+            skipped_rows: row.get(8)?,
+            status: row.get(9)?,
+            created_at: row.get(10)?,
+            rolled_back_at: row.get(11)?,
         })
     }
 
@@ -5857,5 +6511,170 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM local_formulary_v2 WHERE clinic_id = ?1", params![clinic_id], |r| r.get(0))
             .unwrap();
         assert_eq!(formulary_count, 0, "Inventory stock must not populate local_formulary_v2");
+    }
+
+    #[test]
+    fn test_clinical_library_import_duplicate_detection_and_rollback() {
+        use crate::db::schema::ClinicalImportItemInput;
+
+        let mut conn = Connection::open_in_memory().unwrap();
+        let dek = DatabaseEncryptionKey::new([0x99u8; 32]);
+        MigrationRunner::run_migrations(&mut conn, &dek).expect("migrations run");
+
+        let clinic_a = "clinic_alpha";
+        let clinic_b = "clinic_beta";
+
+        // 1. Import a batch for Clinic A
+        let items_batch_1 = vec![
+            ClinicalImportItemInput {
+                name: "Amoxicillin Clavulanate".to_string(),
+                generic_name: Some("Amoxicillin + Clavulanic Acid".to_string()),
+                brand_name: Some("Augmentin".to_string()),
+                composition: Some("Amoxicillin 500mg, Clavulanic Acid 125mg".to_string()),
+                strength: "625 mg".to_string(),
+                formulation: "Tablet".to_string(),
+                dosage_form: Some("Tablet".to_string()),
+                route: Some("Oral".to_string()),
+                manufacturer: Some("GSK".to_string()),
+                category: Some("Antibiotic".to_string()),
+                pack_size: Some("10 Tablets".to_string()),
+                mrp: Some(210.50),
+                storage_instructions: Some("Store below 25°C".to_string()),
+                default_dosage: Some("1 tablet".to_string()),
+                default_frequency: Some("Twice daily".to_string()),
+                default_duration: Some("5 days".to_string()),
+                default_instructions: Some("After food".to_string()),
+            },
+            ClinicalImportItemInput {
+                name: "Pantoprazole DSR".to_string(),
+                generic_name: Some("Pantoprazole + Domperidone".to_string()),
+                brand_name: Some("Pan-D".to_string()),
+                composition: Some("Pantoprazole 40mg, Domperidone 30mg".to_string()),
+                strength: "40 mg + 30 mg".to_string(),
+                formulation: "Capsule".to_string(),
+                dosage_form: Some("Capsule".to_string()),
+                route: Some("Oral".to_string()),
+                manufacturer: Some("Alkem".to_string()),
+                category: Some("Antacid / PPI".to_string()),
+                pack_size: Some("15 Capsules".to_string()),
+                mrp: Some(195.00),
+                storage_instructions: None,
+                default_dosage: Some("1 capsule".to_string()),
+                default_frequency: Some("Once daily".to_string()),
+                default_duration: Some("7 days".to_string()),
+                default_instructions: Some("Before breakfast".to_string()),
+            },
+            ClinicalImportItemInput {
+                name: "".to_string(), // Invalid: empty medicine name
+                generic_name: None,
+                brand_name: None,
+                composition: None,
+                strength: "".to_string(),
+                formulation: "".to_string(),
+                dosage_form: None,
+                route: None,
+                manufacturer: None,
+                category: None,
+                pack_size: None,
+                mrp: None,
+                storage_instructions: None,
+                default_dosage: None,
+                default_frequency: None,
+                default_duration: None,
+                default_instructions: None,
+            },
+        ];
+
+        let batch_input_1 = ClinicalImportBatchInput {
+            clinic_id: clinic_a.to_string(),
+            doctor_id: Some("doc_1".to_string()),
+            file_name: "clinic_medicines.xlsx".to_string(),
+            items: items_batch_1,
+            total_rows: 3,
+            invalid_rows: 0,
+            allow_update: Some(false),
+        };
+
+        let summary1 = DbOperations::import_clinical_library(&mut conn, clinic_a, batch_input_1).unwrap();
+        assert_eq!(summary1.total_rows, 3);
+        assert_eq!(summary1.valid_rows, 2);
+        assert_eq!(summary1.invalid_rows, 1);
+        assert_eq!(summary1.imported_rows, 2);
+        assert_eq!(summary1.skipped_rows, 0);
+
+        // 2. Strict Tenant Isolation: Clinic B must see 0 medicines
+        let clinic_b_items = DbOperations::get_clinical_library_items(&conn, clinic_b, None, 50, 0).unwrap();
+        assert_eq!(clinic_b_items.len(), 0, "Clinic B must not see Clinic A medicines");
+
+        // Clinic A sees both imported medicines
+        let clinic_a_items = DbOperations::get_clinical_library_items(&conn, clinic_a, None, 50, 0).unwrap();
+        assert_eq!(clinic_a_items.len(), 2);
+        assert_eq!(clinic_a_items[0].name, "Amoxicillin Clavulanate");
+        assert_eq!(clinic_a_items[0].strength, "625 mg");
+        assert_eq!(clinic_a_items[0].formulation, "Tablet");
+        assert_eq!(clinic_a_items[0].mrp, Some(210.50));
+
+        // 3. Repeated import: duplicate detection prevents redundant records
+        let repeat_items = vec![
+            ClinicalImportItemInput {
+                name: "Amoxicillin Clavulanate".to_string(),
+                generic_name: Some("Amoxicillin + Clavulanic Acid".to_string()),
+                brand_name: Some("Augmentin".to_string()),
+                composition: Some("Amoxicillin 500mg, Clavulanic Acid 125mg".to_string()),
+                strength: "625 mg".to_string(),
+                formulation: "Tablet".to_string(),
+                dosage_form: Some("Tablet".to_string()),
+                route: Some("Oral".to_string()),
+                manufacturer: Some("GSK".to_string()),
+                category: Some("Antibiotic".to_string()),
+                pack_size: Some("10 Tablets".to_string()),
+                mrp: Some(210.50),
+                storage_instructions: None,
+                default_dosage: None,
+                default_frequency: None,
+                default_duration: None,
+                default_instructions: None,
+            },
+        ];
+        let repeat_batch = ClinicalImportBatchInput {
+            clinic_id: clinic_a.to_string(),
+            doctor_id: Some("doc_1".to_string()),
+            file_name: "clinic_medicines_reupload.xlsx".to_string(),
+            items: repeat_items,
+            total_rows: 1,
+            invalid_rows: 0,
+            allow_update: Some(false),
+        };
+        let repeat_summary = DbOperations::import_clinical_library(&mut conn, clinic_a, repeat_batch).unwrap();
+        assert_eq!(repeat_summary.imported_rows, 0, "Duplicate record must not be re-imported");
+        assert_eq!(repeat_summary.skipped_rows, 1, "Duplicate must be recorded as skipped");
+
+        // Verify count remains 2
+        let clinic_a_items_after_repeat = DbOperations::get_clinical_library_items(&conn, clinic_a, None, 50, 0).unwrap();
+        assert_eq!(clinic_a_items_after_repeat.len(), 2);
+
+        // 4. Consultation search integration: clinical library items are searchable with CLINICAL_LIBRARY provenance
+        let search_results = DbOperations::search_local_catalogue(&conn, "Amoxicillin", 10, None).unwrap();
+        assert!(!search_results.is_empty());
+        let clinical_match = search_results.iter().find(|i| i.source_provenance == "CLINICAL_LIBRARY");
+        assert!(clinical_match.is_some(), "Search must surface Clinical Library medicines");
+        let item = clinical_match.unwrap();
+        assert_eq!(item.name, "Amoxicillin Clavulanate");
+        assert_eq!(item.raw_strength_summary, "625 mg");
+
+        // 5. Rollback verification: rolling back batch deactivates medicines from that batch
+        let rolled_back_count = DbOperations::rollback_clinical_library_batch(&mut conn, clinic_a, &summary1.batch_id).unwrap();
+        assert_eq!(rolled_back_count, 2, "Must roll back all 2 imported medicines");
+
+        let clinic_a_items_after_rollback = DbOperations::get_clinical_library_items(&conn, clinic_a, None, 50, 0).unwrap();
+        assert_eq!(clinic_a_items_after_rollback.len(), 0, "Rolled back medicines must be inactive");
+
+        let batches = DbOperations::get_clinical_library_batches(&conn, clinic_a).unwrap();
+        assert_eq!(batches[1].status, "ROLLED_BACK");
+        assert!(batches[1].rolled_back_at.is_some());
+
+        // 6. Architectural isolation: CDCI and Stock tables are completely unaffected
+        let stock_count: i64 = conn.query_row("SELECT COUNT(*) FROM local_inventory_stock_v1", [], |r| r.get(0)).unwrap();
+        assert_eq!(stock_count, 0, "Clinical library must not touch inventory stock table");
     }
 }

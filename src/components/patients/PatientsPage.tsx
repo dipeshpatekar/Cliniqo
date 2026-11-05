@@ -170,7 +170,7 @@ export function PatientsPage({
                         </button>
                       </td>
                       <td>
-                        <span className="mono-id">{patient.id}</span>
+                        <span className="mono-id">{patient.displayId || patient.id}</span>
                       </td>
                       <td>
                         {patient.age} yrs{" "}

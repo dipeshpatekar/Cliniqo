@@ -180,12 +180,13 @@ export function SearchableOptionSelect({
   }, [highlightedIndex, open])
 
   const selectOption = (option: SearchOptionItem) => {
-    onChange(option.value)
-    if (onSelectOption) {
-      onSelectOption(option)
-    }
     setOpen(false)
     setHighlightedIndex(-1)
+    if (onSelectOption) {
+      onSelectOption(option)
+    } else {
+      onChange(option.value)
+    }
   }
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
@@ -295,8 +296,18 @@ export function SearchableOptionSelect({
                             fontWeight: 600,
                             padding: "1px 6px",
                             borderRadius: "4px",
-                            backgroundColor: "#e0f2fe",
-                            color: "#0369a1",
+                            backgroundColor:
+                              option.badge === "Clinic Library"
+                                ? "#ccfbf1"
+                                : option.badge === "Pharmacy Stock"
+                                ? "#dbeafe"
+                                : "#e0f2fe",
+                            color:
+                              option.badge === "Clinic Library"
+                                ? "#0f766e"
+                                : option.badge === "Pharmacy Stock"
+                                ? "#1e40af"
+                                : "#0369a1",
                           }}
                         >
                           {option.badge}

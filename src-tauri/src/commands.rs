@@ -8,8 +8,10 @@ use crate::crypto::key_manager::KeyManager;
 use crate::db::DatabaseManager;
 use crate::db::operations::DbOperations;
 use crate::db::schema::{
-    CatalogueCacheStats, ConsultationRecord, FormularyRecord, InvoiceRecord, LocalCatalogueItem, PatientRecord, PrescriptionRecord,
-    SaveCatalogueCacheItemArgs, SaveFormularyArgs, SaveInvoiceArgs, SyncConflictRecord, SyncOutboxSummary, SyncStateRecord,
+    CatalogueCacheStats, ClinicalImportBatchInput, ClinicalImportBatchRecord, ClinicalImportSummary,
+    ClinicalMedicineRecord, ConsultationRecord, FormularyRecord, InvoiceRecord, LocalCatalogueItem,
+    PatientRecord, PrescriptionRecord, SaveCatalogueCacheItemArgs, SaveClinicalMedicineArgs,
+    SaveFormularyArgs, SaveInvoiceArgs, SyncConflictRecord, SyncOutboxSummary, SyncStateRecord,
 };
 use crate::sync::{SyncStatusInfo, SyncWorkerHandle};
 
@@ -1750,6 +1752,109 @@ pub fn get_inventory_stock_summary(
 
     let conn = state.db.get_connection();
     DbOperations::get_stock_summary(&conn, &clinic_id)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn import_clinical_library(
+    state: State<'_, AppState>,
+    clinic_id: String,
+    batch: ClinicalImportBatchInput,
+) -> Result<ClinicalImportSummary, String> {
+    let _session = state
+        .session_mgr
+        .validate_session(Some(&clinic_id))
+        .map_err(|e| e.to_string())?;
+
+    let mut conn = state.db.get_connection();
+    DbOperations::import_clinical_library(&mut conn, &clinic_id, batch)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn rollback_clinical_library_batch(
+    state: State<'_, AppState>,
+    clinic_id: String,
+    batch_id: String,
+) -> Result<usize, String> {
+    let _session = state
+        .session_mgr
+        .validate_session(Some(&clinic_id))
+        .map_err(|e| e.to_string())?;
+
+    let mut conn = state.db.get_connection();
+    DbOperations::rollback_clinical_library_batch(&mut conn, &clinic_id, &batch_id)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn get_clinical_library_items(
+    state: State<'_, AppState>,
+    clinic_id: String,
+    query: Option<String>,
+    limit: Option<usize>,
+    offset: Option<usize>,
+) -> Result<Vec<ClinicalMedicineRecord>, String> {
+    let _session = state
+        .session_mgr
+        .validate_session(Some(&clinic_id))
+        .map_err(|e| e.to_string())?;
+
+    let conn = state.db.get_connection();
+    DbOperations::get_clinical_library_items(
+        &conn,
+        &clinic_id,
+        query.as_deref(),
+        limit.unwrap_or(50),
+        offset.unwrap_or(0),
+    )
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn get_clinical_library_batches(
+    state: State<'_, AppState>,
+    clinic_id: String,
+) -> Result<Vec<ClinicalImportBatchRecord>, String> {
+    let _session = state
+        .session_mgr
+        .validate_session(Some(&clinic_id))
+        .map_err(|e| e.to_string())?;
+
+    let conn = state.db.get_connection();
+    DbOperations::get_clinical_library_batches(&conn, &clinic_id)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn save_clinical_library_item(
+    state: State<'_, AppState>,
+    clinic_id: String,
+    item: SaveClinicalMedicineArgs,
+) -> Result<String, String> {
+    let _session = state
+        .session_mgr
+        .validate_session(Some(&clinic_id))
+        .map_err(|e| e.to_string())?;
+
+    let mut conn = state.db.get_connection();
+    DbOperations::save_clinical_library_item(&mut conn, &clinic_id, item)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn archive_clinical_library_item(
+    state: State<'_, AppState>,
+    clinic_id: String,
+    id: String,
+) -> Result<(), String> {
+    let _session = state
+        .session_mgr
+        .validate_session(Some(&clinic_id))
+        .map_err(|e| e.to_string())?;
+
+    let mut conn = state.db.get_connection();
+    DbOperations::archive_clinical_library_item(&mut conn, &clinic_id, &id)
         .map_err(|e| e.to_string())
 }
 

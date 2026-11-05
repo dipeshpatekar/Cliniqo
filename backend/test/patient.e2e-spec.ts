@@ -201,11 +201,11 @@ describe('Patient Domain: Registration, Sequences, Demographics, Isolation & Con
           ...d,
           createdAt: new Date(),
           updatedAt: new Date(),
-          save: vi.fn().mockImplementation(function () {
+          save: vi.fn().mockImplementation(function (this: any) {
             patientsDb.set(this._id.toString(), { ...this });
             return Promise.resolve(this);
           }),
-          toObject: function () {
+          toObject: function (this: any) {
             const { save: _, toObject: __, ...rest } = this;
             return rest;
           },

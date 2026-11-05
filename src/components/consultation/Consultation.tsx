@@ -217,21 +217,22 @@ export function Consultation({
       const singleStrength =
         catItem.strengths && catItem.strengths.length === 1
           ? catItem.rawStrengthSummary
-          : ""
+          : catItem.rawStrengthSummary || ""
 
       updateData({
         medicines: data.medicines.map((row) => {
           if (row.id !== medicineId) return row
           return {
             ...row,
-            name: catItem.name,
-            strength: singleStrength,
+            name: catItem.name || option.value,
+            formulation: catItem.dosageForm || row.formulation || formulation || "",
+            strength: singleStrength || row.strength,
             activeIngredient: catItem.genericName || row.activeIngredient,
             route: catItem.route || row.route,
             sourceIdentifier: catItem.sourceIdentifier,
             sourceProvenance: catItem.sourceProvenance,
             isCombination: catItem.isCombination,
-            isStrengthVerified: catItem.isStrengthVerified,
+            isStrengthVerified: catItem.isStrengthVerified ?? true,
             brandName: catItem.brandName,
             genericName: catItem.genericName,
             productName: catItem.productName,
@@ -242,7 +243,7 @@ export function Consultation({
         }),
       })
 
-      getCatalogueStrengths(catItem.name, desktopSession?.doctor_id, formulation)
+      getCatalogueStrengths(catItem.name || option.value, desktopSession?.doctor_id, formulation)
         .then((res) => {
           setCatalogueStrengthsMap((prev) => ({
             ...prev,
@@ -258,7 +259,11 @@ export function Consultation({
         .catch(() => {})
     } else {
       const def = mergedDefinitions.find(
-        (item) => item.name === option.value && item.formulation === formulation,
+        (item) =>
+          item.name.toLowerCase() === option.value.toLowerCase() &&
+          (!formulation || item.formulation === formulation),
+      ) || mergedDefinitions.find(
+        (item) => item.name.toLowerCase() === option.value.toLowerCase(),
       )
       if (def) {
         updateData({
@@ -267,7 +272,8 @@ export function Consultation({
             return {
               ...row,
               name: def.name,
-              strength: def.strength || "",
+              formulation: def.formulation || row.formulation,
+              strength: def.strength || row.strength || "",
               activeIngredient: def.activeIngredient || row.activeIngredient,
               dose: def.defaultDosage || row.dose,
               route: def.defaultRoute || row.route,
@@ -285,7 +291,6 @@ export function Consultation({
               ? {
                   ...row,
                   name: option.value,
-                  strength: "",
                   isCustom: true,
                   isStrengthVerified: false,
                 }
@@ -464,7 +469,7 @@ export function Consultation({
     <>
       <AppHeader
         title="New consultation"
-        subtitle={`${patient.name} · ${patient.id}`}
+        subtitle={`${patient.name} · ${patient.displayId || patient.id}`}
       >
         <IconButton
           className="topbar-back"
@@ -506,7 +511,7 @@ export function Consultation({
             <div>
               <strong>{patient.name}</strong>
               <small>
-                {patient.age} years · {patient.gender} · {patient.id}
+                {patient.age} years · {patient.gender} · {patient.displayId || patient.id}
               </small>
             </div>
             {patient.allergies.length > 0 && (
@@ -670,20 +675,7 @@ export function Consultation({
 
             {/* Catalogue Sync & Offline Status Banners */}
             {isTauriDesktop() && catalogueSyncStatus?.status === "SYNCING" && (
-              <div
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: "8px",
-                  padding: "8px 12px",
-                  backgroundColor: "#eff6ff",
-                  border: "1px solid #bfdbfe",
-                  borderRadius: "6px",
-                  color: "#1d4ed8",
-                  fontSize: "12px",
-                  marginBottom: "12px",
-                }}
-              >
+              <div className="alert-banner alert-banner-info">
                 <RefreshCw size={15} className="animate-spin" />
                 <span>
                   Synchronizing CDCI reference catalogue (
@@ -702,20 +694,7 @@ export function Consultation({
                 (isOfflineSearchActive &&
                   (catalogueSyncStatus?.downloadedCount ?? 0) > 0)) &&
               catalogueSyncStatus?.status !== "SYNCING" && (
-                <div
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: "8px",
-                    padding: "8px 12px",
-                    backgroundColor: "#f0fdf4",
-                    border: "1px solid #bbf7d0",
-                    borderRadius: "6px",
-                    color: "#166534",
-                    fontSize: "12px",
-                    marginBottom: "12px",
-                  }}
-                >
+                <div className="alert-banner alert-banner-success">
                   <AlertCircle size={15} />
                   <span>
                     Offline CDCI reference catalogue active —{" "}
@@ -729,20 +708,7 @@ export function Consultation({
             {isTauriDesktop() &&
               catalogueSyncStatus?.status === "FAILED" &&
               !catalogueSyncStatus.isReady && (
-                <div
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: "8px",
-                    padding: "8px 12px",
-                    backgroundColor: "#fffbeb",
-                    border: "1px solid #fde68a",
-                    borderRadius: "6px",
-                    color: "#b45309",
-                    fontSize: "12px",
-                    marginBottom: "12px",
-                  }}
-                >
+                <div className="alert-banner alert-banner-warning">
                   <AlertCircle size={15} />
                   <span>
                     Offline catalogue synchronization paused
@@ -818,8 +784,13 @@ export function Consultation({
                               .replace("_", " ")
                           : null
                       const badgeText =
-                        releaseBadge || (cat.isCombination ? "Combo" : cat.type)
+                        cat.sourceProvenance === "CLINICAL_LIBRARY"
+                          ? "Clinic Library"
+                          : cat.sourceProvenance === "LOCAL_INVENTORY"
+                          ? "Pharmacy Stock"
+                          : releaseBadge || (cat.isCombination ? "Combo" : cat.type)
                       const subtitleParts = [
+                        cat.sourceProvenance === "CLINICAL_LIBRARY" ? "Custom Clinic Import" : null,
                         cat.manufacturer,
                         cat.productName || cat.genericName,
                       ].filter(Boolean)
@@ -827,7 +798,7 @@ export function Consultation({
                       return {
                         value: cat.name,
                         label: cat.name,
-                        badge: badgeText,
+                        badge: badgeText || undefined,
                         subtitle: subtitleParts.join(" • ") || undefined,
                         meta: cat,
                       }

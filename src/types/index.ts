@@ -4,6 +4,8 @@ export type Page = "login" | "register" | "setup" | "dashboard" | "patients" | "
 
 export type Patient = {
   id: string
+  displayId?: string
+  patientCode?: string
   name: string
   initials: string
   age: number
@@ -222,8 +224,17 @@ export function mapLocalRecordToPatient(rec: LocalPatientRecord): Patient {
       .map((part) => part[0])
       .join("")
       .toUpperCase() || "PT"
+  const yr = new Date().getFullYear().toString().slice(-2)
+  const numPart = rec.id.replace(/\D/g, "").slice(0, 6)
+  const fallbackCode = `PT-${yr}-${(numPart || "1").padStart(6, "0")}`
+  const displayId =
+    rec.patient_code && rec.patient_code.trim().length > 0
+      ? rec.patient_code.trim()
+      : fallbackCode
   return {
     id: rec.id,
+    displayId,
+    patientCode: displayId,
     name,
     initials,
     age: rec.age ?? 0,

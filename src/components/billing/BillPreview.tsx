@@ -1,4 +1,4 @@
-import { useState } from "react"
+import { useState, useEffect } from "react"
 import {
   ArrowLeft,
   Printer,
@@ -21,7 +21,13 @@ import { computeBillTotals } from "../../utils/billing"
 import { cn } from "../../utils/cn"
 import { Button, IconButton, StatusPill, Modal } from "../common"
 import { AppHeader } from "../layout"
-import type { DesktopSessionContext } from "../../desktop/desktop-bridge"
+import {
+  getClinicProfile,
+  getDoctorProfile,
+  type ClinicProfile,
+  type DoctorProfile,
+  type DesktopSessionContext,
+} from "../../desktop/desktop-bridge"
 
 export interface BillPreviewProps {
   go: (page: Page) => void
@@ -48,6 +54,29 @@ export function BillPreview({
   const [delivery, setDelivery] = useState<"confirm" | "sending" | "queued">(
     "confirm",
   )
+
+  const [clinicProfile, setClinicProfile] = useState<ClinicProfile | null>(null)
+  const [doctorProfile, setDoctorProfile] = useState<DoctorProfile | null>(null)
+  const [clinicLogo, setClinicLogo] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (desktopSession?.clinic_id) {
+      getClinicProfile(desktopSession.clinic_id).then((p) => {
+        if (p) setClinicProfile(p)
+      })
+      if (typeof window !== "undefined" && window.localStorage) {
+        const storedLogo =
+          window.localStorage.getItem(`cliniqo_clinic_logo_${desktopSession.clinic_id}`) ||
+          window.localStorage.getItem("cliniqo_clinic_logo")
+        if (storedLogo) setClinicLogo(storedLogo)
+      }
+    }
+    if (desktopSession?.doctor_id) {
+      getDoctorProfile(desktopSession.doctor_id).then((doc) => {
+        if (doc) setDoctorProfile(doc)
+      })
+    }
+  }, [desktopSession?.clinic_id, desktopSession?.doctor_id])
 
   const {
     subtotalRupees,
@@ -146,28 +175,50 @@ export function BillPreview({
                       !layout.showClinicLogo && "rx-content-hidden",
                     )}
                   >
-                    <HeartPulse size={24} />
+                    {clinicLogo ? (
+                      <img
+                        src={clinicLogo}
+                        alt="Clinic logo"
+                        style={{ width: "100%", height: "100%", objectFit: "contain", borderRadius: "4px" }}
+                      />
+                    ) : (
+                      <HeartPulse size={24} />
+                    )}
                   </span>
                   <div>
-                    <h2>{desktopSession?.clinic_id ? `Clinic ${desktopSession.clinic_id}` : "Medical Clinic"}</h2>
-                    <p>{desktopSession?.clinic_id ? `Registered Clinic (${desktopSession.clinic_id})` : "Local Clinic Workspace"}</p>
-                    {desktopSession?.doctor_email && (
+                    <h2>{clinicProfile?.name || (desktopSession?.clinic_id ? `Clinic ${desktopSession.clinic_id}` : "Medical Clinic")}</h2>
+                    <p>
+                      {[clinicProfile?.street, clinicProfile?.city, clinicProfile?.state, clinicProfile?.postal_code]
+                        .filter(Boolean)
+                        .join(", ") || (desktopSession?.clinic_id ? "Registered Healthcare Facility" : "Local Clinic Workspace")}
+                    </p>
+                    {clinicProfile?.phone && (
+                      <p style={{ fontSize: "11px", color: "var(--text-muted, #64748b)" }}>
+                        Ph: {clinicProfile.phone}
+                      </p>
+                    )}
+                    {(clinicProfile?.email || desktopSession?.doctor_email) && (
                       <p>
                         <span
                           className={cn(
                             !layout.showClinicEmail && "rx-content-hidden",
                           )}
                         >
-                          {desktopSession.doctor_email}
+                          {clinicProfile?.email || desktopSession?.doctor_email}
                         </span>
                       </p>
                     )}
                   </div>
                 </div>
                 <div className="rx-doctor">
-                  <strong>{doctorName}</strong>
-                  <span>{desktopSession ? "Authorized Medical Practitioner" : "Medical Practitioner"}</span>
-                  <span>{desktopSession?.doctor_id ? `Doctor ID: ${desktopSession.doctor_id}` : "Profile Incomplete"}</span>
+                  <strong>{desktopSession?.doctor_name || doctorProfile?.full_name || doctorName}</strong>
+                  <span>{doctorProfile?.qualification || (desktopSession ? "Authorized Medical Practitioner" : "Medical Practitioner")}</span>
+                  {doctorProfile?.registration_number && (
+                    <span>Reg. No: {doctorProfile.registration_number}</span>
+                  )}
+                  {doctorProfile?.phone && (
+                    <span>Ph: {doctorProfile.phone}</span>
+                  )}
                 </div>
               </header>
             )}
@@ -200,7 +251,7 @@ export function BillPreview({
             </div>
             <div>
               <span>Patient ID</span>
-              <strong>{patient.id}</strong>
+              <strong>{patient.displayId || patient.id}</strong>
             </div>
             <div>
               <span>Invoice date</span>
@@ -312,14 +363,14 @@ export function BillPreview({
           >
             <strong>Payment status: {bill.paymentStatus}</strong>
             <span>
-              Thank you for choosing {desktopSession?.clinic_id ? `Clinic ${desktopSession.clinic_id}` : "our clinic"}. Please retain this bill
+              Thank you for choosing {clinicProfile?.name || "our clinic"}. Please retain this bill
               for your records.
             </span>
           </section>
 
           <footer className="rx-footer bill-footer">
             <div>
-              <span>For {desktopSession?.clinic_id ? `Clinic ${desktopSession.clinic_id}` : "Authorized Clinic"}</span>
+              <span>For {clinicProfile?.name || "Authorized Clinic"}</span>
               <strong>Authorized medical services bill</strong>
             </div>
             <div

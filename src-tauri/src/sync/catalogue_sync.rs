@@ -181,8 +181,38 @@ impl CatalogueSyncManager {
             return Ok(self.status.read().await.clone());
         }
 
-        // Check if already completed and populated
-        {
+        // Check if already completed and populated, or try local offline seed in production
+        if backend_url_override.is_none() {
+            let (is_done, effective_count) = {
+                let mut conn = self.db.get_connection();
+                let total_items: i64 = conn
+                    .query_row("SELECT COUNT(*) FROM local_catalogue_cache_v1", [], |r| r.get(0))
+                    .unwrap_or(0);
+                let is_reconciled = crate::db::catalogue_seed::is_catalogue_reconciled(&conn);
+                if is_reconciled || total_items >= crate::db::catalogue_seed::EXPECTED_TOTAL_RECORDS as i64 {
+                    (true, total_items as usize)
+                } else if let Ok(seeded_count) = crate::db::catalogue_seed::reconcile_and_seed_local_catalogue(&mut conn, None) {
+                    if seeded_count >= crate::db::catalogue_seed::EXPECTED_TOTAL_RECORDS {
+                        (true, seeded_count)
+                    } else {
+                        (false, 0)
+                    }
+                } else {
+                    (false, 0)
+                }
+            };
+
+            if is_done {
+                let mut lock = self.status.write().await;
+                lock.status = "COMPLETED".to_string();
+                lock.downloaded_count = effective_count;
+                lock.total_count = effective_count;
+                lock.is_ready = true;
+                lock.error = None;
+                self.is_running.store(false, Ordering::SeqCst);
+                return Ok(lock.clone());
+            }
+        } else {
             let current = self.status.read().await;
             if current.is_ready && current.downloaded_count >= current.total_count && current.downloaded_count > 0 {
                 self.is_running.store(false, Ordering::SeqCst);

@@ -60,9 +60,12 @@ import {
   getLocalFormulary,
   getSyncStatus,
   startCatalogueSync,
+  getInventoryStockSummary,
+  importInventoryStock,
   type DesktopSessionContext,
   type LocalInvoiceRecord,
 } from "./desktop/desktop-bridge"
+import stockReportData from "./data/stock-report-18-10-26.json"
 
 export default function App() {
   const [page, setPage] = useState<Page>("login")
@@ -228,6 +231,14 @@ export default function App() {
 
   const loadAndMergeLocalFormulary = async (clinicId: string) => {
     try {
+      if (isTauriDesktop()) {
+        try {
+          const summary = await getInventoryStockSummary(clinicId)
+          if (!summary || summary.total_products === 0) {
+            await importInventoryStock(clinicId, stockReportData as any, false)
+          }
+        } catch {}
+      }
       const items = await getLocalFormulary(clinicId)
       if (items && items.length > 0) {
         setClinicalLibrary((prevLibrary) => {
@@ -918,6 +929,7 @@ export default function App() {
         go={go}
         patients={patientRecords}
         onOpenPatient={openPatient}
+        desktopSession={desktopSession}
       />
     )
   } else if (page === "patients") {

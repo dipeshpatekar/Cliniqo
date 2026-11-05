@@ -92,7 +92,7 @@ describe('BillingService', () => {
   const patientId = new Types.ObjectId();
 
   beforeEach(() => {
-    const MockModel = vi.fn().mockImplementation(function (this: any, doc: any) {
+    const MockModel: any = vi.fn().mockImplementation(function (this: any, doc: any) {
       Object.assign(this, doc);
       this._id = new Types.ObjectId();
       this.save = vi.fn().mockResolvedValue(this);

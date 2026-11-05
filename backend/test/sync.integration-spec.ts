@@ -17,6 +17,7 @@ import { Consultation, ConsultationSchema, ConsultationDocument, ConsultationSta
 import { Prescription, PrescriptionSchema, PrescriptionDocument } from '../src/prescription/schemas/prescription.schema.js';
 import { PrescriptionRevision, PrescriptionRevisionSchema, PrescriptionRevisionDocument } from '../src/prescription/schemas/prescription-revision.schema.js';
 import { ClinicSequenceCounter, ClinicSequenceCounterSchema, ClinicSequenceCounterDocument } from '../src/patient/schemas/clinic-sequence-counter.schema.js';
+import { Invoice, InvoiceSchema, InvoiceDocument } from '../src/billing/schemas/invoice.schema.js';
 import { DoctorStatus } from '../src/auth/auth.constants.js';
 import {
   MedicineFormulation,
@@ -46,6 +47,7 @@ describe('Phase 5A Real MongoDB Replica Set Integration: Sync Engine & Asymmetri
   let prescriptionModel: Model<PrescriptionDocument>;
   let revisionModel: Model<PrescriptionRevisionDocument>;
   let seqCounterModel: Model<ClinicSequenceCounterDocument>;
+  let invoiceModel: Model<InvoiceDocument>;
 
   const clinicId = new Types.ObjectId('672bb0000000000000000001');
   const otherClinicId = new Types.ObjectId('672bb0000000000000000002');
@@ -77,6 +79,7 @@ describe('Phase 5A Real MongoDB Replica Set Integration: Sync Engine & Asymmetri
     prescriptionModel = connection.model(Prescription.name, PrescriptionSchema) as unknown as Model<PrescriptionDocument>;
     revisionModel = connection.model(PrescriptionRevision.name, PrescriptionRevisionSchema) as unknown as Model<PrescriptionRevisionDocument>;
     seqCounterModel = connection.model(ClinicSequenceCounter.name, ClinicSequenceCounterSchema) as unknown as Model<ClinicSequenceCounterDocument>;
+    invoiceModel = connection.model(Invoice.name, InvoiceSchema) as unknown as Model<InvoiceDocument>;
 
     // Sync indexes
     await Promise.all([
@@ -114,6 +117,7 @@ describe('Phase 5A Real MongoDB Replica Set Integration: Sync Engine & Asymmetri
       prescriptionModel,
       revisionModel,
       seqCounterModel,
+      invoiceModel,
     );
   }, 60000);
 

@@ -360,6 +360,59 @@ CREATE INDEX IF NOT EXISTS idx_inventory_stock_clinic ON local_inventory_stock_v
 CREATE INDEX IF NOT EXISTS idx_inventory_stock_product ON local_inventory_stock_v1(clinic_id, product_name);
 "#;
 
+/// Migration V10: Introduces local clinical library and import batch tracking for doctor/clinic-imported medicine records.
+pub const MIGRATION_V10_SQL: &str = r#"
+CREATE TABLE IF NOT EXISTS local_import_batches_v1 (
+    id TEXT PRIMARY KEY,
+    clinic_id TEXT NOT NULL,
+    doctor_id TEXT NULL,
+    file_name TEXT NOT NULL,
+    total_rows INTEGER NOT NULL DEFAULT 0,
+    valid_rows INTEGER NOT NULL DEFAULT 0,
+    invalid_rows INTEGER NOT NULL DEFAULT 0,
+    imported_rows INTEGER NOT NULL DEFAULT 0,
+    skipped_rows INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'COMPLETED',
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    rolled_back_at TIMESTAMP NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_import_batches_clinic ON local_import_batches_v1(clinic_id, created_at);
+
+CREATE TABLE IF NOT EXISTS local_clinical_library_v1 (
+    id TEXT PRIMARY KEY,
+    server_id TEXT NULL,
+    clinic_id TEXT NOT NULL,
+    batch_id TEXT NULL REFERENCES local_import_batches_v1(id),
+    name TEXT NOT NULL,
+    generic_name TEXT NULL,
+    brand_name TEXT NULL,
+    composition TEXT NULL,
+    strength TEXT NOT NULL DEFAULT '',
+    formulation TEXT NOT NULL DEFAULT 'Tablet',
+    dosage_form TEXT NULL,
+    route TEXT NULL,
+    manufacturer TEXT NULL,
+    category TEXT NULL,
+    pack_size TEXT NULL,
+    mrp REAL NULL,
+    storage_instructions TEXT NULL,
+    default_dosage TEXT NULL,
+    default_frequency TEXT NULL,
+    default_duration TEXT NULL,
+    default_instructions TEXT NULL,
+    is_active INTEGER NOT NULL DEFAULT 1,
+    sync_status TEXT NOT NULL DEFAULT 'PENDING',
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_clinical_lib_clinic ON local_clinical_library_v1(clinic_id);
+CREATE INDEX IF NOT EXISTS idx_clinical_lib_name ON local_clinical_library_v1(clinic_id, name);
+CREATE INDEX IF NOT EXISTS idx_clinical_lib_generic ON local_clinical_library_v1(clinic_id, generic_name);
+CREATE INDEX IF NOT EXISTS idx_clinical_lib_batch ON local_clinical_library_v1(batch_id);
+"#;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DoctorProfileRecord {
     pub doctor_id: String,
@@ -756,6 +809,119 @@ pub struct StockSummaryRecord {
     pub total_quantity: f64,
     pub total_value: f64,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClinicalImportItemInput {
+    pub name: String,
+    pub generic_name: Option<String>,
+    pub brand_name: Option<String>,
+    pub composition: Option<String>,
+    pub strength: String,
+    pub formulation: String,
+    pub dosage_form: Option<String>,
+    pub route: Option<String>,
+    pub manufacturer: Option<String>,
+    pub category: Option<String>,
+    pub pack_size: Option<String>,
+    pub mrp: Option<f64>,
+    pub storage_instructions: Option<String>,
+    pub default_dosage: Option<String>,
+    pub default_frequency: Option<String>,
+    pub default_duration: Option<String>,
+    pub default_instructions: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClinicalImportBatchInput {
+    pub clinic_id: String,
+    pub doctor_id: Option<String>,
+    pub file_name: String,
+    pub items: Vec<ClinicalImportItemInput>,
+    pub total_rows: usize,
+    pub invalid_rows: usize,
+    pub allow_update: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClinicalImportSummary {
+    pub batch_id: String,
+    pub file_name: String,
+    pub total_rows: usize,
+    pub valid_rows: usize,
+    pub invalid_rows: usize,
+    pub imported_rows: usize,
+    pub skipped_rows: usize,
+    pub status: String,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClinicalImportBatchRecord {
+    pub id: String,
+    pub clinic_id: String,
+    pub doctor_id: Option<String>,
+    pub file_name: String,
+    pub total_rows: i64,
+    pub valid_rows: i64,
+    pub invalid_rows: i64,
+    pub imported_rows: i64,
+    pub skipped_rows: i64,
+    pub status: String,
+    pub created_at: String,
+    pub rolled_back_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClinicalMedicineRecord {
+    pub id: String,
+    pub server_id: Option<String>,
+    pub clinic_id: String,
+    pub batch_id: Option<String>,
+    pub name: String,
+    pub generic_name: Option<String>,
+    pub brand_name: Option<String>,
+    pub composition: Option<String>,
+    pub strength: String,
+    pub formulation: String,
+    pub dosage_form: Option<String>,
+    pub route: Option<String>,
+    pub manufacturer: Option<String>,
+    pub category: Option<String>,
+    pub pack_size: Option<String>,
+    pub mrp: Option<f64>,
+    pub storage_instructions: Option<String>,
+    pub default_dosage: Option<String>,
+    pub default_frequency: Option<String>,
+    pub default_duration: Option<String>,
+    pub default_instructions: Option<String>,
+    pub is_active: bool,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SaveClinicalMedicineArgs {
+    pub id: Option<String>,
+    pub clinic_id: String,
+    pub name: String,
+    pub generic_name: Option<String>,
+    pub brand_name: Option<String>,
+    pub composition: Option<String>,
+    pub strength: String,
+    pub formulation: String,
+    pub dosage_form: Option<String>,
+    pub route: Option<String>,
+    pub manufacturer: Option<String>,
+    pub category: Option<String>,
+    pub pack_size: Option<String>,
+    pub mrp: Option<f64>,
+    pub storage_instructions: Option<String>,
+    pub default_dosage: Option<String>,
+    pub default_frequency: Option<String>,
+    pub default_duration: Option<String>,
+    pub default_instructions: Option<String>,
+}
+
 
 
 

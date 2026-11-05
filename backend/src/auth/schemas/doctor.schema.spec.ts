@@ -5,7 +5,7 @@ import { DoctorStatus } from '../auth.constants.js';
 
 describe('DoctorSchema', () => {
   it('should define required fields and default values correctly', () => {
-    const paths = DoctorSchema.paths;
+    const paths: Record<string, any> = DoctorSchema.paths;
 
     expect(paths.email).toBeDefined();
     expect(paths.passwordHash).toBeDefined();

@@ -5,7 +5,7 @@ use crate::crypto::{encrypt_payload, CryptoError};
 use super::schema::{
     ClinicalData, PatientDemographics, CREATE_MIGRATIONS_TABLE, MIGRATION_V1_SQL, MIGRATION_V2_SQL,
     MIGRATION_V3_SQL, MIGRATION_V4_SQL, MIGRATION_V5_SQL, MIGRATION_V6_SQL, MIGRATION_V7_SQL,
-    MIGRATION_V8_SQL, MIGRATION_V9_SQL,
+    MIGRATION_V8_SQL, MIGRATION_V9_SQL, MIGRATION_V10_SQL,
 };
 
 #[derive(Error, Debug)]
@@ -22,7 +22,7 @@ pub enum MigrationError {
     #[error("Migration transaction failed: {0}")]
     TransactionError(String),
 
-    #[error("Unsupported schema version: database is at version {0}, but this client only supports up to version 9. Please update the application.")]
+    #[error("Unsupported schema version: database is at version {0}, but this client only supports up to version 10. Please update the application.")]
     UnsupportedSchemaVersion(i32),
 }
 
@@ -74,7 +74,7 @@ impl MigrationRunner {
             )
             .unwrap_or(0);
 
-        if max_version > 9 {
+        if max_version > 10 {
             return Err(MigrationError::UnsupportedSchemaVersion(max_version));
         }
 
@@ -217,6 +217,21 @@ impl MigrationRunner {
             log::info!("Applying local offline SQLite migration v9 (Inventory stock tracking)...");
             Self::migrate_to_v9(conn)?;
             log::info!("Migration v9 applied successfully. Local inventory stock active.");
+        }
+
+        // 12. Check if v10 (Clinical Library & Import Batches) has been applied
+        let v10_applied: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = 10)",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or(false);
+
+        if !v10_applied {
+            log::info!("Applying local offline SQLite migration v10 (Clinical library & import tracking)...");
+            Self::migrate_to_v10(conn)?;
+            log::info!("Migration v10 applied successfully. Local clinical library active.");
         }
 
         Ok(())
@@ -670,6 +685,17 @@ impl MigrationRunner {
         tx.commit()?;
         Ok(())
     }
+
+    fn migrate_to_v10(conn: &mut Connection) -> Result<(), MigrationError> {
+        let tx = conn.transaction()?;
+        tx.execute_batch(MIGRATION_V10_SQL)?;
+        tx.execute(
+            "INSERT INTO schema_migrations (version, name, checksum) VALUES (?1, ?2, ?3)",
+            params![10, "clinical_library_and_import_batches_v10", "v10_cliniqo_clinical_library_schema"],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -750,7 +776,7 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(max_version, 9);
+        assert_eq!(max_version, 10);
 
         let v7_exists: bool = conn
             .query_row(
@@ -769,6 +795,15 @@ mod tests {
             )
             .unwrap();
         assert!(v8_exists, "Migration v8 must exist after running migrations");
+
+        let v10_exists: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = 10)",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(v10_exists, "Migration v10 must exist after running migrations");
 
         let table_exists: bool = conn
             .query_row(
@@ -796,5 +831,14 @@ mod tests {
             )
             .unwrap();
         assert!(doctor_table_exists, "local_doctor_profile table must exist after v8 migration");
+
+        let clinical_lib_exists: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='local_clinical_library_v1')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(clinical_lib_exists, "local_clinical_library_v1 table must exist after v10 migration");
     }
 }

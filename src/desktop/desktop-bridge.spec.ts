@@ -1036,4 +1036,86 @@ describe("Desktop Bridge (Tauri 2 Frontend Integration)", () => {
       expect(stats.total_quantity).toBe(257) // 250 + 4 + 3
     })
   })
+
+  describe("Clinical Library & Excel Import Bridge", () => {
+    it("imports clinical library batch, avoids duplicate overwrites, and supports rollback", async () => {
+      const {
+        importClinicalLibrary,
+        getClinicalLibraryItems,
+        getClinicalLibraryBatches,
+        rollbackClinicalLibraryBatch,
+        saveClinicalLibraryItem,
+        archiveClinicalLibraryItem,
+      } = await import("./desktop-bridge")
+
+      const clinicId = "test-clinical-clinic-1"
+
+      // 1. Import a batch
+      const batchInput = {
+        clinic_id: clinicId,
+        file_name: "test_medicines.xlsx",
+        total_rows: 2,
+        invalid_rows: 0,
+        items: [
+          {
+            name: "Azithromycin",
+            formulation: "Tablet",
+            strength: "500 mg",
+            generic_name: "Azithromycin",
+            mrp: 120,
+          },
+          {
+            name: "Cetirizine",
+            formulation: "Tablet",
+            strength: "10 mg",
+            generic_name: "Cetirizine HCl",
+            mrp: 35,
+          },
+        ],
+      }
+
+      const summary1 = await importClinicalLibrary(batchInput)
+      expect(summary1.imported_rows).toBe(2)
+      expect(summary1.skipped_rows).toBe(0)
+
+      // 2. Query items
+      const items = await getClinicalLibraryItems(clinicId)
+      expect(items.length).toBe(2)
+      expect(items.some((i) => i.name === "Azithromycin")).toBe(true)
+
+      // 3. Re-importing same batch -> duplicate skipped
+      const summary2 = await importClinicalLibrary(batchInput)
+      expect(summary2.imported_rows).toBe(0)
+      expect(summary2.skipped_rows).toBe(2)
+
+      // 4. Batch history
+      const batches = await getClinicalLibraryBatches(clinicId)
+      expect(batches.length).toBeGreaterThanOrEqual(1)
+      expect(batches[0].status).toBe("COMPLETED")
+
+      // 5. Rollback
+      const rolledBack = await rollbackClinicalLibraryBatch(clinicId, summary1.batch_id)
+      expect(rolledBack).toBe(2)
+
+      const activeAfterRollback = await getClinicalLibraryItems(clinicId)
+      expect(activeAfterRollback.length).toBe(0)
+
+      // 6. Manual addition & archive
+      const newId = await saveClinicalLibraryItem({
+        clinic_id: clinicId,
+        name: "Paracetamol",
+        formulation: "Tablet",
+        strength: "650 mg",
+      })
+      expect(newId).toBeDefined()
+
+      const manualItems = await getClinicalLibraryItems(clinicId)
+      expect(manualItems.length).toBe(1)
+      expect(manualItems[0].name).toBe("Paracetamol")
+
+      await archiveClinicalLibraryItem(clinicId, newId)
+      const afterArchive = await getClinicalLibraryItems(clinicId)
+      expect(afterArchive.length).toBe(0)
+    })
+  })
 })

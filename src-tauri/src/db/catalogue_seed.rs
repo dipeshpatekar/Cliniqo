@@ -182,6 +182,23 @@ pub fn find_cdci_package_dir(custom_path: Option<&Path>) -> Option<PathBuf> {
         }
     }
 
+    // Check upwards from current_dir
+    if let Ok(mut dir) = std::env::current_dir() {
+        for _ in 0..6 {
+            let candidate = dir.join("backend/data/cdci/CommonDrugCodesForIndia_FlatFilePackage");
+            if candidate.join("GenericMaster.txt").exists() {
+                return Some(candidate);
+            }
+            let cand2 = dir.join("data/cdci/CommonDrugCodesForIndia_FlatFilePackage");
+            if cand2.join("GenericMaster.txt").exists() {
+                return Some(cand2);
+            }
+            if !dir.pop() {
+                break;
+            }
+        }
+    }
+
     let candidates = [
         PathBuf::from("data/cdci/CommonDrugCodesForIndia_FlatFilePackage"),
         PathBuf::from("../data/cdci/CommonDrugCodesForIndia_FlatFilePackage"),
@@ -197,19 +214,25 @@ pub fn find_cdci_package_dir(custom_path: Option<&Path>) -> Option<PathBuf> {
     }
 
     if let Ok(exe) = std::env::current_exe() {
-        if let Some(parent) = exe.parent() {
-            let resource_candidates = [
-                parent.to_path_buf(),
-                parent.join("resources"),
-                parent.join("CommonDrugCodesForIndia_FlatFilePackage"),
-                parent.join("resources").join("CommonDrugCodesForIndia_FlatFilePackage"),
-                parent.join("data").join("cdci").join("CommonDrugCodesForIndia_FlatFilePackage"),
-                parent.join("resources").join("backend").join("data").join("cdci").join("CommonDrugCodesForIndia_FlatFilePackage"),
-                parent.join("resources").join("_up_").join("backend").join("data").join("cdci").join("CommonDrugCodesForIndia_FlatFilePackage"),
-            ];
-            for rc in &resource_candidates {
-                if rc.exists() && rc.join("GenericMaster.txt").exists() {
-                    return Some(rc.clone());
+        if let Some(mut parent) = exe.parent().map(|p| p.to_path_buf()) {
+            for _ in 0..6 {
+                let resource_candidates = [
+                    parent.clone(),
+                    parent.join("resources"),
+                    parent.join("CommonDrugCodesForIndia_FlatFilePackage"),
+                    parent.join("resources").join("CommonDrugCodesForIndia_FlatFilePackage"),
+                    parent.join("data").join("cdci").join("CommonDrugCodesForIndia_FlatFilePackage"),
+                    parent.join("backend").join("data").join("cdci").join("CommonDrugCodesForIndia_FlatFilePackage"),
+                    parent.join("resources").join("backend").join("data").join("cdci").join("CommonDrugCodesForIndia_FlatFilePackage"),
+                    parent.join("resources").join("_up_").join("backend").join("data").join("cdci").join("CommonDrugCodesForIndia_FlatFilePackage"),
+                ];
+                for rc in &resource_candidates {
+                    if rc.exists() && rc.join("GenericMaster.txt").exists() {
+                        return Some(rc.clone());
+                    }
+                }
+                if !parent.pop() {
+                    break;
                 }
             }
         }
@@ -1178,11 +1201,11 @@ mod tests {
         let mut conn = Connection::open_in_memory().unwrap();
         let dek = DatabaseEncryptionKey::new([0x88u8; 32]);
 
-        // 1. FRESH INSTALLATION: Apply all migrations up to V9
+        // 1. FRESH INSTALLATION: Apply all migrations up to V10
         MigrationRunner::run_migrations(&mut conn, &dek).expect("Migrations run successfully");
 
         let max_version: i32 = conn.query_row("SELECT MAX(version) FROM schema_migrations", [], |r| r.get(0)).unwrap();
-        assert_eq!(max_version, 9, "All migrations up to V9 must be applied");
+        assert_eq!(max_version, 10, "All migrations up to V10 must be applied");
 
         // Auto-seed on fresh installation
         let seeded = reconcile_and_seed_local_catalogue(&mut conn, None).unwrap();

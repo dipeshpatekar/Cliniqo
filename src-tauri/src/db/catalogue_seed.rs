@@ -780,7 +780,7 @@ mod tests {
             Some(r#"{"vitals":{"heartRate":"76"}}"#),
         ).unwrap();
 
-        let consults = DbOperations::get_consultations(&conn, &dek, clinic_id).unwrap();
+        let consults = DbOperations::get_consultations(&conn, &dek, clinic_id, None).unwrap();
         assert_eq!(consults.len(), 1);
         assert_eq!(consults[0].diagnosis, "Acute Bronchitis");
 

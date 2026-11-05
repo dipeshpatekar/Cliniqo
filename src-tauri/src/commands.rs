@@ -1448,6 +1448,7 @@ pub fn save_local_consultation(
 pub fn get_local_consultations(
     state: State<'_, AppState>,
     clinic_id: String,
+    patient_id: Option<String>,
 ) -> Result<Vec<ConsultationRecord>, String> {
     let _session = state
         .session_mgr
@@ -1457,7 +1458,7 @@ pub fn get_local_consultations(
     let conn = state.db.get_connection();
     let dek = state.db.get_dek();
 
-    DbOperations::get_consultations(&conn, dek, &clinic_id).map_err(|e| e.to_string())
+    DbOperations::get_consultations(&conn, dek, &clinic_id, patient_id.as_deref()).map_err(|e| e.to_string())
 }
 
 #[derive(Deserialize)]
@@ -1501,6 +1502,7 @@ pub fn save_local_prescription(
 pub fn get_local_prescriptions(
     state: State<'_, AppState>,
     clinic_id: String,
+    patient_id: Option<String>,
 ) -> Result<Vec<PrescriptionRecord>, String> {
     let _session = state
         .session_mgr
@@ -1510,7 +1512,7 @@ pub fn get_local_prescriptions(
     let conn = state.db.get_connection();
     let dek = state.db.get_dek();
 
-    DbOperations::get_prescriptions(&conn, dek, &clinic_id).map_err(|e| e.to_string())
+    DbOperations::get_prescriptions(&conn, dek, &clinic_id, patient_id.as_deref()).map_err(|e| e.to_string())
 }
 
 #[tauri::command]

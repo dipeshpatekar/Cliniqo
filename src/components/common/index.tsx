@@ -1,4 +1,10 @@
-import { useEffect, useRef, useState, type ComponentType, type ReactNode } from "react"
+import {
+  useEffect,
+  useRef,
+  useState,
+  type ComponentType,
+  type ReactNode,
+} from "react"
 import { cn } from "../../utils/cn"
 import cliniqoLogo from "../../assets/logo.png"
 import {
@@ -153,9 +159,10 @@ export function SearchableOptionSelect({
   )
 
   const lowerVal = value.toLowerCase()
-  const filteredOptions = uniqueOptions.filter((option) =>
-    (option.label || option.value).toLowerCase().includes(lowerVal) ||
-    (option.subtitle && option.subtitle.toLowerCase().includes(lowerVal)),
+  const filteredOptions = uniqueOptions.filter(
+    (option) =>
+      (option.label || option.value).toLowerCase().includes(lowerVal) ||
+      (option.subtitle && option.subtitle.toLowerCase().includes(lowerVal)),
   )
 
   // Ensure highlighted index stays in bounds when filteredOptions change
@@ -208,7 +215,11 @@ export function SearchableOptionSelect({
         )
       }
     } else if (e.key === "Enter") {
-      if (open && highlightedIndex >= 0 && highlightedIndex < filteredOptions.length) {
+      if (
+        open &&
+        highlightedIndex >= 0 &&
+        highlightedIndex < filteredOptions.length
+      ) {
         e.preventDefault()
         selectOption(filteredOptions[highlightedIndex])
       }
@@ -222,7 +233,12 @@ export function SearchableOptionSelect({
   }
 
   return (
-    <div className="medicine-combobox">
+    <div
+      className={cn(
+        "medicine-combobox",
+        open && "medicine-combobox-open option-menu-open",
+      )}
+    >
       <div className="medicine-search-input">
         <Search size={15} />
         <input
@@ -260,7 +276,12 @@ export function SearchableOptionSelect({
         <ChevronDown size={15} />
       </div>
       {open && (
-        <div ref={listRef} className="medicine-options" id={listId} role="listbox">
+        <div
+          ref={listRef}
+          className="medicine-options"
+          id={listId}
+          role="listbox"
+        >
           {filteredOptions.length > 0 ? (
             filteredOptions.map((option, idx) => {
               const isHighlighted = idx === highlightedIndex
@@ -286,38 +307,71 @@ export function SearchableOptionSelect({
                     width: "100%",
                   }}
                 >
-                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", width: "100%" }}>
-                    <span style={{ fontWeight: 500 }}>{option.label || option.value}</span>
-                    <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                  <div
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                      width: "100%",
+                      gap: "8px",
+                    }}
+                  >
+                    <span
+                      style={{
+                        fontWeight: 500,
+                        minWidth: 0,
+                        wordBreak: "break-word",
+                      }}
+                    >
+                      {option.label || option.value}
+                    </span>
+                    <div
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: "6px",
+                        flexShrink: 0,
+                      }}
+                    >
                       {option.badge && (
                         <span
                           style={{
-                            fontSize: "11px",
+                            fontSize: "12px",
                             fontWeight: 600,
-                            padding: "1px 6px",
+                            padding: "2px 7px",
                             borderRadius: "4px",
+                            whiteSpace: "nowrap",
+                            flexShrink: 0,
                             backgroundColor:
                               option.badge === "Clinic Library"
                                 ? "#ccfbf1"
                                 : option.badge === "Pharmacy Stock"
-                                ? "#dbeafe"
-                                : "#e0f2fe",
+                                  ? "#dbeafe"
+                                  : "#e0f2fe",
                             color:
                               option.badge === "Clinic Library"
                                 ? "#0f766e"
                                 : option.badge === "Pharmacy Stock"
-                                ? "#1e40af"
-                                : "#0369a1",
+                                  ? "#1e40af"
+                                  : "#0369a1",
                           }}
                         >
                           {option.badge}
                         </span>
                       )}
-                      {isSelected && <Check size={15} />}
+                      {isSelected && (
+                        <Check size={15} style={{ flexShrink: 0 }} />
+                      )}
                     </div>
                   </div>
                   {option.subtitle && (
-                    <span style={{ fontSize: "11px", color: "#64748b" }}>
+                    <span
+                      style={{
+                        fontSize: "12px",
+                        color: "#64748b",
+                        wordBreak: "break-word",
+                      }}
+                    >
                       {option.subtitle}
                     </span>
                   )}
@@ -332,7 +386,6 @@ export function SearchableOptionSelect({
     </div>
   )
 }
-
 
 export function TextArea(
   props: React.TextareaHTMLAttributes<HTMLTextAreaElement>,

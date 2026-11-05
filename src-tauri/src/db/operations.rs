@@ -424,52 +424,68 @@ impl DbOperations {
         conn: &Connection,
         dek: &DatabaseEncryptionKey,
         clinic_id: &str,
+        patient_id: Option<&str>,
     ) -> Result<Vec<ConsultationRecord>, DatabaseOpError> {
-        let mut stmt = conn.prepare(
+        let mut sql = String::from(
             r#"
             SELECT id, server_id, clinic_id, patient_id, doctor_id, consultation_date,
                    status, encrypted_clinical_data, nonce, sync_status,
                    server_version, local_version, updated_at
             FROM local_consultations
             WHERE clinic_id = ?1
-            ORDER BY updated_at DESC
             "#,
-        )?;
+        );
 
-        let rows = stmt.query_map(params![clinic_id], |row| {
-            let id: String = row.get(0)?;
-            let server_id: Option<String> = row.get(1)?;
-            let clinic_id: String = row.get(2)?;
-            let patient_id: String = row.get(3)?;
-            let doctor_id: String = row.get(4)?;
-            let consultation_date: String = row.get(5)?;
-            let status: String = row.get(6)?;
-            let enc_bytes: Vec<u8> = row.get(7)?;
-            let nonce: Vec<u8> = row.get(8)?;
-            let sync_status: String = row.get(9)?;
-            let server_version: i32 = row.get(10)?;
-            let local_version: i32 = row.get(11)?;
-            let updated_at: String = row.get(12)?;
+        if patient_id.is_some() {
+            sql.push_str(" AND (patient_id = ?2 OR patient_id IN (SELECT patient_code FROM local_patients WHERE clinic_id = ?1 AND id = ?2)) ORDER BY updated_at DESC");
+        } else {
+            sql.push_str(" ORDER BY updated_at DESC");
+        }
 
-            Ok((
-                id,
-                server_id,
-                clinic_id,
-                patient_id,
-                doctor_id,
-                consultation_date,
-                status,
-                enc_bytes,
-                nonce,
-                sync_status,
-                server_version,
-                local_version,
-                updated_at,
-            ))
-        })?;
+        let mut stmt = conn.prepare(&sql)?;
+
+        let raw_rows = if let Some(pid) = patient_id {
+            stmt.query_map(params![clinic_id, pid], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, String>(6)?,
+                    row.get::<_, Vec<u8>>(7)?,
+                    row.get::<_, Vec<u8>>(8)?,
+                    row.get::<_, String>(9)?,
+                    row.get::<_, i32>(10)?,
+                    row.get::<_, i32>(11)?,
+                    row.get::<_, String>(12)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+        } else {
+            stmt.query_map(params![clinic_id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, String>(6)?,
+                    row.get::<_, Vec<u8>>(7)?,
+                    row.get::<_, Vec<u8>>(8)?,
+                    row.get::<_, String>(9)?,
+                    row.get::<_, i32>(10)?,
+                    row.get::<_, i32>(11)?,
+                    row.get::<_, String>(12)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+        };
 
         let mut results = Vec::new();
-        for r in rows {
+        for r in raw_rows {
             let (
                 id,
                 server_id,
@@ -484,7 +500,7 @@ impl DbOperations {
                 server_version,
                 local_version,
                 updated_at,
-            ) = r?;
+            ) = r;
 
             let decrypted_bytes = decrypt_payload(&dek.key, &enc_bytes, &nonce)
                 .map_err(|e| DatabaseOpError::DecryptionFailed(format!("Consultation {id}: {e}")))?;
@@ -523,6 +539,19 @@ impl DbOperations {
         prescription_number: &str,
         items_json: &str,
     ) -> Result<String, DatabaseOpError> {
+        // Idempotency: Prevent duplicate active prescriptions for the same consultation on retry
+        let existing_rx_id: Option<String> = conn
+            .query_row(
+                "SELECT id FROM local_prescriptions WHERE clinic_id = ?1 AND consultation_id = ?2 AND status = 'ACTIVE' LIMIT 1",
+                params![clinic_id, consultation_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+
+        if let Some(existing_id) = existing_rx_id {
+            return Ok(existing_id);
+        }
+
         let prescription_id = Uuid::new_v4().to_string();
         let idempotency_key = format!("local-prescription-create-{prescription_id}");
 
@@ -579,56 +608,72 @@ impl DbOperations {
         conn: &Connection,
         dek: &DatabaseEncryptionKey,
         clinic_id: &str,
+        patient_id: Option<&str>,
     ) -> Result<Vec<PrescriptionRecord>, DatabaseOpError> {
-        let mut stmt = conn.prepare(
+        let mut sql = String::from(
             r#"
             SELECT id, server_id, clinic_id, consultation_id, patient_id, doctor_id,
                    prescription_number, revision_number, status, encrypted_items, nonce,
                    sync_status, server_version, local_version, created_at
             FROM local_prescriptions
             WHERE clinic_id = ?1
-            ORDER BY created_at DESC
             "#,
-        )?;
+        );
 
-        let rows = stmt.query_map(params![clinic_id], |row| {
-            let id: String = row.get(0)?;
-            let server_id: Option<String> = row.get(1)?;
-            let clinic_id: String = row.get(2)?;
-            let consultation_id: String = row.get(3)?;
-            let patient_id: String = row.get(4)?;
-            let doctor_id: String = row.get(5)?;
-            let prescription_number: String = row.get(6)?;
-            let revision_number: i32 = row.get(7)?;
-            let status: String = row.get(8)?;
-            let enc_items: Vec<u8> = row.get(9)?;
-            let nonce: Vec<u8> = row.get(10)?;
-            let sync_status: String = row.get(11)?;
-            let server_version: i32 = row.get(12)?;
-            let local_version: i32 = row.get(13)?;
-            let created_at: String = row.get(14)?;
+        if patient_id.is_some() {
+            sql.push_str(" AND (patient_id = ?2 OR patient_id IN (SELECT patient_code FROM local_patients WHERE clinic_id = ?1 AND id = ?2)) ORDER BY created_at DESC");
+        } else {
+            sql.push_str(" ORDER BY created_at DESC");
+        }
 
-            Ok((
-                id,
-                server_id,
-                clinic_id,
-                consultation_id,
-                patient_id,
-                doctor_id,
-                prescription_number,
-                revision_number,
-                status,
-                enc_items,
-                nonce,
-                sync_status,
-                server_version,
-                local_version,
-                created_at,
-            ))
-        })?;
+        let mut stmt = conn.prepare(&sql)?;
+
+        let raw_rows = if let Some(pid) = patient_id {
+            stmt.query_map(params![clinic_id, pid], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, String>(6)?,
+                    row.get::<_, i32>(7)?,
+                    row.get::<_, String>(8)?,
+                    row.get::<_, Vec<u8>>(9)?,
+                    row.get::<_, Vec<u8>>(10)?,
+                    row.get::<_, String>(11)?,
+                    row.get::<_, i32>(12)?,
+                    row.get::<_, i32>(13)?,
+                    row.get::<_, String>(14)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+        } else {
+            stmt.query_map(params![clinic_id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, String>(6)?,
+                    row.get::<_, i32>(7)?,
+                    row.get::<_, String>(8)?,
+                    row.get::<_, Vec<u8>>(9)?,
+                    row.get::<_, Vec<u8>>(10)?,
+                    row.get::<_, String>(11)?,
+                    row.get::<_, i32>(12)?,
+                    row.get::<_, i32>(13)?,
+                    row.get::<_, String>(14)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+        };
 
         let mut results = Vec::new();
-        for r in rows {
+        for r in raw_rows {
             let (
                 id,
                 server_id,
@@ -645,7 +690,7 @@ impl DbOperations {
                 server_version,
                 local_version,
                 created_at,
-            ) = r?;
+            ) = r;
 
             let decrypted_bytes = decrypt_payload(&dek.key, &enc_items, &nonce)
                 .map_err(|e| DatabaseOpError::DecryptionFailed(format!("Prescription {id}: {e}")))?;
@@ -4272,11 +4317,11 @@ mod tests {
         assert_eq!(patients[0].phone, patient_phone);
         assert_eq!(patients[0].sensitive_notes, Some("Secret clinical observation".to_string()));
 
-        let consults = DbOperations::get_consultations(&conn, &dek, clinic_id).unwrap();
+        let consults = DbOperations::get_consultations(&conn, &dek, clinic_id, None).unwrap();
         assert_eq!(consults.len(), 1);
         assert_eq!(consults[0].diagnosis, diagnosis);
 
-        let rxs = DbOperations::get_prescriptions(&conn, &dek, clinic_id).unwrap();
+        let rxs = DbOperations::get_prescriptions(&conn, &dek, clinic_id, None).unwrap();
         assert_eq!(rxs.len(), 1);
         assert_eq!(rxs[0].items_json, Some(rx_items.to_string()));
     }
@@ -4403,7 +4448,7 @@ mod tests {
         assert_eq!(patients.len(), 1);
         assert_eq!(patients[0].name, "Old Patient");
 
-        let consults = DbOperations::get_consultations(&conn, &dek, "clinic_1").unwrap();
+        let consults = DbOperations::get_consultations(&conn, &dek, "clinic_1", None).unwrap();
         assert_eq!(consults.len(), 1);
         assert_eq!(consults[0].diagnosis, "Old Diagnosis");
 
@@ -5436,7 +5481,7 @@ mod tests {
         // Verify there are now TWO distinct consultations locally:
         // 1. The original consultation with server data (Gastritis), marked SYNCED
         // 2. The cloned consultation with local data (Severe Migraine), marked PENDING
-        let consults = DbOperations::get_consultations(&conn, &dek, clinic_id).unwrap();
+        let consults = DbOperations::get_consultations(&conn, &dek, clinic_id, None).unwrap();
         assert_eq!(consults.len(), 2);
 
         let server_c = consults.iter().find(|c| c.id == consult_id).unwrap();

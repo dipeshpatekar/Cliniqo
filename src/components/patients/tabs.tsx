@@ -1,7 +1,11 @@
 import { Button, StatusPill } from "../common"
 import { cn } from "../../utils/cn"
-import type { Page, Patient } from "../../types"
-import type { DesktopSessionContext } from "../../desktop/desktop-bridge"
+import { getPublicPatientId, type Page, type Patient } from "../../types"
+import type {
+  DesktopSessionContext,
+  LocalConsultationRecord,
+  LocalPrescriptionRecord,
+} from "../../desktop/desktop-bridge"
 import {
   ClipboardList,
   FileText,
@@ -14,10 +18,14 @@ export function OverviewTab({
   go,
   patient,
   hasHistory,
+  consultations = [],
+  prescriptions = [],
 }: {
   go: (page: Page) => void
   patient: Patient
   hasHistory: boolean
+  consultations?: LocalConsultationRecord[]
+  prescriptions?: LocalPrescriptionRecord[]
 }) {
   return (
     <div className="profile-grid">
@@ -46,12 +54,16 @@ export function OverviewTab({
           </div>
           <div>
             <dt>Patient ID</dt>
-            <dd>{patient.id}</dd>
+            <dd>{getPublicPatientId(patient)}</dd>
           </div>
           <div className="wide">
             <dt>Consultation status</dt>
             <dd>
-              {hasHistory ? patient.lastVisit : "No consultations recorded"}
+              {consultations.length > 0
+                ? `Last visit: ${consultations[0].consultation_date || "Recorded"}`
+                : hasHistory
+                  ? patient.lastVisit
+                  : "No consultations recorded"}
             </dd>
           </div>
         </dl>
@@ -75,7 +87,11 @@ export function OverviewTab({
         </div>
         <div className="clinical-item">
           <span>Current medicines</span>
-          <strong>None recorded</strong>
+          <strong>
+            {prescriptions.length > 0
+              ? `${prescriptions.length} active ${prescriptions.length === 1 ? "prescription" : "prescriptions"}`
+              : "None recorded"}
+          </strong>
         </div>
         <div className="clinical-item">
           <span>Family history</span>
@@ -92,7 +108,31 @@ export function OverviewTab({
             New consultation
           </button>
         </div>
-        {hasHistory ? (
+        {consultations.length > 0 ? (
+          consultations.slice(0, 3).map((entry, index) => {
+            const isDraft = entry.status === "DRAFT"
+            const dateStr = entry.consultation_date || entry.updated_at?.slice(0, 10) || "Recorded"
+            return (
+              <div className="timeline-row" key={entry.id}>
+                <span className={cn("timeline-icon", isDraft && "draft")}>
+                  <FileText size={16} />
+                </span>
+                <div>
+                  <strong>{isDraft ? "Consultation draft" : "Consultation finalized"}</strong>
+                  <p>{entry.diagnosis || entry.chief_complaint || "Clinical notes recorded"}</p>
+                </div>
+                <time>{dateStr}</time>
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  onClick={() => go(isDraft ? "consultation" : "preview")}
+                >
+                  {isDraft ? "Resume" : "Review"}
+                </Button>
+              </div>
+            )
+          })
+        ) : hasHistory ? (
           [
             [
               "Today",
@@ -190,11 +230,17 @@ export function HistoryTab({ patient }: { patient: Patient }) {
 
 export function ConsultationsTab({
   go,
+  patient,
   hasHistory,
+  consultations = [],
+  loading = false,
   desktopSession,
 }: {
   go: (page: Page) => void
-  hasHistory: boolean
+  patient?: Patient
+  hasHistory?: boolean
+  consultations?: LocalConsultationRecord[]
+  loading?: boolean
   desktopSession?: DesktopSessionContext | null
 }) {
   return (
@@ -208,11 +254,38 @@ export function ConsultationsTab({
           New consultation
         </Button>
       </div>
-      {hasHistory ? (
+      {loading ? (
+        <div className="p-8 text-center text-slate-500 dark:text-slate-400">
+          <p className="text-sm">Loading encrypted consultation records...</p>
+        </div>
+      ) : consultations.length > 0 ? (
+        consultations.map((c) => {
+          const dateStr = c.consultation_date || c.updated_at?.slice(0, 10) || "Recorded"
+          const isDraft = c.status === "DRAFT"
+          return (
+            <button
+              key={c.id}
+              onClick={() => go(isDraft ? "consultation" : "preview")}
+            >
+              <span className="record-icon">
+                <ClipboardList size={18} />
+              </span>
+              <span>
+                <strong>{c.diagnosis || c.chief_complaint || "Clinical consultation"}</strong>
+                <small>{desktopSession?.doctor_name || "Doctor"} · {dateStr}</small>
+              </span>
+              <StatusPill tone={isDraft ? "warning" : "success"}>
+                {isDraft ? "Draft" : "Finalized"}
+              </StatusPill>
+              <ChevronRight size={17} />
+            </button>
+          )
+        })
+      ) : hasHistory ? (
         [
           ["Today", "Draft", "Follow-up visit"],
           ["12 Mar 2025", "Finalized", "New consultation"],
-          ["18 Nov 2024", "Finalized", "Routine consultation"],
+          ["18 Nov 2024", "Routine consultation", "Routine consultation"],
         ].map((r) => (
           <button
             key={r[0]}
@@ -244,10 +317,18 @@ export function ConsultationsTab({
 
 export function PrescriptionsTab({
   go,
+  patient,
   hasHistory,
+  prescriptions = [],
+  loading = false,
+  desktopSession,
 }: {
   go: (page: Page) => void
-  hasHistory: boolean
+  patient?: Patient
+  hasHistory?: boolean
+  prescriptions?: LocalPrescriptionRecord[]
+  loading?: boolean
+  desktopSession?: DesktopSessionContext | null
 }) {
   return (
     <section className="panel record-list">
@@ -257,7 +338,39 @@ export function PrescriptionsTab({
           <p>Finalized records and tracked revisions</p>
         </div>
       </div>
-      {hasHistory ? (
+      {loading ? (
+        <div className="p-8 text-center text-slate-500 dark:text-slate-400">
+          <p className="text-sm">Loading encrypted prescription records...</p>
+        </div>
+      ) : prescriptions.length > 0 ? (
+        prescriptions.map((r) => {
+          const dateStr = r.created_at ? r.created_at.slice(0, 10) : "Finalized"
+          const revLabel = r.revision_number > 1 ? `Revision ${r.revision_number}` : "Original"
+          let itemCount = 0
+          try {
+            if (r.items_json) {
+              const parsed = JSON.parse(r.items_json)
+              itemCount = Array.isArray(parsed) ? parsed.length : 0
+            }
+          } catch {}
+
+          return (
+            <button key={r.id} onClick={() => go("preview")}>
+              <span className="record-icon">
+                <FileText size={18} />
+              </span>
+              <span>
+                <strong>{r.prescription_number} · {revLabel}</strong>
+                <small>Finalized {dateStr} · {itemCount} {itemCount === 1 ? "medicine" : "medicines"}</small>
+              </span>
+              <StatusPill tone="success">
+                {r.status === "ACTIVE" ? "Finalized" : r.status}
+              </StatusPill>
+              <ChevronRight size={17} />
+            </button>
+          )
+        })
+      ) : hasHistory ? (
         [
           ["12 Mar 2025", "Revision 1", "Delivered"],
           ["18 Nov 2024", "Original", "Printed"],

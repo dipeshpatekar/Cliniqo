@@ -10,7 +10,7 @@ import {
   Trash2,
   MoreHorizontal,
 } from "lucide-react"
-import type { Page, Patient } from "../../types"
+import { getPublicPatientId, type Page, type Patient } from "../../types"
 import { Button, IconButton, SelectInput, ConfirmDialog } from "../common"
 import { AppHeader } from "../layout"
 
@@ -44,20 +44,22 @@ export function PatientsPage({
 
   const filtered = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase()
-    const matches = patients.filter(
-      (patient) =>
-        `${patient.name} ${patient.id} ${patient.phone}`
-          .toLowerCase()
-          .includes(normalizedQuery) &&
-        (gender === "All patients" || patient.gender === gender),
-    )
+    const matches = patients.filter((patient) => {
+      const publicId = getPublicPatientId(patient)
+      const searchTarget = `${patient.name} ${publicId} ${patient.phone} ${patient.id}`.toLowerCase()
+      return (
+        searchTarget.includes(normalizedQuery) &&
+        (gender === "All patients" || patient.gender === gender)
+      )
+    })
     if (sort === "Name A–Z")
       return [...matches].sort((a, b) => a.name.localeCompare(b.name))
     if (sort === "Newest added") {
-      return [...matches].sort(
-        (a, b) =>
-          Number(b.id.replace(/\D/g, "")) - Number(a.id.replace(/\D/g, "")),
-      )
+      return [...matches].sort((a, b) => {
+        const numA = Number(getPublicPatientId(a).replace(/\D/g, "")) || 0
+        const numB = Number(getPublicPatientId(b).replace(/\D/g, "")) || 0
+        return numB - numA
+      })
     }
     return matches
   }, [patients, query, gender, sort])
@@ -170,7 +172,7 @@ export function PatientsPage({
                         </button>
                       </td>
                       <td>
-                        <span className="mono-id">{patient.displayId || patient.id}</span>
+                        <span className="mono-id">{getPublicPatientId(patient)}</span>
                       </td>
                       <td>
                         {patient.age} yrs{" "}

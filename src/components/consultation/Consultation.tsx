@@ -33,6 +33,7 @@ import {
   complaintOptions,
   symptomDurationOptions,
   diagnosisOptions,
+  getPublicPatientId,
 } from "../../types"
 import { validateMedicineFormulation } from "../../utils/billing"
 import {
@@ -73,6 +74,7 @@ export interface ConsultationProps {
   onDataChange: (data: ConsultationData) => void
   onAddMedicine?: (medicine: ClinicalMedicineDefinition) => void
   desktopSession?: DesktopSessionContext | null
+  onFinalized?: (consultationId?: string | null) => void
 }
 
 export function Consultation({
@@ -85,6 +87,7 @@ export function Consultation({
   onDataChange,
   onAddMedicine,
   desktopSession,
+  onFinalized,
 }: ConsultationProps) {
   const [saved, setSaved] = useState(false)
   const [showFinalize, setShowFinalize] = useState(false)
@@ -479,6 +482,7 @@ export function Consultation({
               .catch(() => {})
           }
         }
+        onFinalized?.(consultationId)
         setShowFinalize(false)
         go("preview")
       } catch (err: unknown) {
@@ -495,6 +499,7 @@ export function Consultation({
         setIsFinalizing(false)
       }
     } else {
+      onFinalized?.()
       setShowFinalize(false)
       go("preview")
     }
@@ -504,7 +509,7 @@ export function Consultation({
     <>
       <AppHeader
         title="New consultation"
-        subtitle={`${patient.name} · ${patient.displayId || patient.id}`}
+        subtitle={`${patient.name} · ${getPublicPatientId(patient)}`}
       >
         <IconButton
           className="topbar-back"
@@ -546,7 +551,7 @@ export function Consultation({
             <div>
               <strong>{patient.name}</strong>
               <small>
-                {patient.age} years · {patient.gender} · {patient.displayId || patient.id}
+                {patient.age} years · {patient.gender} · {getPublicPatientId(patient)}
               </small>
             </div>
             {patient.allergies.length > 0 && (

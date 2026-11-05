@@ -215,6 +215,19 @@ export const initialPatients: Patient[] = [
   },
 ]
 
+export function getPublicPatientId(
+  patient?: { displayId?: string; patientCode?: string; id?: string } | null,
+): string {
+  if (!patient) return ""
+  if (patient.displayId && patient.displayId.trim().length > 0) {
+    return patient.displayId.trim()
+  }
+  if (patient.patientCode && patient.patientCode.trim().length > 0) {
+    return patient.patientCode.trim()
+  }
+  return patient.id || ""
+}
+
 export function mapLocalRecordToPatient(rec: LocalPatientRecord): Patient {
   const name = rec.name || "Unnamed Patient"
   const initials =
@@ -224,13 +237,33 @@ export function mapLocalRecordToPatient(rec: LocalPatientRecord): Patient {
       .map((part) => part[0])
       .join("")
       .toUpperCase() || "PT"
-  const yr = new Date().getFullYear().toString().slice(-2)
-  const numPart = rec.id.replace(/\D/g, "").slice(0, 6)
-  const fallbackCode = `PT-${yr}-${(numPart || "1").padStart(6, "0")}`
-  const displayId =
-    rec.patient_code && rec.patient_code.trim().length > 0
-      ? rec.patient_code.trim()
-      : fallbackCode
+
+  let displayId = ""
+  if (rec.patient_code && rec.patient_code.trim().length > 0) {
+    const trimmed = rec.patient_code.trim()
+    if (trimmed.startsWith("PC-")) {
+      displayId = trimmed
+    } else if (
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+        trimmed,
+      )
+    ) {
+      const digits = trimmed.replace(/\D/g, "")
+      const numPart =
+        digits.length > 0 ? parseInt(digits.slice(0, 4), 10) || 1049 : 1049
+      displayId = `PC-${numPart}`
+    } else if (trimmed.startsWith("PT-")) {
+      displayId = trimmed.replace(/^PT-/i, "PC-")
+    } else {
+      displayId = `PC-${trimmed}`
+    }
+  } else {
+    const digits = rec.id.replace(/\D/g, "")
+    const numPart =
+      digits.length > 0 ? parseInt(digits.slice(0, 4), 10) || 1049 : 1049
+    displayId = `PC-${numPart}`
+  }
+
   return {
     id: rec.id,
     displayId,

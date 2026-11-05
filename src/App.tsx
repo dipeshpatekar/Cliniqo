@@ -165,11 +165,23 @@ export default function App() {
     taxRatePercent: 0,
     items: [{ id: 1, description: "Consultation fee", quantity: 1, rate: 800 }],
   })
+  const extractPatientSequence = (patient: Patient): number => {
+    const raw =
+      patient.displayId ||
+      patient.patientCode ||
+      (patient.id.startsWith("PC-") ? patient.id : "")
+    if (!raw) return 0
+    const m = raw.match(/^PC-(\d+)/i)
+    if (m) {
+      const parsed = parseInt(m[1], 10)
+      if (!isNaN(parsed) && parsed < 10000000) return parsed
+    }
+    return 0
+  }
+
   const nextPatientId = `PC-${
     Math.max(
-      ...patientRecords.map(
-        (patient) => Number(patient.id.replace(/\D/g, "")) || 0,
-      ),
+      ...patientRecords.map(extractPatientSequence),
       1048,
     ) + 1
   }`
@@ -665,10 +677,15 @@ export default function App() {
 
     if (isTauriDesktop() && desktopSession?.clinic_id) {
       try {
+        const publicCode =
+          patient.displayId ||
+          patient.patientCode ||
+          (patient.id.startsWith("PC-") ? patient.id : nextPatientId)
+
         const savedId = await saveLocalPatient({
           id: wasEditing ? editingPatient?.id : null,
           clinic_id: desktopSession.clinic_id,
-          patient_code: patient.id,
+          patient_code: publicCode,
           name: patient.name,
           phone: patient.phone,
           gender: patient.gender,
@@ -681,8 +698,8 @@ export default function App() {
           effectivePatient = {
             ...patient,
             id: wasEditing ? patient.id : savedId,
-            displayId: patient.displayId || patient.id,
-            patientCode: patient.displayId || patient.id,
+            displayId: publicCode,
+            patientCode: publicCode,
           }
           try {
             const freshPatients = await getLocalPatients(desktopSession.clinic_id)
@@ -994,6 +1011,19 @@ export default function App() {
         onDataChange={setConsultationData}
         onAddMedicine={addMedicineDefinition}
         desktopSession={desktopSession}
+        onFinalized={() => {
+          setSelectedPatient((prev) => ({
+            ...prev,
+            lastVisit: "Today",
+          }))
+          setPatientRecords((prev) =>
+            prev.map((p) =>
+              p.id === selectedPatient.id
+                ? { ...p, lastVisit: "Today" }
+                : p,
+            ),
+          )
+        }}
       />
     )
   } else if (page === "preview") {

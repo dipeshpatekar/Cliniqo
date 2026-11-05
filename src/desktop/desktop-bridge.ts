@@ -597,10 +597,11 @@ export async function saveLocalConsultation(
 
 export async function getLocalConsultations(
   clinicId: string,
+  patientId?: string | null,
 ): Promise<LocalConsultationRecord[]> {
   const result = await invokeTauri<LocalConsultationRecord[]>(
     "get_local_consultations",
-    { clinicId },
+    { clinicId, patientId: patientId || null },
   )
   return result ?? []
 }
@@ -613,10 +614,11 @@ export async function saveLocalPrescription(
 
 export async function getLocalPrescriptions(
   clinicId: string,
+  patientId?: string | null,
 ): Promise<LocalPrescriptionRecord[]> {
   const result = await invokeTauri<LocalPrescriptionRecord[]>(
     "get_local_prescriptions",
-    { clinicId },
+    { clinicId, patientId: patientId || null },
   )
   return result ?? []
 }

@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react"
 import { Button, IconButton, StatusPill } from "../common"
 import { AppHeader } from "../layout"
-import type { Page, Patient } from "../../types"
+import { getPublicPatientId, type Page, type Patient } from "../../types"
 import {
   AlertCircle,
   CalendarDays,
@@ -142,9 +142,16 @@ export function Dashboard({
             <div className="consultation-list">
               {finalizedConsultations.length > 0 ? (
                 finalizedConsultations.map((c) => {
-                  const patient = patients.find((p) => p.id === c.patient_id) || {
+                  const patient = patients.find(
+                    (p) =>
+                      p.id === c.patient_id ||
+                      p.displayId === c.patient_id ||
+                      p.patientCode === c.patient_id,
+                  ) || {
                     id: c.patient_id,
-                    displayId: `PT-${c.patient_id.slice(0, 8)}`,
+                    displayId: c.patient_id.startsWith("PC-")
+                      ? c.patient_id
+                      : `PC-${c.patient_id.replace(/\D/g, "").slice(0, 4) || "1001"}`,
                     name: "Consultation Patient",
                     initials: "PT",
                     age: 0,
@@ -166,7 +173,7 @@ export function Dashboard({
                       <span className="patient-cell">
                         <strong>{patient.name}</strong>
                         <small>
-                          {patient.displayId || patient.id} · {patient.age ? `${patient.age} yrs` : "Patient"}
+                          {getPublicPatientId(patient)} · {patient.age ? `${patient.age} yrs` : "Patient"}
                         </small>
                       </span>
                       <span className="visit-reason">
@@ -207,7 +214,7 @@ export function Dashboard({
                       <span className="patient-cell">
                         <strong>{patient.name}</strong>
                         <small>
-                          {patient.displayId || patient.id} · {patient.age ? `${patient.age} yrs` : "Patient"}
+                          {getPublicPatientId(patient)} · {patient.age ? `${patient.age} yrs` : "Patient"}
                         </small>
                       </span>
                       <span className="visit-reason">{isNew ? "Newly registered patient" : "Recorded visit"}</span>

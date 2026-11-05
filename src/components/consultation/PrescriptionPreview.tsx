@@ -12,7 +12,7 @@ import {
   Check,
   X,
 } from "lucide-react"
-import type { Page, Patient, Vitals, ConsultationData } from "../../types"
+import { getPublicPatientId, type Page, type Patient, type Vitals, type ConsultationData } from "../../types"
 import { formatMedicineDose } from "../../types"
 import { cn } from "../../utils/cn"
 import { Button, IconButton, Modal } from "../common"
@@ -215,7 +215,7 @@ export function PrescriptionPreview({
             </div>
             <div>
               <span>Patient ID</span>
-              <strong>{patient.displayId || patient.id}</strong>
+              <strong>{getPublicPatientId(patient)}</strong>
             </div>
             <div>
               <span>Date</span>

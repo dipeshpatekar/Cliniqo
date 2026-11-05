@@ -11,11 +11,12 @@ import {
   RefreshCw,
   Check,
 } from "lucide-react"
-import type {
-  Page,
-  Patient,
-  BillData,
-  BillLayoutPreferences,
+import {
+  getPublicPatientId,
+  type Page,
+  type Patient,
+  type BillData,
+  type BillLayoutPreferences,
 } from "../../types"
 import { computeBillTotals } from "../../utils/billing"
 import { cn } from "../../utils/cn"
@@ -251,7 +252,7 @@ export function BillPreview({
             </div>
             <div>
               <span>Patient ID</span>
-              <strong>{patient.displayId || patient.id}</strong>
+              <strong>{getPublicPatientId(patient)}</strong>
             </div>
             <div>
               <span>Invoice date</span>

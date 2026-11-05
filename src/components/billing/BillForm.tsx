@@ -10,7 +10,7 @@ import {
   IndianRupee,
   AlertCircle,
 } from "lucide-react"
-import type { Page, Patient, BillData, BillItem } from "../../types"
+import { getPublicPatientId, type Page, type Patient, type BillData, type BillItem } from "../../types"
 import { computeBillTotals } from "../../utils/billing"
 import {
   Button,
@@ -218,7 +218,7 @@ export function BillForm({
     <>
       <AppHeader
         title={isFinalized ? "View finalized bill" : "Create bill"}
-        subtitle={`${patient.name} · ${patient.displayId || patient.id}`}
+        subtitle={`${patient.name} · ${getPublicPatientId(patient)}`}
       >
         <IconButton
           className="topbar-back"
@@ -554,7 +554,7 @@ export function BillForm({
           <div className="review-checklist">
             <p>
               <CheckCircle2 size={18} /> Billed patient: {patient.name} (
-              {patient.id})
+              {getPublicPatientId(patient)})
             </p>
             <p>
               <CheckCircle2 size={18} /> Subtotal: ₹

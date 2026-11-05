@@ -1134,30 +1134,6 @@ export function ClinicalLibrarySettings({
               medical charting across the clinic.
             </p>
           </div>
-
-          <div
-            className="info-callout"
-            style={{
-              marginTop: "12px",
-              borderLeftColor: "#0284c7",
-              backgroundColor: "#f0f9ff",
-              color: "#0369a1",
-            }}
-          >
-            <div>
-              <strong style={{ display: "block", marginBottom: "4px" }}>
-                Common Drug Codes for India (CDCI) Reference Dataset
-              </strong>
-              <p style={{ fontSize: "12px", lineHeight: "1.5" }}>
-                Reference drug terminology provided under{" "}
-                <strong>
-                  Creative Commons Attribution 4.0 International (CC BY 4.0)
-                </strong>{" "}
-                by the National Resource Centre for EHR Standards (NRCeS), Centre
-                for Development of Advanced Computing (C-DAC) Pune.
-              </p>
-            </div>
-          </div>
         </div>
       )}
 

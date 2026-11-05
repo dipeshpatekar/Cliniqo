@@ -132,8 +132,8 @@ export function Dashboard({
           <section className="panel">
             <div className="panel-head">
               <div>
-                <h2>Recent consultations</h2>
-                <p>Today’s patient activity</p>
+                <h2>{finalizedConsultations.length > 0 ? "Recent consultations" : "Recent patients"}</h2>
+                <p>{finalizedConsultations.length > 0 ? "Today’s patient activity" : "Recently registered clinic patients"}</p>
               </div>
               <button className="text-btn" onClick={() => go("patients")}>
                 View all <ChevronRight size={15} />
@@ -180,12 +180,10 @@ export function Dashboard({
                     </button>
                   )
                 })
-              ) : patients.filter(
-                (patient) => patient.lastVisit !== "No visits yet",
-              ).length === 0 ? (
+              ) : patients.length === 0 ? (
                 <div className="p-8 text-center text-slate-500 dark:text-slate-400">
                   <p className="text-sm">
-                    No recent patient consultations recorded yet.
+                    No patients or consultations recorded yet.
                   </p>
                   <Button
                     variant="secondary"
@@ -197,10 +195,9 @@ export function Dashboard({
                   </Button>
                 </div>
               ) : (
-                patients
-                  .filter((patient) => patient.lastVisit !== "No visits yet")
-                  .slice(0, 4)
-                  .map((patient) => (
+                patients.slice(0, 5).map((patient) => {
+                  const isNew = patient.lastVisit === "No visits yet" || !patient.lastVisit
+                  return (
                     <button
                       className="consultation-row"
                       key={patient.id}
@@ -210,23 +207,26 @@ export function Dashboard({
                       <span className="patient-cell">
                         <strong>{patient.name}</strong>
                         <small>
-                          {patient.displayId || patient.id} · {patient.age} yrs
+                          {patient.displayId || patient.id} · {patient.age ? `${patient.age} yrs` : "Patient"}
                         </small>
                       </span>
-                      <span className="visit-reason">Recorded visit</span>
+                      <span className="visit-reason">{isNew ? "Newly registered patient" : "Recorded visit"}</span>
                       <StatusPill
                         tone={
-                          patient.syncStatus === "SYNCED"
-                            ? "success"
-                            : "neutral"
+                          isNew
+                            ? "info"
+                            : patient.syncStatus === "SYNCED"
+                              ? "success"
+                              : "neutral"
                         }
                       >
-                        {patient.syncStatus || "Local record"}
+                        {isNew ? "New Patient" : patient.syncStatus || "Local record"}
                       </StatusPill>
-                      <span className="time">{patient.lastVisit}</span>
+                      <span className="time">{isNew ? "Recently added" : patient.lastVisit}</span>
                       <ChevronRight size={17} />
                     </button>
-                  ))
+                  )
+                })
               )}
             </div>
           </section>

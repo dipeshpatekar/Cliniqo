@@ -70,10 +70,15 @@ pub struct CatalogueFeedItem {
     pub source_provenance: Option<String>,
 }
 
+#[allow(dead_code)]
 pub struct CatalogueSyncManager {
+    #[allow(dead_code)]
     db: Arc<DatabaseManager>,
+    #[allow(dead_code)]
     session_mgr: Arc<SessionManager>,
+    #[allow(dead_code)]
     key_mgr: Arc<KeyManager>,
+    #[allow(dead_code)]
     refresh_coordinator: Arc<RefreshCoordinator>,
     status: Arc<RwLock<CatalogueSyncStatus>>,
     is_running: Arc<AtomicBool>,
@@ -98,48 +103,16 @@ impl CatalogueSyncManager {
         manager
     }
 
-    /// Reads metadata from SQLite on startup to determine whether the local cache is already seeded or ready.
+    /// Reads metadata on startup - since CDCI dataset is removed, catalogue sync is permanently completed and ready.
     pub fn refresh_status_from_db_sync(&self) {
-        let conn = self.db.get_connection();
-        let total_items: i64 = conn
-            .query_row("SELECT COUNT(*) FROM local_catalogue_cache_v1", [], |r| r.get(0))
-            .unwrap_or(0);
-
-        let stored_status = DbOperations::get_catalogue_metadata(&conn, "catalogue_sync_status")
-            .unwrap_or(None)
-            .unwrap_or_else(|| "IDLE".to_string());
-
-        let stored_total: usize = DbOperations::get_catalogue_metadata(&conn, "catalogue_sync_total")
-            .unwrap_or(None)
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(0);
-
-        let stored_cursor = DbOperations::get_catalogue_metadata(&conn, "catalogue_sync_cursor")
-            .unwrap_or(None);
-
-        let last_synced_at = DbOperations::get_catalogue_metadata(&conn, "catalogue_sync_last_synced_at")
-            .unwrap_or(None);
-
-        let is_ready = total_items > 0 && stored_status == "COMPLETED";
-        let is_reconciled = crate::db::catalogue_seed::is_catalogue_reconciled(&conn);
-
-        // If local cache is verified and reconciled to expected 104,367 records, mark ready
-        let effective_status = if is_reconciled || (is_ready && total_items >= crate::db::catalogue_seed::EXPECTED_TOTAL_RECORDS as i64) {
-            "COMPLETED".to_string()
-        } else {
-            stored_status
-        };
-
-        let effective_ready = is_reconciled || (is_ready && total_items >= crate::db::catalogue_seed::EXPECTED_TOTAL_RECORDS as i64);
-
         let initial_status = CatalogueSyncStatus {
-            status: effective_status,
-            downloaded_count: total_items as usize,
-            total_count: if stored_total > 0 { stored_total } else { total_items as usize },
-            last_cursor: stored_cursor,
-            last_synced_at,
+            status: "COMPLETED".to_string(),
+            downloaded_count: 0,
+            total_count: 0,
+            last_cursor: None,
+            last_synced_at: None,
             error: None,
-            is_ready: effective_ready,
+            is_ready: true,
         };
 
         if let Ok(mut lock) = self.status.try_write() {
@@ -149,115 +122,25 @@ impl CatalogueSyncManager {
 
     /// Returns the live snapshot of synchronization progress and ready state.
     pub async fn get_status(&self) -> CatalogueSyncStatus {
-        let current = self.status.read().await.clone();
-        if current.status == "IDLE" || current.status == "COMPLETED" {
-            // Check fresh row count and reconciliation status from SQLite
-            let conn = self.db.get_connection();
-            let total_items: i64 = conn
-                .query_row("SELECT COUNT(*) FROM local_catalogue_cache_v1", [], |r| r.get(0))
-                .unwrap_or(0);
-            let is_reconciled = crate::db::catalogue_seed::is_catalogue_reconciled(&conn);
-            if (is_reconciled || total_items >= crate::db::catalogue_seed::EXPECTED_TOTAL_RECORDS as i64) && !current.is_ready {
-                let mut updated = current;
-                updated.downloaded_count = total_items as usize;
-                updated.total_count = total_items as usize;
-                updated.is_ready = true;
-                updated.status = "COMPLETED".to_string();
-                return updated;
-            }
-        }
+        let mut current = self.status.read().await.clone();
+        current.status = "COMPLETED".to_string();
+        current.is_ready = true;
         current
     }
 
-    /// Triggers or resumes background synchronization against the configured backend URL.
-    /// Resumes automatically from `last_cursor` stored in `catalogue_sync_metadata`.
-    pub async fn start_sync(&self, backend_url_override: Option<String>) -> Result<CatalogueSyncStatus, String> {
-        // Enforce single-flight: do not start concurrent duplicate sync jobs
-        if self
-            .is_running
-            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-            .is_err()
-        {
-            return Ok(self.status.read().await.clone());
-        }
-
-        // Check if already completed and populated, or try local offline seed in production
-        if backend_url_override.is_none() {
-            let (is_done, effective_count) = {
-                let mut conn = self.db.get_connection();
-                let total_items: i64 = conn
-                    .query_row("SELECT COUNT(*) FROM local_catalogue_cache_v1", [], |r| r.get(0))
-                    .unwrap_or(0);
-                let is_reconciled = crate::db::catalogue_seed::is_catalogue_reconciled(&conn);
-                if is_reconciled || total_items >= crate::db::catalogue_seed::EXPECTED_TOTAL_RECORDS as i64 {
-                    (true, total_items as usize)
-                } else if let Ok(seeded_count) = crate::db::catalogue_seed::reconcile_and_seed_local_catalogue(&mut conn, None) {
-                    if seeded_count >= crate::db::catalogue_seed::EXPECTED_TOTAL_RECORDS {
-                        (true, seeded_count)
-                    } else {
-                        (false, 0)
-                    }
-                } else {
-                    (false, 0)
-                }
-            };
-
-            if is_done {
-                let mut lock = self.status.write().await;
-                lock.status = "COMPLETED".to_string();
-                lock.downloaded_count = effective_count;
-                lock.total_count = effective_count;
-                lock.is_ready = true;
-                lock.error = None;
-                self.is_running.store(false, Ordering::SeqCst);
-                return Ok(lock.clone());
-            }
-        } else {
-            let current = self.status.read().await;
-            if current.is_ready && current.downloaded_count >= current.total_count && current.downloaded_count > 0 {
-                self.is_running.store(false, Ordering::SeqCst);
-                return Ok(current.clone());
-            }
-        }
-
-        // Set status to SYNCING
-        {
-            let mut lock = self.status.write().await;
-            lock.status = "SYNCING".to_string();
-            lock.error = None;
-        }
-
-        let db = self.db.clone();
-        let session_mgr = self.session_mgr.clone();
-        let key_mgr = self.key_mgr.clone();
-        let refresh_coordinator = self.refresh_coordinator.clone();
-        let status_arc = self.status.clone();
-        let is_running_arc = self.is_running.clone();
-
-        tokio::spawn(async move {
-            let res = Self::run_sync_worker(
-                db,
-                session_mgr,
-                key_mgr,
-                refresh_coordinator,
-                status_arc.clone(),
-                backend_url_override,
-            )
-            .await;
-
-            if let Err(e) = res {
-                log::error!("[CatalogueSync] Sync process encountered error: {e}");
-                let mut lock = status_arc.write().await;
-                lock.status = "FAILED".to_string();
-                lock.error = Some(e);
-            }
-
-            is_running_arc.store(false, Ordering::SeqCst);
-        });
-
-        Ok(self.status.read().await.clone())
+    /// CDCI dataset has been removed. Catalogue sync returns completed immediately without download loops.
+    pub async fn start_sync(&self, _backend_url_override: Option<String>) -> Result<CatalogueSyncStatus, String> {
+        let mut lock = self.status.write().await;
+        lock.status = "COMPLETED".to_string();
+        lock.downloaded_count = 0;
+        lock.total_count = 0;
+        lock.is_ready = true;
+        lock.error = None;
+        self.is_running.store(false, Ordering::SeqCst);
+        Ok(lock.clone())
     }
 
+    #[allow(dead_code)]
     async fn run_sync_worker(
         db: Arc<DatabaseManager>,
         session_mgr: Arc<SessionManager>,
@@ -704,14 +587,10 @@ mod tests {
 
         let final_status = manager.get_status().await;
         assert_eq!(final_status.status, "COMPLETED");
-        assert_eq!(final_status.downloaded_count, 4);
-        assert_eq!(final_status.total_count, 4);
+        assert_eq!(final_status.downloaded_count, 0);
+        assert_eq!(final_status.total_count, 0);
         assert!(final_status.is_ready);
         assert!(final_status.error.is_none());
-
-        let conn = db.get_connection();
-        let count: i64 = conn.query_row("SELECT COUNT(*) FROM local_catalogue_cache_v1", [], |r| r.get(0)).unwrap();
-        assert_eq!(count, 4);
     }
 
     #[tokio::test]
@@ -861,274 +740,37 @@ mod tests {
 
         let final_status = manager.get_status().await;
         assert_eq!(final_status.status, "COMPLETED");
-        assert_eq!(final_status.downloaded_count, 4);
-        assert_eq!(final_status.total_count, 4);
+        assert_eq!(final_status.downloaded_count, 0);
+        assert_eq!(final_status.total_count, 0);
         assert!(final_status.is_ready);
         assert!(final_status.error.is_none());
-
-        // Refresh was called exactly once
-        assert_eq!(refresh_called.load(Ordering::SeqCst), 1);
-
-        // Verify SQLite data integrity and lack of duplicates
-        let conn = db.get_connection();
-        let count: i64 = conn.query_row("SELECT COUNT(*) FROM local_catalogue_cache_v1", [], |r| r.get(0)).unwrap();
-        assert_eq!(count, 4);
-
-        // Verify all 4 specific medicine IDs exist in SQLite
-        for expected_id in &["med_1", "med_2", "med_3", "med_4"] {
-            let exists: bool = conn
-                .query_row(
-                    "SELECT EXISTS(SELECT 1 FROM local_catalogue_cache_v1 WHERE id = ?1)",
-                    rusqlite::params![expected_id],
-                    |r| r.get(0),
-                )
-                .unwrap();
-            assert!(exists, "Item {} must be durably present", expected_id);
-        }
     }
 
     #[tokio::test]
-    async fn test_catalogue_sync_refresh_failure_terminates_safely() {
-        let (db, session_mgr, key_mgr, coordinator, _dir) = create_test_manager();
-        let initial_jwt = generate_test_rs256_jwt(
-            TEST_BACKEND_PRIVATE_KEY_PEM,
-            "doc_cat_fail",
-            "doctor@cliniqo.app",
-            3600,
-            None,
-            None,
-            None,
-        );
-        let valid_rt = "a".repeat(64);
-        key_mgr.save_refresh_token(&valid_rt).unwrap();
-        session_mgr.set_test_session("clinic_fail", "doc_cat_fail", &initial_jwt);
-
-        let refresh_attempts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let refresh_attempts_clone = refresh_attempts.clone();
-
-        let (mock_url, _server) = setup_test_server(move |method, path, _body, _auth| {
-            if method == "POST" && path == "/auth/refresh" {
-                refresh_attempts_clone.fetch_add(1, Ordering::SeqCst);
-                // Auth server rejects the refresh token
-                (401, serde_json::json!({"statusCode": 401, "message": "Refresh token expired or revoked"}).to_string())
-            } else if method == "GET" && path.starts_with("/catalogue/feed") {
-                // Returns 401 Unauthorized
-                (401, serde_json::json!({"statusCode": 401, "message": "Unauthorized"}).to_string())
-            } else {
-                (404, "{}".to_string())
-            }
-        }).await;
-
-        let manager = CatalogueSyncManager::new(db.clone(), session_mgr.clone(), key_mgr.clone(), coordinator.clone());
-        let _ = manager.start_sync(Some(mock_url)).await.unwrap();
-
-        let start = std::time::Instant::now();
-        while start.elapsed() < Duration::from_secs(5) {
-            let status = manager.get_status().await;
-            if status.status != "SYNCING" {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-
-        let final_status = manager.get_status().await;
-        assert_eq!(final_status.status, "FAILED");
-        assert!(final_status.error.is_some());
-        let err_msg = final_status.error.unwrap();
-        assert!(
-            err_msg.contains("Catalogue sync session refresh failed")
-                || err_msg.contains("Refresh token rejected or expired"),
-            "Error was: {}",
-            err_msg
-        );
-
-        // Terminated safely without infinite loop
-        assert_eq!(refresh_attempts.load(Ordering::SeqCst), 1);
-    }
-
-    #[tokio::test]
-    async fn test_catalogue_sync_terminal_401_after_refresh_prevents_loop() {
-        let (db, session_mgr, key_mgr, coordinator, _dir) = create_test_manager();
-        let initial_jwt = generate_test_rs256_jwt(
-            TEST_BACKEND_PRIVATE_KEY_PEM,
-            "doc_cat_term",
-            "doctor@cliniqo.app",
-            3600,
-            None,
-            None,
-            None,
-        );
-        let refreshed_jwt = generate_test_rs256_jwt(
-            TEST_BACKEND_PRIVATE_KEY_PEM,
-            "doc_cat_term",
-            "doctor@cliniqo.app",
-            3600,
-            None,
-            None,
-            None,
-        );
-        let valid_rt = "a".repeat(64);
-        key_mgr.save_refresh_token(&valid_rt).unwrap();
-        session_mgr.set_test_session("clinic_term", "doc_cat_term", &initial_jwt);
-
-        let refreshed_jwt_clone = refreshed_jwt.clone();
-        let (mock_url, _server) = setup_test_server(move |method, path, _body, _auth| {
-            if method == "POST" && path == "/auth/refresh" {
-                (200, serde_json::json!({
-                    "accessToken": refreshed_jwt_clone,
-                    "refreshToken": "c".repeat(64)
-                }).to_string())
-            } else if method == "GET" && path == "/clinics/my-clinics" {
-                (200, "[]".to_string())
-            } else if method == "GET" && path.starts_with("/catalogue/feed") {
-                // Feed returns 401 continuously (even with the refreshed token)
-                (401, serde_json::json!({"statusCode": 401, "message": "Unauthorized"}).to_string())
-            } else {
-                (404, "{}".to_string())
-            }
-        }).await;
-
-        let manager = CatalogueSyncManager::new(db.clone(), session_mgr.clone(), key_mgr.clone(), coordinator.clone());
-        let _ = manager.start_sync(Some(mock_url)).await.unwrap();
-
-        let start = std::time::Instant::now();
-        while start.elapsed() < Duration::from_secs(5) {
-            let status = manager.get_status().await;
-            if status.status != "SYNCING" {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-
-        let final_status = manager.get_status().await;
-        assert_eq!(final_status.status, "FAILED");
-        assert!(final_status.error.is_some());
-        let err_msg = final_status.error.unwrap();
-        assert!(
-            err_msg.contains("Terminal authentication error"),
-            "Error was: {}",
-            err_msg
-        );
-    }
-
-    #[tokio::test]
-    async fn test_catalogue_sync_cursor_resumes_from_stored_metadata() {
+    async fn test_catalogue_sync_disabled_post_cdci_removal() {
         let (db, session_mgr, key_mgr, coordinator, _dir) = create_test_manager();
         let valid_jwt = generate_test_rs256_jwt(
             TEST_BACKEND_PRIVATE_KEY_PEM,
-            "doc_cat_resume",
+            "doc_cat_disabled",
             "doctor@cliniqo.app",
             3600,
             None,
             None,
             None,
         );
-        session_mgr.set_test_session("clinic_resume", "doc_cat_resume", &valid_jwt);
-
-        // Pre-insert two existing items in SQLite and pre-seed cursor
-        {
-            let mut conn = db.get_connection();
-            let pre_items = vec![
-                SaveCatalogueCacheItemArgs {
-                    id: "pre_1".to_string(),
-                    item_type: "BRAND".to_string(),
-                    name: "Pre Existing 1".to_string(),
-                    brand_name: Some("Pre 1".to_string()),
-                    generic_name: None,
-                    product_name: None,
-                    dosage_form: None,
-                    route: None,
-                    active_ingredients_json: None,
-                    strengths_json: "[]".to_string(),
-                    raw_strength_summary: "".to_string(),
-                    is_combination: false,
-                    is_verified: true,
-                    source_provenance: None,
-                },
-                SaveCatalogueCacheItemArgs {
-                    id: "pre_2".to_string(),
-                    item_type: "BRAND".to_string(),
-                    name: "Pre Existing 2".to_string(),
-                    brand_name: Some("Pre 2".to_string()),
-                    generic_name: None,
-                    product_name: None,
-                    dosage_form: None,
-                    route: None,
-                    active_ingredients_json: None,
-                    strengths_json: "[]".to_string(),
-                    raw_strength_summary: "".to_string(),
-                    is_combination: false,
-                    is_verified: true,
-                    source_provenance: None,
-                },
-            ];
-            DbOperations::cache_catalogue_items(&mut conn, &pre_items).unwrap();
-            DbOperations::set_catalogue_metadata(&conn, "catalogue_sync_cursor", "saved_cur_step_2").unwrap();
-            DbOperations::set_catalogue_metadata(&conn, "catalogue_sync_downloaded", "2").unwrap();
-            DbOperations::set_catalogue_metadata(&conn, "catalogue_sync_total", "4").unwrap();
-        }
-
-        let (mock_url, _server) = setup_test_server(move |method, path, _body, _auth| {
-            if method == "GET" && path.starts_with("/catalogue/feed") {
-                // Must resume from saved_cur_step_2
-                assert!(
-                    path.contains("cursor=saved_cur_step_2"),
-                    "Request must resume using saved cursor, but path was: {}",
-                    path
-                );
-                let resp = serde_json::json!({
-                    "items": [
-                        {
-                            "id": "post_3",
-                            "type": "GENERIC",
-                            "name": "Post Resume 3",
-                            "genericName": "Post 3",
-                            "dosageForm": "Tablet",
-                            "strengths": [],
-                            "rawStrengthSummary": "",
-                            "isCombination": false,
-                            "isStrengthVerified": true
-                        },
-                        {
-                            "id": "post_4",
-                            "type": "GENERIC",
-                            "name": "Post Resume 4",
-                            "genericName": "Post 4",
-                            "dosageForm": "Tablet",
-                            "strengths": [],
-                            "rawStrengthSummary": "",
-                            "isCombination": false,
-                            "isStrengthVerified": true
-                        }
-                    ],
-                    "nextCursor": null,
-                    "total": 4,
-                    "attribution": "CDCI"
-                });
-                (200, resp.to_string())
-            } else {
-                (404, "{}".to_string())
-            }
-        }).await;
+        session_mgr.set_test_session("clinic_dis", "doc_cat_disabled", &valid_jwt);
 
         let manager = CatalogueSyncManager::new(db.clone(), session_mgr.clone(), key_mgr.clone(), coordinator.clone());
-        let _ = manager.start_sync(Some(mock_url)).await.unwrap();
+        let res = manager.start_sync(None).await.unwrap();
 
-        let start = std::time::Instant::now();
-        while start.elapsed() < Duration::from_secs(5) {
-            let status = manager.get_status().await;
-            if status.status != "SYNCING" {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
+        assert_eq!(res.status, "COMPLETED");
+        assert!(res.is_ready);
+        assert_eq!(res.downloaded_count, 0);
+        assert_eq!(res.total_count, 0);
+        assert!(res.error.is_none());
 
         let final_status = manager.get_status().await;
         assert_eq!(final_status.status, "COMPLETED");
-        assert_eq!(final_status.downloaded_count, 4);
-
-        let conn = db.get_connection();
-        let count: i64 = conn.query_row("SELECT COUNT(*) FROM local_catalogue_cache_v1", [], |r| r.get(0)).unwrap();
-        assert_eq!(count, 4);
+        assert!(final_status.is_ready);
     }
 }

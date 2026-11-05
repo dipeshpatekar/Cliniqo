@@ -578,4 +578,91 @@ describe("Consultation Components & UX", () => {
       expect(html).toContain("(Dextromethorphan + CPM)")
     })
   })
+
+  describe("Stock Report Integration & Autocomplete Search (BODYPROOF, ZYTEE, EMRYS)", () => {
+    it("searches bundled stock report offline for BODYPROOF, ZYTEE, and EMRYS", async () => {
+      const { searchCatalogue } = await import("../../desktop/desktop-bridge")
+
+      // 1. Search BODYPROOF
+      const bodyproofResult = await searchCatalogue("BODYPROOF")
+      expect(bodyproofResult.items.length).toBeGreaterThan(0)
+      const bodyproofItem = bodyproofResult.items.find((it) =>
+        it.productName?.includes("BODYPROOF") || it.name.includes("BODYPROOF"),
+      )
+      expect(bodyproofItem).toBeDefined()
+      expect(bodyproofItem?.productName).toBe("6D BODYPROOF")
+      expect(bodyproofItem?.name).toContain("Stock: 180 TAB")
+      expect(bodyproofItem?.manufacturer).toBe("EMRYS")
+      expect(bodyproofItem?.dosageForm).toBe("Tablet")
+      expect(bodyproofItem?.sourceProvenance).toBe("LOCAL_INVENTORY")
+
+      // 2. Search ZYTEE
+      const zyteeResult = await searchCatalogue("ZYTEE")
+      expect(zyteeResult.items.length).toBeGreaterThan(0)
+      const zyteeItem = zyteeResult.items.find((it) =>
+        it.productName?.includes("ZYTEE") || it.name.includes("ZYTEE"),
+      )
+      expect(zyteeItem).toBeDefined()
+      expect(zyteeItem?.productName).toBe("ZYTEE GEL")
+      expect(zyteeItem?.name).toContain("Stock: 6 GEL")
+      expect(zyteeItem?.manufacturer).toBe("RAP")
+      expect(zyteeItem?.dosageForm).toBe("Gel")
+      expect(zyteeItem?.sourceProvenance).toBe("LOCAL_INVENTORY")
+
+      // 3. Search EMRYS (company name and brand)
+      const emrysResult = await searchCatalogue("EMRYS", undefined, 50)
+      expect(emrysResult.items.length).toBeGreaterThan(0)
+      const allEmrys = emrysResult.items.every(
+        (it) =>
+          it.manufacturer?.toLowerCase().includes("emrys") ||
+          it.productName?.toLowerCase().includes("emrys") ||
+          it.name.toLowerCase().includes("emrys"),
+      )
+      expect(allEmrys).toBe(true)
+      expect(emrysResult.items.some((it) => it.productName === "6D BODYPROOF")).toBe(true)
+      expect(emrysResult.items.some((it) => it.productName === "AAIBU SYP")).toBe(true)
+    })
+
+    it("renders medicine name input and stationary topbar back button in Consultation", () => {
+      const rawHtml = renderToString(
+        <Consultation
+          go={() => {}}
+          patient={samplePatient}
+          clinicalLibrary={library}
+          vitals={sampleVitals}
+          onVitalsChange={() => {}}
+          data={{
+            ...sampleData,
+            medicines: [
+              {
+                id: 1,
+                name: "6D BODYPROOF",
+                formulation: "Tablet",
+                strength: "",
+                dose: "1 tablet",
+                route: "Oral",
+                frequency: "Once daily",
+                duration: "5 days",
+                food: "After food",
+                directions: "",
+                activeIngredient: "EMRYS",
+                sourceIdentifier: "stock_6D BODYPROOF",
+                sourceProvenance: "LOCAL_INVENTORY",
+              },
+            ],
+          }}
+          onDataChange={() => {}}
+        />,
+      )
+      const html = rawHtml.replace(/<!-- -->/g, "")
+
+      // Back button is stationary
+      expect(html).toContain("topbar-back")
+      // Medicine row renders clean canonical product name, not the stock parenthesis
+      expect(html).toContain("6D BODYPROOF")
+      expect(html).toContain("Verified Medicine (stock_6D BODYPROOF)")
+      expect(html).toContain("med-col-name")
+      expect(html).toContain("med-col-formulation")
+    })
+  })
 })

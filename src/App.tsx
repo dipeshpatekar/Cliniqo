@@ -484,7 +484,7 @@ export default function App() {
     }
     setPage(next)
     setSidebarOpen(false)
-    window.scrollTo({ top: 0, behavior: "smooth" })
+    window.scrollTo({ top: 0, behavior: "instant" })
   }
 
   const logout = async () => {
@@ -562,7 +562,7 @@ export default function App() {
     setEditingPatient(patient)
     setPage("patient-form")
     setSidebarOpen(false)
-    window.scrollTo({ top: 0, behavior: "smooth" })
+    window.scrollTo({ top: 0, behavior: "instant" })
   }
 
   const startBill = (
@@ -681,7 +681,18 @@ export default function App() {
           effectivePatient = {
             ...patient,
             id: wasEditing ? patient.id : savedId,
+            displayId: patient.displayId || patient.id,
+            patientCode: patient.displayId || patient.id,
           }
+          try {
+            const freshPatients = await getLocalPatients(desktopSession.clinic_id)
+            if (freshPatients && freshPatients.length > 0) {
+              const mapped = freshPatients.map(mapLocalRecordToPatient)
+              setPatientRecords(mapped)
+              const matched = mapped.find((p) => p.id === savedId)
+              if (matched) effectivePatient = matched
+            }
+          } catch {}
         }
       } catch (err) {
         console.error(
@@ -722,6 +733,10 @@ export default function App() {
     if (isTauriDesktop() && desktopSession?.clinic_id) {
       try {
         await deleteLocalPatient(desktopSession.clinic_id, patientId)
+        const freshPatients = await getLocalPatients(desktopSession.clinic_id)
+        if (freshPatients) {
+          setPatientRecords(freshPatients.map(mapLocalRecordToPatient))
+        }
       } catch (err) {
         console.error(
           "[Cliniqo Desktop] Failed to delete patient from SQLite:",

@@ -2987,6 +2987,17 @@ impl DbOperations {
         conn: &mut Connection,
         items: &[SaveCatalogueCacheItemArgs],
     ) -> Result<usize, DatabaseOpError> {
+        let table_exists: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='local_catalogue_cache_v1')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or(false);
+        if !table_exists {
+            return Ok(0);
+        }
+
         let tx = conn.transaction()?;
         let mut count = 0;
         {
@@ -3045,7 +3056,7 @@ impl DbOperations {
         conn: &Connection,
         query: &str,
         limit: usize,
-        formulation: Option<&str>,
+        _formulation: Option<&str>,
     ) -> Result<Vec<LocalCatalogueItem>, DatabaseOpError> {
         let raw_q = query.trim();
         if raw_q.is_empty() {
@@ -3055,64 +3066,6 @@ impl DbOperations {
         let limit = if limit == 0 { 20 } else { limit.min(100) };
         let pattern = format!("%{}%", raw_q);
         let prefix_pattern = format!("{}%", raw_q);
-
-        let mut query_sql = String::from(
-            r#"
-            SELECT id, item_type, name, brand_name, generic_name, product_name,
-                   dosage_form, route, active_ingredients_json, strengths_json,
-                   raw_strength_summary, is_combination, is_verified, source_provenance,
-                   cached_at
-            FROM local_catalogue_cache_v1
-            WHERE (name LIKE ?1
-               OR generic_name LIKE ?1
-               OR brand_name LIKE ?1
-               OR product_name LIKE ?1)
-            "#,
-        );
-
-        let clean_form = formulation.map(str::trim).filter(|f| !f.is_empty());
-        if clean_form.is_some() {
-            query_sql.push_str(" AND (dosage_form LIKE ?4 OR name LIKE ?4)");
-        }
-
-        query_sql.push_str(
-            r#"
-            ORDER BY
-               CASE
-                   WHEN name LIKE ?2 THEN 0
-                   WHEN brand_name LIKE ?2 THEN 1
-                   WHEN generic_name LIKE ?2 THEN 2
-                   WHEN product_name LIKE ?2 THEN 3
-                   ELSE 4
-               END,
-               name ASC
-            LIMIT ?3
-            "#,
-        );
-
-        let mut stmt = conn.prepare(&query_sql)?;
-
-        let map_row = |row: &rusqlite::Row| -> Result<LocalCatalogueItem, rusqlite::Error> {
-            let is_comb: i32 = row.get(11)?;
-            let is_ver: i32 = row.get(12)?;
-            Ok(LocalCatalogueItem {
-                id: row.get(0)?,
-                item_type: row.get(1)?,
-                name: row.get(2)?,
-                brand_name: row.get(3)?,
-                generic_name: row.get(4)?,
-                product_name: row.get(5)?,
-                dosage_form: row.get(6)?,
-                route: row.get(7)?,
-                active_ingredients_json: row.get(8)?,
-                strengths_json: row.get(9)?,
-                raw_strength_summary: row.get(10)?,
-                is_combination: is_comb == 1,
-                is_verified: is_ver == 1,
-                source_provenance: row.get(13)?,
-                cached_at: row.get(14)?,
-            })
-        };
 
         let mut items = Vec::new();
 
@@ -3184,20 +3137,7 @@ impl DbOperations {
             }
         }
 
-        if let Some(form) = clean_form {
-            let form_pattern = format!("%{}%", form);
-            let rows = stmt.query_map(params![pattern, prefix_pattern, limit as i64, form_pattern], map_row)?;
-            for item in rows {
-                items.push(item?);
-            }
-        } else {
-            let rows = stmt.query_map(params![pattern, prefix_pattern, limit as i64], map_row)?;
-            for item in rows {
-                items.push(item?);
-            }
-        }
-
-        // Also query available pharmacy inventory stock so local stock items appear in consultation
+        // 2. Query available pharmacy inventory stock so local stock items appear in consultation
         let stock_sql = r#"
             SELECT id, product_name, unit, company, quantity, batch_number, created_at
             FROM local_inventory_stock_v1
@@ -3213,7 +3153,7 @@ impl DbOperations {
                 let p_name: String = row.get(1)?;
                 let unit: String = row.get(2)?;
                 let company: String = row.get(3)?;
-                let qty: i64 = row.get(4)?;
+                let qty: i64 = row.get::<_, f64>(4).map(|q| q as i64).or_else(|_| row.get::<_, i64>(4))?;
                 let batch: Option<String> = row.get(5)?;
                 let created: String = row.get(6)?;
                 let batch_note = batch.map(|b| format!(" · Batch: {}", b)).unwrap_or_default();
@@ -3250,33 +3190,16 @@ impl DbOperations {
     pub fn get_local_catalogue_strengths(
         conn: &Connection,
         medicine_name: &str,
-        formulation: Option<&str>,
+        _formulation: Option<&str>,
     ) -> Result<Vec<String>, DatabaseOpError> {
         let raw_name = medicine_name.trim();
         if raw_name.is_empty() {
             return Ok(Vec::new());
         }
 
-        let mut query_sql = String::from(
-            r#"
-            SELECT DISTINCT raw_strength_summary
-            FROM local_catalogue_cache_v1
-            WHERE (name = ?1 OR generic_name = ?1 OR brand_name = ?1 OR product_name = ?1)
-              AND is_verified = 1
-              AND raw_strength_summary != ''
-              AND raw_strength_summary != 'Unspecified'
-            "#,
-        );
-
-        if formulation.is_some() {
-            query_sql.push_str(" AND (dosage_form LIKE '%' || ?2 || '%' OR name LIKE '%' || ?2 || '%')");
-        }
-        query_sql.push_str(" ORDER BY raw_strength_summary ASC");
-
-        let mut stmt = conn.prepare(&query_sql)?;
         let mut list = Vec::new();
 
-        // Check if strength exists in local clinical library first
+        // Check if strength exists in local clinical library
         if let Ok(mut c_stmt) = conn.prepare(
             r#"
             SELECT DISTINCT strength
@@ -3284,6 +3207,7 @@ impl DbOperations {
             WHERE is_active = 1
               AND (name = ?1 OR generic_name = ?1 OR brand_name = ?1)
               AND strength != ''
+            ORDER BY strength ASC
             "#,
         ) {
             if let Ok(mut rows) = c_stmt.query(params![raw_name]) {
@@ -3297,47 +3221,20 @@ impl DbOperations {
             }
         }
 
-        if let Some(form) = formulation {
-            let mut rows = stmt.query(params![raw_name, form.trim()])?;
-            while let Some(row) = rows.next()? {
-                let s: String = row.get(0)?;
-                if !s.trim().is_empty() {
-                    list.push(s);
-                }
-            }
-        } else {
-            let mut rows = stmt.query(params![raw_name])?;
-            while let Some(row) = rows.next()? {
-                let s: String = row.get(0)?;
-                if !s.trim().is_empty() {
-                    list.push(s);
-                }
-            }
-        }
         Ok(list)
     }
 
     /// Retrieves statistics about the locally cached catalogue (total items, brands, generics, verified).
     pub fn get_catalogue_cache_stats(conn: &Connection) -> Result<CatalogueCacheStats, DatabaseOpError> {
-        let mut stmt = conn.prepare(
-            r#"
-            SELECT
-                COUNT(*),
-                COALESCE(SUM(CASE WHEN item_type = 'BRAND' THEN 1 ELSE 0 END), 0),
-                COALESCE(SUM(CASE WHEN item_type = 'GENERIC' THEN 1 ELSE 0 END), 0),
-                COALESCE(SUM(CASE WHEN is_verified = 1 THEN 1 ELSE 0 END), 0)
-            FROM local_catalogue_cache_v1
-            "#,
-        )?;
-        let stats = stmt.query_row([], |row| {
-            Ok(CatalogueCacheStats {
-                total_items: row.get(0)?,
-                brand_count: row.get(1)?,
-                generic_count: row.get(2)?,
-                verified_count: row.get(3)?,
-            })
-        })?;
-        Ok(stats)
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM local_clinical_library_v1 WHERE is_active = 1", [], |r| r.get(0))
+            .unwrap_or(0);
+        Ok(CatalogueCacheStats {
+            total_items: count,
+            brand_count: count,
+            generic_count: 0,
+            verified_count: count,
+        })
     }
 
     /// Retrieves a catalogue sync metadata value by key (e.g. cursor, sync status, version).
@@ -6207,45 +6104,40 @@ mod tests {
             },
         ];
 
-        // 1. Cache items
+        // 1. Cache items safely returns 0 post-CDCI removal
         let count = DbOperations::cache_catalogue_items(&mut conn, &items).unwrap();
-        assert_eq!(count, 4);
+        assert_eq!(count, 0);
 
-        // 2. Search prefix matches first
+        // 2. Insert test items into local_inventory_stock_v1
+        conn.execute(
+            r#"
+            INSERT INTO local_inventory_stock_v1 (
+                id, clinic_id, product_name, unit, company, quantity, value, batch_number, source_report, created_at, updated_at
+            ) VALUES
+            ('s1', 'c1', 'Calpol 250 Syrup', 'Bottle', 'GSK', 25, 45.0, 'B1', 'STOCK REPORT', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+            ('s2', 'c1', 'Calpol 500', 'Strip', 'GSK', 100, 30.0, 'B2', 'STOCK REPORT', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+            ('s3', 'c1', 'Dolo 650', 'Strip', 'Micro Labs', 50, 35.0, 'B3', 'STOCK REPORT', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            "#,
+            [],
+        ).unwrap();
+
+        // 3. Search prefix matches
         let search_results = DbOperations::search_local_catalogue(&conn, "Calpol", 10, None).unwrap();
         assert_eq!(search_results.len(), 2);
-        assert_eq!(search_results[0].name, "Calpol 250 Syrup");
-        assert_eq!(search_results[1].name, "Calpol 500");
+        assert!(search_results[0].name.contains("Calpol"));
 
-        // 2b. Search with formulation filter
-        let filtered_search = DbOperations::search_local_catalogue(&conn, "Calpol", 10, Some("Syrup")).unwrap();
-        assert_eq!(filtered_search.len(), 1);
-        assert_eq!(filtered_search[0].name, "Calpol 250 Syrup");
+        // 4. Search company / manufacturer
+        let para_results = DbOperations::search_local_catalogue(&conn, "Micro Labs", 10, None).unwrap();
+        assert_eq!(para_results.len(), 1);
+        assert!(para_results[0].name.contains("Dolo 650"));
 
-        // 3. Search substring/generic name
-        let para_results = DbOperations::search_local_catalogue(&conn, "Paracetamol", 10, None).unwrap();
-        assert_eq!(para_results.len(), 3);
-
-        // 3b. Verify cache stats
+        // 5. Verify cache stats
         let stats = DbOperations::get_catalogue_cache_stats(&conn).unwrap();
-        assert_eq!(stats.total_items, 4);
-        assert_eq!(stats.brand_count, 4);
-        assert_eq!(stats.verified_count, 3);
-
-        // 4. Extract verified strengths for medicine
-        let calpol_strengths = DbOperations::get_local_catalogue_strengths(&conn, "Calpol 500", None).unwrap();
-        assert_eq!(calpol_strengths, vec!["500 mg"]);
-
-        let tablet_strengths = DbOperations::get_local_catalogue_strengths(&conn, "Paracetamol", Some("Tablet")).unwrap();
-        assert_eq!(tablet_strengths, vec!["500 mg", "650 mg"]);
-
-        // 5. Unverified strengths are not extracted
-        let herb_strengths = DbOperations::get_local_catalogue_strengths(&conn, "Unverified Herb", None).unwrap();
-        assert!(herb_strengths.is_empty());
+        assert_eq!(stats.total_items, 0);
 
         // 6. Safe idempotency on rerun
         let count2 = DbOperations::cache_catalogue_items(&mut conn, &items).unwrap();
-        assert_eq!(count2, 4);
+        assert_eq!(count2, 0);
     }
 
     #[test]
@@ -6676,5 +6568,92 @@ mod tests {
         // 6. Architectural isolation: CDCI and Stock tables are completely unaffected
         let stock_count: i64 = conn.query_row("SELECT COUNT(*) FROM local_inventory_stock_v1", [], |r| r.get(0)).unwrap();
         assert_eq!(stock_count, 0, "Clinical library must not touch inventory stock table");
+    }
+
+    #[test]
+    fn test_fresh_installation_and_idempotent_seeding_of_full_pharmacy_stock_report() {
+        let (mut conn, _dek) = setup_test_db();
+        let clinic_id = "fresh-clinic-uuid";
+
+        // Verify fresh SQLite database starts with 0 stock records
+        let initial_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM local_inventory_stock_v1", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(initial_count, 0, "Fresh installation must start with 0 stock items");
+
+        // Load canonical stock report JSON (1,793 items)
+        let json_str = include_str!("../../../src/data/stock-report-18-10-26.json");
+        let raw_items: Vec<serde_json::Value> = serde_json::from_str(json_str).expect("Valid JSON");
+        assert_eq!(raw_items.len(), 1793, "Dataset must contain exactly 1,793 records");
+
+        let items: Vec<StockItemInput> = raw_items
+            .into_iter()
+            .map(|val| StockItemInput {
+                product_name: val["product_name"].as_str().unwrap().to_string(),
+                unit: val["unit"].as_str().unwrap().to_string(),
+                company: val["company"].as_str().unwrap().to_string(),
+                quantity: val["quantity"].as_f64().unwrap_or(0.0),
+                value: val["value"].as_f64(),
+                batch_number: val["batch_number"].as_str().map(|s| s.to_string()),
+            })
+            .collect();
+
+        // 1. First run / Fresh installation seed
+        let summary1 = DbOperations::import_stock_records(
+            &mut conn,
+            clinic_id,
+            items.clone(),
+            false,
+            Some("STOCK REPORT (18-10-26)"),
+        )
+        .expect("initial seed succeeds");
+
+        assert_eq!(summary1.successful, 1793, "All 1,793 records must be seeded");
+        assert_eq!(summary1.skipped, 0);
+        assert_eq!(summary1.failed, 0);
+
+        let count_after_first: i64 = conn
+            .query_row("SELECT COUNT(*) FROM local_inventory_stock_v1 WHERE clinic_id = ?1", [clinic_id], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count_after_first, 1793);
+
+        // 2. Second launch / Rerun idempotency test on same database
+        let summary2 = DbOperations::import_stock_records(
+            &mut conn,
+            clinic_id,
+            items.clone(),
+            false,
+            Some("STOCK REPORT (18-10-26)"),
+        )
+        .expect("second seed succeeds");
+
+        assert_eq!(summary2.successful, 0, "Second launch must not create duplicate entries");
+        assert_eq!(summary2.skipped, 1793, "All 1,793 entries must be recognized as existing and skipped");
+        assert_eq!(summary2.failed, 0);
+
+        let count_after_second: i64 = conn
+            .query_row("SELECT COUNT(*) FROM local_inventory_stock_v1 WHERE clinic_id = ?1", [clinic_id], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count_after_second, 1793, "Total count must remain exactly 1,793 with zero duplicates");
+
+        // 3. Consultation Autocomplete Search Verification
+        // Search "BODYPROOF"
+        let search_bodyproof = DbOperations::search_local_catalogue(&conn, "BODYPROOF", 10, None).unwrap();
+        assert!(!search_bodyproof.is_empty(), "BODYPROOF must be found in autocomplete");
+        let first_match = &search_bodyproof[0];
+        assert!(first_match.name.contains("6D BODYPROOF"));
+        assert!(first_match.name.contains("Stock: 180 TAB"));
+        assert_eq!(first_match.dosage_form.as_deref(), Some("TAB"));
+        assert!(first_match.id.starts_with("stock_"));
+
+        // Search "ZYTEE" (last item in dataset)
+        let search_zytee = DbOperations::search_local_catalogue(&conn, "ZYTEE", 10, None).unwrap();
+        assert!(!search_zytee.is_empty(), "ZYTEE must be found in autocomplete");
+        assert!(search_zytee[0].name.contains("ZYTEE GEL"));
+        assert!(search_zytee[0].name.contains("Stock: 6 GEL"));
+
+        // Search by company name "EMRYS"
+        let search_company = DbOperations::search_local_catalogue(&conn, "EMRYS", 10, None).unwrap();
+        assert!(!search_company.is_empty(), "Search by company name must return matching stock items");
     }
 }

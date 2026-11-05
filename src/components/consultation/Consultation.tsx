@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from "react"
+import { useState, useEffect, useMemo, useRef } from "react"
 import {
   ArrowLeft,
   Check,
@@ -57,6 +57,7 @@ import {
   searchCatalogue,
   getCatalogueStrengths,
   getCatalogueSyncStatus,
+  mapStockUnitToFormulation,
   type CatalogueSyncStatus,
   type LocalFormularyItemRecord,
   type DesktopSessionContext,
@@ -146,12 +147,20 @@ export function Consultation({
     }
   }, [desktopSession?.clinic_id])
 
+  const searchDebounceTimers = useRef<Record<number, ReturnType<typeof setTimeout>>>({})
+
+  useEffect(() => {
+    return () => {
+      Object.values(searchDebounceTimers.current).forEach((t) => clearTimeout(t))
+    }
+  }, [])
+
   const handleMedicineSearch = (
     medicineId: number,
     query: string,
     formulation?: string,
   ) => {
-    // 1. Update medicine name and clear stale strengths / catalogue metadata
+    // 1. Immediately update medicine name in state for instant typing responsiveness
     updateData({
       medicines: data.medicines.map((row) =>
         row.id === medicineId
@@ -176,74 +185,26 @@ export function Consultation({
       return
     }
 
-    // 2. Fetch catalogue suggestions
-    searchCatalogue(trimmed, undefined, 20, formulation)
-      .then((res) => {
-        setCatalogueSuggestions((prev) => ({
-          ...prev,
-          [medicineId]: res.items || [],
-        }))
-        if (res.isOfflineCache && res.items && res.items.length > 0) {
-          setIsOfflineSearchActive(true)
-        }
-      })
-      .catch(() => {})
+    if (searchDebounceTimers.current[medicineId]) {
+      clearTimeout(searchDebounceTimers.current[medicineId])
+    }
 
-    // 3. Automatic strength lookup: if exactly 1 variant exists, preselect it
-    getCatalogueStrengths(trimmed, undefined, formulation)
-      .then((res) => {
-        setCatalogueStrengthsMap((prev) => ({
-          ...prev,
-          [medicineId]: res.strengths || [],
-        }))
-        if (res.isOfflineCache && res.strengths && res.strengths.length > 0) {
-          setIsOfflineSearchActive(true)
-        }
-        if (res.strengths && res.strengths.length === 1) {
-          updateMedicine(medicineId, "strength", res.strengths[0])
-        }
-      })
-      .catch(() => {})
-  }
-
-  const handleSelectMedicineOption = (
-    medicineId: number,
-    option: SearchOptionItem,
-    formulation?: string,
-  ) => {
-    const catItem = option.meta as CatalogueItem | undefined
-
-    if (catItem) {
-      const singleStrength =
-        catItem.strengths && catItem.strengths.length === 1
-          ? catItem.rawStrengthSummary
-          : catItem.rawStrengthSummary || ""
-
-      updateData({
-        medicines: data.medicines.map((row) => {
-          if (row.id !== medicineId) return row
-          return {
-            ...row,
-            name: catItem.name || option.value,
-            formulation: catItem.dosageForm || row.formulation || formulation || "",
-            strength: singleStrength || row.strength,
-            activeIngredient: catItem.genericName || row.activeIngredient,
-            route: catItem.route || row.route,
-            sourceIdentifier: catItem.sourceIdentifier,
-            sourceProvenance: catItem.sourceProvenance,
-            isCombination: catItem.isCombination,
-            isStrengthVerified: catItem.isStrengthVerified ?? true,
-            brandName: catItem.brandName,
-            genericName: catItem.genericName,
-            productName: catItem.productName,
-            releaseType: catItem.releaseType,
-            manufacturer: catItem.manufacturer,
-            isCustom: false,
+    searchDebounceTimers.current[medicineId] = setTimeout(() => {
+      // 2. Fetch catalogue suggestions (SQLite offline cache or bundled pharmacy stock report)
+      searchCatalogue(trimmed, undefined, 20, formulation)
+        .then((res) => {
+          setCatalogueSuggestions((prev) => ({
+            ...prev,
+            [medicineId]: res.items || [],
+          }))
+          if (res.isOfflineCache && res.items && res.items.length > 0) {
+            setIsOfflineSearchActive(true)
           }
-        }),
-      })
+        })
+        .catch(() => {})
 
-      getCatalogueStrengths(catItem.name || option.value, desktopSession?.doctor_id, formulation)
+      // 3. Automatic strength lookup
+      getCatalogueStrengths(trimmed, undefined, formulation)
         .then((res) => {
           setCatalogueStrengthsMap((prev) => ({
             ...prev,
@@ -257,6 +218,80 @@ export function Consultation({
           }
         })
         .catch(() => {})
+    }, 100)
+  }
+
+  const handleSelectMedicineOption = (
+    medicineId: number,
+    option: SearchOptionItem,
+    formulation?: string,
+  ) => {
+    const catItem = option.meta as CatalogueItem | undefined
+
+    if (catItem) {
+      const isStock = catItem.sourceProvenance === "LOCAL_INVENTORY"
+      const cleanName = catItem.productName || catItem.brandName || option.value
+      const resolvedFormulation =
+        (catItem.dosageForm ? mapStockUnitToFormulation(catItem.dosageForm) : "") ||
+        formulation ||
+        ""
+
+      const singleStrength = isStock
+        ? "" // Do not treat packaging unit (e.g. TAB) as chemical strength
+        : catItem.strengths && catItem.strengths.length === 1
+        ? catItem.rawStrengthSummary
+        : catItem.rawStrengthSummary || ""
+
+      const defaultDose =
+        resolvedFormulation === "Tablet"
+          ? "1 tablet"
+          : resolvedFormulation === "Capsule"
+          ? "1 capsule"
+          : resolvedFormulation === "Syrup"
+          ? "5 mL"
+          : ""
+
+      updateData({
+        medicines: data.medicines.map((row) => {
+          if (row.id !== medicineId) return row
+          return {
+            ...row,
+            name: cleanName,
+            formulation: resolvedFormulation || row.formulation,
+            strength: singleStrength || row.strength,
+            dose: row.dose || defaultDose,
+            activeIngredient: catItem.genericName || row.activeIngredient,
+            route: catItem.route || row.route || (resolvedFormulation === "Injection" ? "" : "Oral"),
+            sourceIdentifier: catItem.sourceIdentifier,
+            sourceProvenance: catItem.sourceProvenance,
+            isCombination: catItem.isCombination,
+            isStrengthVerified: catItem.isStrengthVerified ?? true,
+            brandName: catItem.brandName || cleanName,
+            genericName: catItem.genericName,
+            productName: cleanName,
+            releaseType: catItem.releaseType,
+            manufacturer: catItem.manufacturer,
+            isCustom: false,
+          }
+        }),
+      })
+
+      if (!isStock) {
+        getCatalogueStrengths(cleanName, desktopSession?.doctor_id, resolvedFormulation || formulation)
+          .then((res) => {
+            setCatalogueStrengthsMap((prev) => ({
+              ...prev,
+              [medicineId]: res.strengths || [],
+            }))
+            if (res.isOfflineCache && res.strengths && res.strengths.length > 0) {
+              setIsOfflineSearchActive(true)
+            }
+            if (res.strengths && res.strengths.length === 1) {
+              updateMedicine(medicineId, "strength", res.strengths[0])
+            }
+          })
+          .catch(() => {})
+      }
     } else {
       const def = mergedDefinitions.find(
         (item) =>
@@ -673,53 +708,6 @@ export function Consultation({
               </Button>
             </div>
 
-            {/* Catalogue Sync & Offline Status Banners */}
-            {isTauriDesktop() && catalogueSyncStatus?.status === "SYNCING" && (
-              <div className="alert-banner alert-banner-info">
-                <RefreshCw size={15} className="animate-spin" />
-                <span>
-                  Synchronizing CDCI reference catalogue (
-                  {catalogueSyncStatus.downloadedCount.toLocaleString()}
-                  {catalogueSyncStatus.totalCount > 0
-                    ? ` / ${catalogueSyncStatus.totalCount.toLocaleString()}`
-                    : ""}{" "}
-                  medicines downloaded)...
-                </span>
-              </div>
-            )}
-
-            {isTauriDesktop() &&
-              ((catalogueSyncStatus?.isReady &&
-                (catalogueSyncStatus.downloadedCount ?? 0) > 0) ||
-                (isOfflineSearchActive &&
-                  (catalogueSyncStatus?.downloadedCount ?? 0) > 0)) &&
-              catalogueSyncStatus?.status !== "SYNCING" && (
-                <div className="alert-banner alert-banner-success">
-                  <AlertCircle size={15} />
-                  <span>
-                    Offline CDCI reference catalogue active —{" "}
-                    {catalogueSyncStatus?.downloadedCount
-                      ? `${catalogueSyncStatus.downloadedCount.toLocaleString()} medicines available locally.`
-                      : "searches are powered by local encrypted SQLite cache."}
-                  </span>
-                </div>
-              )}
-
-            {isTauriDesktop() &&
-              catalogueSyncStatus?.status === "FAILED" &&
-              !catalogueSyncStatus.isReady && (
-                <div className="alert-banner alert-banner-warning">
-                  <AlertCircle size={15} />
-                  <span>
-                    Offline catalogue synchronization paused
-                    {catalogueSyncStatus.downloadedCount > 0
-                      ? ` (${catalogueSyncStatus.downloadedCount.toLocaleString()} medicines cached)`
-                      : ""}
-                    . Retrying in background.
-                  </span>
-                </div>
-              )}
-
             {data.medicines.length === 0 ? (
               <div className="medicine-empty">
                 <Pill size={22} />
@@ -768,7 +756,7 @@ export function Consultation({
 
                   const rowSuggestions: SearchOptionItem[] = [
                     ...mergedDefinitions
-                      .filter((item) => item.formulation === medicine.formulation)
+                      .filter((item) => !medicine.formulation || item.formulation === medicine.formulation)
                       .map((item) => ({
                         value: item.name,
                         label: item.name,
@@ -776,6 +764,8 @@ export function Consultation({
                         subtitle: item.activeIngredient,
                       })),
                     ...(catalogueSuggestions[medicine.id] || []).map((cat) => {
+                      const isStock = cat.sourceProvenance === "LOCAL_INVENTORY"
+                      const cleanName = cat.productName || cat.brandName || cat.name
                       const releaseBadge =
                         cat.releaseType && cat.releaseType !== "IMMEDIATE_RELEASE"
                           ? cat.releaseType
@@ -786,18 +776,18 @@ export function Consultation({
                       const badgeText =
                         cat.sourceProvenance === "CLINICAL_LIBRARY"
                           ? "Clinic Library"
-                          : cat.sourceProvenance === "LOCAL_INVENTORY"
+                          : isStock
                           ? "Pharmacy Stock"
                           : releaseBadge || (cat.isCombination ? "Combo" : cat.type)
                       const subtitleParts = [
                         cat.sourceProvenance === "CLINICAL_LIBRARY" ? "Custom Clinic Import" : null,
-                        cat.manufacturer,
-                        cat.productName || cat.genericName,
+                        isStock ? `Manufacturer: ${cat.manufacturer || "Unknown"}` : cat.manufacturer,
+                        isStock ? `In Stock: ${cat.rawStrengthSummary || ""}` : (cat.productName || cat.genericName),
                       ].filter(Boolean)
 
                       return {
-                        value: cat.name,
-                        label: cat.name,
+                        value: cleanName,
+                        label: isStock ? cat.name : cleanName,
                         badge: badgeText || undefined,
                         subtitle: subtitleParts.join(" • ") || undefined,
                         meta: cat,
@@ -857,91 +847,91 @@ export function Consultation({
                               </SelectInput>
                             </Field>
 
-                            {medicine.formulation ? (
-                              <>
-                                <Field
-                                  label="Medicine name"
-                                  required
-                                  className="med-col-name"
+                            <Field
+                              label="Medicine name"
+                              required
+                              className="med-col-name"
+                            >
+                              <SearchableOptionSelect
+                                id={`medicine-${medicine.id}`}
+                                value={medicine.name}
+                                options={rowSuggestions}
+                                onChange={(value) =>
+                                  handleMedicineSearch(
+                                    medicine.id,
+                                    value,
+                                    medicine.formulation,
+                                  )
+                                }
+                                onSelectOption={(option) =>
+                                  handleSelectMedicineOption(
+                                    medicine.id,
+                                    option,
+                                    medicine.formulation,
+                                  )
+                                }
+                                placeholder="Search medicine"
+                                ariaLabel="Search and select medicine"
+                                emptyMessage={
+                                  catalogueSyncStatus?.status === "SYNCING" &&
+                                  (catalogueSyncStatus.downloadedCount ?? 0) === 0
+                                    ? "Catalogue is syncing in background... Continue typing to use custom name."
+                                    : "No matching medicine. Continue typing to use a custom name."
+                                }
+                              />
+                              {medicine.sourceIdentifier && (
+                                <div
+                                  style={{
+                                    display: "flex",
+                                    gap: "6px",
+                                    alignItems: "center",
+                                    marginTop: "4px",
+                                    fontSize: "11px",
+                                    color: "#0284c7",
+                                  }}
                                 >
-                                  <SearchableOptionSelect
-                                    id={`medicine-${medicine.id}`}
-                                    value={medicine.name}
-                                    options={rowSuggestions}
-                                    onChange={(value) =>
-                                      handleMedicineSearch(
-                                        medicine.id,
-                                        value,
-                                        medicine.formulation,
-                                      )
-                                    }
-                                    onSelectOption={(option) =>
-                                      handleSelectMedicineOption(
-                                        medicine.id,
-                                        option,
-                                        medicine.formulation,
-                                      )
-                                    }
-                                    placeholder="Search medicine"
-                                    ariaLabel="Search and select medicine"
-                                    emptyMessage={
-                                      catalogueSyncStatus?.status === "SYNCING" &&
-                                      (catalogueSyncStatus.downloadedCount ?? 0) === 0
-                                        ? "Catalogue is syncing in background... Continue typing to use custom name."
-                                        : "No matching medicine. Continue typing to use a custom name."
-                                    }
-                                  />
-                                  {medicine.sourceIdentifier && (
-                                    <div
+                                  <CheckCircle2 size={13} />
+                                  <span>
+                                    Verified Medicine ({medicine.sourceIdentifier})
+                                  </span>
+                                  {medicine.isCombination && (
+                                    <span
                                       style={{
-                                        display: "flex",
-                                        gap: "6px",
-                                        alignItems: "center",
-                                        marginTop: "4px",
-                                        fontSize: "11px",
-                                        color: "#0284c7",
+                                        backgroundColor: "#fef3c7",
+                                        color: "#92400e",
+                                        padding: "1px 5px",
+                                        borderRadius: "3px",
+                                        fontWeight: 600,
                                       }}
                                     >
-                                      <CheckCircle2 size={13} />
-                                      <span>
-                                        Verified CDCI Catalogue ({medicine.sourceIdentifier})
-                                      </span>
-                                      {medicine.isCombination && (
-                                        <span
-                                          style={{
-                                            backgroundColor: "#fef3c7",
-                                            color: "#92400e",
-                                            padding: "1px 5px",
-                                            borderRadius: "3px",
-                                            fontWeight: 600,
-                                          }}
-                                        >
-                                          Combination
-                                        </span>
-                                      )}
-                                    </div>
-                                  )}
-                                  {medicine.isCustom && medicine.name.trim() && !medicine.sourceIdentifier && (
-                                    <div
-                                      style={{
-                                        display: "flex",
-                                        gap: "4px",
-                                        alignItems: "center",
-                                        marginTop: "4px",
-                                        fontSize: "11px",
-                                        color: "#64748b",
-                                      }}
-                                    >
-                                      <span>Custom uncatalogued medicine</span>
-                                    </div>
-                                  )}
-                                  {medicine.activeIngredient && (
-                                    <span className="med-active-ingredient">
-                                      Active: {medicine.activeIngredient}
+                                      Combination
                                     </span>
                                   )}
-                                </Field>
+                                </div>
+                              )}
+                              {medicine.isCustom && medicine.name.trim() && !medicine.sourceIdentifier && (
+                                <div
+                                  style={{
+                                    display: "flex",
+                                    gap: "4px",
+                                    alignItems: "center",
+                                    marginTop: "4px",
+                                    fontSize: "11px",
+                                    color: "#64748b",
+                                  }}
+                                >
+                                  <span>Custom uncatalogued medicine</span>
+                                </div>
+                              )}
+                              {medicine.activeIngredient && (
+                                <span className="med-active-ingredient">
+                                  Active: {medicine.activeIngredient}
+                                </span>
+                              )}
+                            </Field>
 
+                            {medicine.formulation ? (
+                              <>
                                 <Field
                                   label="Strength"
                                   className="med-col-strength"

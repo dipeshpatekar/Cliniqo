@@ -413,6 +413,12 @@ CREATE INDEX IF NOT EXISTS idx_clinical_lib_generic ON local_clinical_library_v1
 CREATE INDEX IF NOT EXISTS idx_clinical_lib_batch ON local_clinical_library_v1(batch_id);
 "#;
 
+/// Migration V11: Purges legacy CDCI reference tables and sync metadata following complete CDCI dataset removal.
+pub const MIGRATION_V11_SQL: &str = r#"
+DROP TABLE IF EXISTS local_catalogue_cache_v1;
+DROP TABLE IF EXISTS local_catalogue_sync_state_v1;
+"#;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DoctorProfileRecord {
     pub doctor_id: String,

@@ -13,7 +13,6 @@ import {
   ChevronRight,
   LogOut,
   Check,
-  Package,
 } from "lucide-react"
 import type {
   Page,
@@ -32,7 +31,6 @@ import { AppearanceSettings } from "./AppearanceSettings"
 import { WhatsAppSettings } from "./WhatsAppSettings"
 import { SecuritySettings } from "./SecuritySettings"
 import { SyncSettings } from "./SyncSettings"
-import { InventoryStockSettings } from "./InventoryStockSettings"
 import type { DesktopSessionContext } from "../../desktop/desktop-bridge"
 
 export interface SettingsPageProps {
@@ -103,7 +101,6 @@ export function SettingsPage({
     { label: "Prescription layout", icon: FileText },
     { label: "Bill layout", icon: ReceiptIndianRupee },
     { label: "Clinical library", icon: Pill },
-    { label: "Inventory & Stock", icon: Package },
     { label: "Appearance", icon: Moon },
     { label: "WhatsApp", icon: MessageCircle },
     { label: "Security", icon: ShieldCheck },
@@ -200,9 +197,6 @@ export function SettingsPage({
               onAddMedicine={onAddMedicine}
               desktopSession={desktopSession}
             />
-          )}
-          {tab === "Inventory & Stock" && (
-            <InventoryStockSettings desktopSession={desktopSession} />
           )}
           {tab === "Appearance" && (
             <AppearanceSettings

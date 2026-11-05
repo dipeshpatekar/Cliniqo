@@ -71,30 +71,10 @@ export class CatalogueImportService implements OnApplicationBootstrap {
   ) {}
 
   /**
-   * Automatically inspects catalogue on server startup.
-   * If empty (e.g. on fresh Render deployment), triggers background CDCI import.
+   * CDCI dataset has been decommissioned.
    */
   async onApplicationBootstrap(): Promise<void> {
-    try {
-      const [genericCount, brandCount] = await Promise.all([
-        this.genericModel.estimatedDocumentCount().exec(),
-        this.brandModel.estimatedDocumentCount().exec(),
-      ]);
-      if (genericCount === 0 || brandCount === 0) {
-        this.logger.log(
-          `Catalogue collections incomplete (${genericCount} generics, ${brandCount} brands). Auto-starting CDCI import in background...`,
-        );
-        this.runImport({ dryRun: false }).catch((err) => {
-          this.logger.error('Background CDCI auto-import failed:', err);
-        });
-      } else {
-        this.logger.log(
-          `Catalogue collections verified (${genericCount} generics, ${brandCount} brands).`,
-        );
-      }
-    } catch (err) {
-      this.logger.warn('Failed to inspect catalogue collection on bootstrap:', err);
-    }
+    // CDCI dataset has been decommissioned. No auto-import on bootstrap.
   }
 
   /**

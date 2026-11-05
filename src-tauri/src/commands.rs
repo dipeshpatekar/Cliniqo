@@ -1877,10 +1877,8 @@ pub async fn search_catalogue_cache(
     limit: Option<usize>,
     formulation: Option<String>,
 ) -> Result<Vec<LocalCatalogueItem>, String> {
-    let _session = state
-        .session_mgr
-        .validate_session(None)
-        .map_err(|e| e.to_string())?;
+    // Session validation is optional for local offline catalogue cache and pharmacy stock searches
+    let _session = state.session_mgr.validate_session(None).ok();
 
     let local_results = {
         let conn = state.db.get_connection();
@@ -1964,10 +1962,8 @@ pub fn get_catalogue_strengths_cache(
     medicine_name: String,
     formulation: Option<String>,
 ) -> Result<Vec<String>, String> {
-    let _session = state
-        .session_mgr
-        .validate_session(None)
-        .map_err(|e| e.to_string())?;
+    // Session validation is optional for local offline catalogue cache searches
+    let _session = state.session_mgr.validate_session(None).ok();
 
     let conn = state.db.get_connection();
     DbOperations::get_local_catalogue_strengths(&conn, &medicine_name, formulation.as_deref())

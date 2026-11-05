@@ -5,7 +5,7 @@ use crate::crypto::{encrypt_payload, CryptoError};
 use super::schema::{
     ClinicalData, PatientDemographics, CREATE_MIGRATIONS_TABLE, MIGRATION_V1_SQL, MIGRATION_V2_SQL,
     MIGRATION_V3_SQL, MIGRATION_V4_SQL, MIGRATION_V5_SQL, MIGRATION_V6_SQL, MIGRATION_V7_SQL,
-    MIGRATION_V8_SQL, MIGRATION_V9_SQL, MIGRATION_V10_SQL,
+    MIGRATION_V8_SQL, MIGRATION_V9_SQL, MIGRATION_V10_SQL, MIGRATION_V11_SQL,
 };
 
 #[derive(Error, Debug)]
@@ -74,7 +74,7 @@ impl MigrationRunner {
             )
             .unwrap_or(0);
 
-        if max_version > 10 {
+        if max_version > 11 {
             return Err(MigrationError::UnsupportedSchemaVersion(max_version));
         }
 
@@ -232,6 +232,21 @@ impl MigrationRunner {
             log::info!("Applying local offline SQLite migration v10 (Clinical library & import tracking)...");
             Self::migrate_to_v10(conn)?;
             log::info!("Migration v10 applied successfully. Local clinical library active.");
+        }
+
+        // 13. Check if v11 (Purge legacy CDCI dataset) has been applied
+        let v11_applied: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = 11)",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or(false);
+
+        if !v11_applied {
+            log::info!("Applying local offline SQLite migration v11 (Purge CDCI dataset)...");
+            Self::migrate_to_v11(conn)?;
+            log::info!("Migration v11 applied successfully. Legacy CDCI tables purged.");
         }
 
         Ok(())
@@ -696,6 +711,17 @@ impl MigrationRunner {
         tx.commit()?;
         Ok(())
     }
+
+    fn migrate_to_v11(conn: &mut Connection) -> Result<(), MigrationError> {
+        let tx = conn.transaction()?;
+        tx.execute_batch(MIGRATION_V11_SQL)?;
+        tx.execute(
+            "INSERT INTO schema_migrations (version, name, checksum) VALUES (?1, ?2, ?3)",
+            params![11, "purge_cdci_dataset_v11", "v11_cliniqo_purge_cdci_dataset_schema"],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -776,7 +802,7 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(max_version, 10);
+        assert_eq!(max_version, 11);
 
         let v7_exists: bool = conn
             .query_row(
@@ -805,6 +831,15 @@ mod tests {
             .unwrap();
         assert!(v10_exists, "Migration v10 must exist after running migrations");
 
+        let v11_exists: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = 11)",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(v11_exists, "Migration v11 must exist after running migrations");
+
         let table_exists: bool = conn
             .query_row(
                 "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='local_catalogue_cache_v1')",
@@ -812,7 +847,7 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert!(table_exists, "local_catalogue_cache_v1 table must exist after v5 migration");
+        assert!(!table_exists, "local_catalogue_cache_v1 table must be purged after v11 migration");
 
         let clinic_table_exists: bool = conn
             .query_row(

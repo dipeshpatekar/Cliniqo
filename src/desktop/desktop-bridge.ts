@@ -4,6 +4,7 @@
  * with graceful fallback for standard web browser environments and cryptographically verified sessions.
  */
 import type { CatalogueItem, CatalogueSearchResult } from "../types"
+import stockReportData from "../data/stock-report-18-10-26.json"
 
 export interface DesktopInfo {
   os: string
@@ -1126,7 +1127,7 @@ export async function saveCatalogueCacheItems(
     raw_strength_summary: it.rawStrengthSummary || "",
     is_combination: Boolean(it.isCombination),
     is_verified: Boolean(it.isStrengthVerified),
-    source_provenance: it.sourceProvenance || "CDCI_NRCES_INDIA",
+    source_provenance: it.sourceProvenance || "CLINICAL_LIBRARY",
   }))
   const result = await invokeTauri<number>("save_catalogue_cache", {
     items: payload,
@@ -1144,6 +1145,84 @@ export async function seedCatalogueCache(): Promise<number> {
   }
 }
 
+export function mapStockUnitToFormulation(unit?: string | null): string {
+  const u = (unit || "").trim().toUpperCase()
+  if (!u) return ""
+  if (u.includes("TAB")) return "Tablet"
+  if (u.includes("CAP")) return "Capsule"
+  if (u.includes("SYP")) return "Syrup"
+  if (u.includes("GEL") || u.includes("JELLY")) return "Gel"
+  if (
+    u.includes("INJ") ||
+    u.includes("AMP") ||
+    u.includes("VIAL") ||
+    u.includes("VAIL") ||
+    u.includes("IV")
+  )
+    return "Injection"
+  if (u.includes("CREAM")) return "Cream"
+  if (u.includes("LOTION")) return "Lotion"
+  if (u.includes("DROP")) return "Drops"
+  if (u.includes("POW")) return "Powder"
+  if (u.includes("SPRAY")) return "Spray"
+  if (u.includes("SOLUTION")) return "Solution"
+  if (u.includes("OINT") || u.includes("PASTE")) return "Ointment"
+  if (u.includes("RESP") || u.includes("INHAL")) return "Inhaler"
+  if (u.includes("SUSP")) return "Suspension"
+  return unit || ""
+}
+
+export function searchBundledStockReport(
+  query: string,
+  limit = 20,
+  formulation?: string,
+): CatalogueItem[] {
+  const q = query.trim().toLowerCase()
+  if (!q) return []
+  const normForm = formulation ? formulation.trim().toLowerCase() : null
+
+  const results: CatalogueItem[] = []
+  for (const item of stockReportData as Array<{
+    product_name: string
+    unit: string
+    company: string
+    quantity: number
+    value: number
+  }>) {
+    const prod = (item.product_name || "").toLowerCase()
+    const comp = (item.company || "").toLowerCase()
+    if (!prod.includes(q) && !comp.includes(q)) {
+      continue
+    }
+
+    const mappedForm = mapStockUnitToFormulation(item.unit)
+    if (normForm && mappedForm && mappedForm.toLowerCase() !== normForm) {
+      // If specific formulation requested, keep matching if product/company explicitly matched
+    }
+
+    results.push({
+      id: `stock_${item.product_name.replace(/\s+/g, "_")}`,
+      sourceIdentifier: `stock_${item.product_name}`,
+      type: "BRAND",
+      name: `${item.product_name} (Stock: ${item.quantity} ${item.unit})`,
+      brandName: item.product_name,
+      genericName: item.company,
+      productName: item.product_name,
+      dosageForm: mappedForm || item.unit,
+      strengths: [],
+      rawStrengthSummary: item.unit,
+      manufacturer: item.company,
+      isCombination: false,
+      isStrengthVerified: true,
+      sourceProvenance: "LOCAL_INVENTORY",
+      cachedAt: new Date().toISOString(),
+    })
+
+    if (results.length >= limit) break
+  }
+  return results
+}
+
 export async function searchCatalogue(
   query: string,
   token?: string,
@@ -1155,19 +1234,25 @@ export async function searchCatalogue(
 
   // In desktop mode, SQLite cache is high-speed, local, encrypted, and offline-first
   if (isDesktop) {
-    const localItems = await searchLocalCatalogueCache(
-      query,
-      limit,
-      formulation,
-    )
-    return {
-      items: localItems,
-      total: localItems.length,
-      page: 1,
-      limit,
-      totalPages: Math.ceil(localItems.length / limit) || 1,
-      attribution: "CDCI / NRCeS India (CC BY 4.0) — Local Offline Cache",
-      isOfflineCache: localItems.length > 0,
+    try {
+      const localItems = await searchLocalCatalogueCache(
+        query,
+        limit,
+        formulation,
+      )
+      if (localItems && localItems.length > 0) {
+        return {
+          items: localItems,
+          total: localItems.length,
+          page: 1,
+          limit,
+          totalPages: Math.ceil(localItems.length / limit) || 1,
+          attribution: "Cliniqo Clinical Formulary & Stock — Local Offline Cache",
+          isOfflineCache: true,
+        }
+      }
+    } catch {
+      // Local cache query failed, fallback to bundled stock dataset
     }
   }
 
@@ -1191,28 +1276,31 @@ export async function searchCatalogue(
       })
       if (resp.ok) {
         const data = await resp.json()
-        if (data.items && data.items.length > 0 && isDesktop) {
-          saveCatalogueCacheItems(data.items).catch(() => {})
-        }
-        return {
-          ...data,
-          isOfflineCache: false,
+        if (data.items && data.items.length > 0) {
+          if (isDesktop) {
+            saveCatalogueCacheItems(data.items).catch(() => {})
+          }
+          return {
+            ...data,
+            isOfflineCache: false,
+          }
         }
       }
     } catch {
-      // Network failure, fallback to offline SQLite cache
+      // Network failure, fallback to offline search
     }
   }
 
-  const localItems = await searchLocalCatalogueCache(query, limit, formulation)
+  // Fallback: search bundled pharmacy stock report (1,793 records)
+  const stockItems = searchBundledStockReport(query, limit, formulation)
   return {
-    items: localItems,
-    total: localItems.length,
+    items: stockItems,
+    total: stockItems.length,
     page: 1,
     limit,
-    totalPages: Math.ceil(localItems.length / limit) || 1,
-    attribution: "CDCI / NRCeS India (CC BY 4.0) — Local Offline Cache",
-    isOfflineCache: isDesktop && localItems.length > 0,
+    totalPages: Math.ceil(stockItems.length / limit) || 1,
+    attribution: "Cliniqo Pharmacy Stock Report (18-10-26)",
+    isOfflineCache: stockItems.length > 0,
   }
 }
 

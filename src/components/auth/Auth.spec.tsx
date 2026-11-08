@@ -485,9 +485,11 @@ describe("Auth Flow Regression: Registration to Profile Setup Navigation", () =>
         expires_at: Math.floor(Date.now() / 1000) + 86400,
       }
 
-      let currentSession: desktopBridge.DesktopSessionContext | null = doctorASession
+      let currentSession: desktopBridge.DesktopSessionContext | null =
+        doctorASession
       let currentPatients: any[] = [{ id: "P-A1", name: "Patient Alpha" }]
-      let currentConsultationNotes: string = "Doctor Alpha confidential clinical notes"
+      let currentConsultationNotes: string =
+        "Doctor Alpha confidential clinical notes"
 
       // Verify Doctor A's identity
       let sidebarA = renderToString(
@@ -558,7 +560,9 @@ describe("Auth Flow Regression: Registration to Profile Setup Navigation", () =>
       // Simulate desktop session check in Consultation / Prescription
       const desktopSession: desktopBridge.DesktopSessionContext | null = null
 
-      const getFinalizationSessionError = (session: desktopBridge.DesktopSessionContext | null) => {
+      const getFinalizationSessionError = (
+        session: desktopBridge.DesktopSessionContext | null,
+      ) => {
         if (!session || !session.doctor_id) {
           return "No active doctor session found. Please log in."
         }
@@ -582,7 +586,9 @@ describe("Auth Flow Regression: Registration to Profile Setup Navigation", () =>
       }
 
       const expiredError = getFinalizationSessionError(expiredSession)
-      expect(expiredError).toBe("Active doctor session has expired. Please log in again.")
+      expect(expiredError).toBe(
+        "Active doctor session has expired. Please log in again.",
+      )
     })
   })
 
@@ -612,15 +618,28 @@ describe("Auth Flow Regression: Registration to Profile Setup Navigation", () =>
       let currentPage = "register"
       let desktopSession: desktopBridge.DesktopSessionContext | null = null
       let onboardingDoctor: any = null
-      const desktopSessionRef: { current: desktopBridge.DesktopSessionContext | null } = {
+      const desktopSessionRef: {
+        current: desktopBridge.DesktopSessionContext | null
+      } = {
         current: desktopSession,
       }
       const onboardingDoctorRef = { current: onboardingDoctor }
 
-      const go = (next: string, sessionOverride?: desktopBridge.DesktopSessionContext | null) => {
-        const active = sessionOverride !== undefined ? sessionOverride : desktopSessionRef.current
+      const go = (
+        next: string,
+        sessionOverride?: desktopBridge.DesktopSessionContext | null,
+      ) => {
+        const active =
+          sessionOverride !== undefined
+            ? sessionOverride
+            : desktopSessionRef.current
         const onboarding = onboardingDoctorRef.current
-        if (!active && next !== "login" && next !== "register" && !(next === "setup" && onboarding)) {
+        if (
+          !active &&
+          next !== "login" &&
+          next !== "register" &&
+          !(next === "setup" && onboarding)
+        ) {
           currentPage = "login"
           return
         }
@@ -783,7 +802,9 @@ describe("Auth Flow Regression: Registration to Profile Setup Navigation", () =>
           role: "OWNER",
           expires_at: Math.floor(Date.now() / 1000) + 3600,
         },
-        clinics: [{ id: "clinic-active-99", name: "Metro Clinic", role: "OWNER" }],
+        clinics: [
+          { id: "clinic-active-99", name: "Metro Clinic", role: "OWNER" },
+        ],
         active_clinic_id: "clinic-active-99",
         doctor: {
           id: "doc-returning-1",
@@ -885,7 +906,9 @@ describe("Auth Flow Regression: Registration to Profile Setup Navigation", () =>
       let currentPage = "loading"
       let offlineErrorMessage: string | null = null
 
-      const offlineError = new Error("Authentication server unreachable: network timeout")
+      const offlineError = new Error(
+        "Authentication server unreachable: network timeout",
+      )
       const handleStartupFailure = (err: Error) => {
         offlineErrorMessage = err.message
         currentPage = "login"
@@ -991,11 +1014,15 @@ describe("Auth Flow Regression: Registration to Profile Setup Navigation", () =>
 
     it("5. Session remains valid after clinic setup and transitions directly to dashboard", async () => {
       let currentPage = "setup"
-      const sessionBox: { current: desktopBridge.DesktopSessionContext | null } = {
+      const sessionBox: {
+        current: desktopBridge.DesktopSessionContext | null
+      } = {
         current: null,
       }
 
-      const onSetupComplete = (session: desktopBridge.DesktopSessionContext) => {
+      const onSetupComplete = (
+        session: desktopBridge.DesktopSessionContext,
+      ) => {
         sessionBox.current = session
         currentPage = "dashboard"
       }

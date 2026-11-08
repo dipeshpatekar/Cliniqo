@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use tauri::State;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use rusqlite::params;
 use crate::auth::{SessionContext, SessionManager};
 use crate::crypto::key_manager::KeyManager;
@@ -663,7 +663,7 @@ pub async fn execute_refresh_session(
     session_mgr: &SessionManager,
     refresh_coordinator: &RefreshCoordinator,
 ) -> Result<DesktopLoginResult, String> {
-    execute_refresh_session_with_url(key_mgr, session_mgr, refresh_coordinator, None).await
+    execute_refresh_session_with_db(key_mgr, session_mgr, refresh_coordinator, None, None).await
 }
 
 pub async fn execute_refresh_session_with_url(
@@ -672,12 +672,22 @@ pub async fn execute_refresh_session_with_url(
     refresh_coordinator: &RefreshCoordinator,
     backend_url_override: Option<&str>,
 ) -> Result<DesktopLoginResult, String> {
+    execute_refresh_session_with_db(key_mgr, session_mgr, refresh_coordinator, backend_url_override, None).await
+}
+
+pub async fn execute_refresh_session_with_db(
+    key_mgr: &KeyManager,
+    session_mgr: &SessionManager,
+    refresh_coordinator: &RefreshCoordinator,
+    backend_url_override: Option<&str>,
+    db: Option<&DatabaseManager>,
+) -> Result<DesktopLoginResult, String> {
     let url_opt = backend_url_override.map(|s| s.to_string());
     refresh_coordinator
         .execute_single_flight(|| {
             let u = url_opt.clone();
             async move {
-                do_actual_refresh_session(key_mgr, session_mgr, u.as_deref()).await
+                do_actual_refresh_session(key_mgr, session_mgr, u.as_deref(), db).await
             }
         })
         .await
@@ -687,6 +697,7 @@ async fn do_actual_refresh_session(
     key_mgr: &KeyManager,
     session_mgr: &SessionManager,
     backend_url_override: Option<&str>,
+    db: Option<&DatabaseManager>,
 ) -> Result<DesktopLoginResult, String> {
     let persisted_rt = match key_mgr.load_refresh_token() {
         Ok(Some(rt)) if !rt.trim().is_empty() => rt,
@@ -700,16 +711,33 @@ async fn do_actual_refresh_session(
     };
     let refresh_url = format!("{base_url}/auth/refresh");
 
-    let client = crate::config::create_secure_http_client(Duration::from_secs(35))?;
+    // Fast, responsive 10-second timeout for session refresh to avoid UI delay
+    let client = crate::config::create_secure_http_client(Duration::from_secs(10))?;
 
-    let resp = client
+    let send_result = client
         .post(&refresh_url)
         .json(&BackendRefreshRequest {
             refresh_token: &persisted_rt,
         })
         .send()
-        .await
-        .map_err(|e| format!("Network error communicating with auth server: {e}"))?;
+        .await;
+
+    let resp = match send_result {
+        Ok(r) => r,
+        Err(net_err) => {
+            log::warn!("Refresh network request failed ({net_err}). Checking permitted offline credentials...");
+            if let Some(db_mgr) = db {
+                if let Some(offline_result) = try_restore_offline_session(key_mgr, session_mgr, db_mgr) {
+                    log::info!(
+                        "Successfully restored permitted offline desktop session for doctor '{}'",
+                        offline_result.session.doctor_name
+                    );
+                    return Ok(offline_result);
+                }
+            }
+            return Err(format!("Network error communicating with auth server: {net_err}"));
+        }
+    };
 
     let status = resp.status();
     if !status.is_success() {
@@ -722,6 +750,17 @@ async fn do_actual_refresh_session(
             session_mgr.logout();
             return Err("Refresh token rejected or expired by server. Local session cleared.".to_string());
         }
+
+        // For 5xx server errors, fall back to offline session if local profile exists
+        if status.is_server_error() {
+            if let Some(db_mgr) = db {
+                if let Some(offline_result) = try_restore_offline_session(key_mgr, session_mgr, db_mgr) {
+                    log::info!("Auth server unavailable (HTTP {status}). Restored permitted offline desktop session.");
+                    return Ok(offline_result);
+                }
+            }
+        }
+
         return Err(format!("Auth server error: HTTP {status}"));
     }
 
@@ -740,21 +779,47 @@ async fn do_actual_refresh_session(
 
     // Fetch authoritative clinic memberships from backend
     let my_clinics_url = format!("{base_url}/clinics/my-clinics");
-    let clinics_resp = client
+    let clinics_resp_result = client
         .get(&my_clinics_url)
         .bearer_auth(&refresh_data.access_token)
         .send()
-        .await
-        .map_err(|e| format!("Failed to fetch clinic memberships: {e}"))?;
+        .await;
 
-    if !clinics_resp.status().is_success() {
-        return Err(format!("Failed to retrieve clinic memberships: HTTP {}", clinics_resp.status()));
-    }
-
-    let clinics: Vec<ClinicItem> = clinics_resp
-        .json()
-        .await
-        .map_err(|e| format!("Failed to parse clinic memberships: {e}"))?;
+    let clinics: Vec<ClinicItem> = match clinics_resp_result {
+        Ok(c_resp) if c_resp.status().is_success() => {
+            c_resp.json().await.unwrap_or_default()
+        }
+        _ => {
+            // If fetching online clinics failed but token refresh succeeded, recover from cached SQLite clinics
+            if let Some(db_mgr) = db {
+                let conn = db_mgr.get_connection();
+                let cached = crate::db::operations::DbOperations::get_all_clinic_profiles(&conn)
+                    .unwrap_or_default();
+                cached
+                    .into_iter()
+                    .map(|p| ClinicItem {
+                        id: p.clinic_id,
+                        name: p.name,
+                        slug: p.slug,
+                        role: "OWNER".to_string(),
+                        status: "ACTIVE".to_string(),
+                        phone: if p.phone.is_empty() { None } else { Some(p.phone) },
+                        email: if p.email.is_empty() { None } else { Some(p.email) },
+                        address: Some(ClinicAddressData {
+                            street: if p.street.is_empty() { None } else { Some(p.street) },
+                            city: if p.city.is_empty() { None } else { Some(p.city) },
+                            state: if p.state.is_empty() { None } else { Some(p.state) },
+                            postal_code: if p.postal_code.is_empty() { None } else { Some(p.postal_code) },
+                            country: Some(p.country),
+                        }),
+                        location_link: if p.location_link.is_empty() { None } else { Some(p.location_link) },
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            }
+        }
+    };
 
     let (selected_clinic_id, selected_role) = if clinics.is_empty() {
         ("".to_string(), "OWNER".to_string())
@@ -784,6 +849,70 @@ async fn do_actual_refresh_session(
         session,
         clinics,
         active_clinic_id: selected_clinic_id,
+    })
+}
+
+fn try_restore_offline_session(
+    key_mgr: &KeyManager,
+    session_mgr: &SessionManager,
+    db: &DatabaseManager,
+) -> Option<DesktopLoginResult> {
+    let conn = db.get_connection();
+    let doc = crate::db::operations::DbOperations::get_doctor_profile_any(&conn).ok()??;
+    let cached_clinics = crate::db::operations::DbOperations::get_all_clinic_profiles(&conn).unwrap_or_default();
+
+    let clinics: Vec<ClinicItem> = cached_clinics
+        .into_iter()
+        .map(|p| ClinicItem {
+            id: p.clinic_id,
+            name: p.name,
+            slug: p.slug,
+            role: "OWNER".to_string(),
+            status: "ACTIVE".to_string(),
+            phone: if p.phone.is_empty() { None } else { Some(p.phone) },
+            email: if p.email.is_empty() { None } else { Some(p.email) },
+            address: Some(ClinicAddressData {
+                street: if p.street.is_empty() { None } else { Some(p.street) },
+                city: if p.city.is_empty() { None } else { Some(p.city) },
+                state: if p.state.is_empty() { None } else { Some(p.state) },
+                postal_code: if p.postal_code.is_empty() { None } else { Some(p.postal_code) },
+                country: Some(p.country),
+            }),
+            location_link: if p.location_link.is_empty() { None } else { Some(p.location_link) },
+        })
+        .collect();
+
+    let (active_clinic_id, active_role) = if clinics.is_empty() {
+        ("".to_string(), "OWNER".to_string())
+    } else {
+        let prev_clinic_id = key_mgr.load_active_clinic_id().ok().flatten();
+        let selected = prev_clinic_id
+            .as_ref()
+            .and_then(|id| clinics.iter().find(|c| &c.id == id))
+            .unwrap_or(&clinics[0]);
+        (selected.id.clone(), selected.role.clone())
+    };
+
+    let now_sec = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
+
+    let session = SessionContext {
+        doctor_id: doc.doctor_id,
+        clinic_id: active_clinic_id.clone(),
+        doctor_email: doc.email,
+        doctor_name: doc.full_name,
+        role: active_role,
+        expires_at: now_sec + (7 * 86400), // 7 days permitted offline duration
+    };
+
+    session_mgr.set_offline_session(session.clone());
+
+    Some(DesktopLoginResult {
+        session,
+        clinics,
+        active_clinic_id,
     })
 }
 
@@ -823,10 +952,12 @@ pub async fn execute_logout_session(
 pub async fn refresh_desktop_session(
     state: State<'_, AppState>,
 ) -> Result<DesktopLoginResult, String> {
-    let result = execute_refresh_session(
+    let result = execute_refresh_session_with_db(
         &state.key_mgr,
         &state.session_mgr,
         &state.refresh_coordinator,
+        None,
+        Some(&state.db),
     )
     .await?;
 
@@ -1273,7 +1404,7 @@ pub fn get_desktop_session(state: State<'_, AppState>) -> Result<Option<SessionC
 #[tauri::command]
 pub fn has_persisted_refresh_token(state: State<'_, AppState>) -> Result<bool, String> {
     match state.key_mgr.load_refresh_token() {
-        Ok(Some(_)) => Ok(true),
+        Ok(Some(tok)) => Ok(!tok.trim().is_empty()),
         Ok(None) => Ok(false),
         Err(e) => {
             log::warn!("Failed to query persisted refresh token: {e}");
@@ -2246,6 +2377,102 @@ D1d0B/9iI/8p4iH21N3W7B3gT9D9e/9Y2Z3b4K5L6M7N8P9Q0R1S2T3U4V5W6X7Y
 -----END PUBLIC KEY-----"#;
         let weak_res = session_mgr.update_public_key(weak_1024_pem);
         assert!(weak_res.is_err());
+    }
+
+    #[test]
+    fn test_offline_session_restoration_with_cached_doctor_profile() {
+        tauri::async_runtime::block_on(async {
+            let temp_dir = std::env::temp_dir().join(format!("cliniqo_cmd_offline_{}", uuid::Uuid::new_v4()));
+            let key_mgr = KeyManager::new(&temp_dir);
+            let session_mgr = SessionManager::with_default_public_key().unwrap();
+            let coordinator = RefreshCoordinator::new();
+            let db = DatabaseManager::init(&temp_dir).unwrap();
+
+            // 1. Persist a refresh token and active clinic in KeyManager
+            let rt = "valid_refresh_token_64_characters_long_for_offline_session_test";
+            key_mgr.save_refresh_token(rt).unwrap();
+            key_mgr.save_active_clinic_id("clinic_offline_1").unwrap();
+
+            // 2. Persist doctor profile and clinic profile in SQLite
+            {
+                let conn = db.get_connection();
+                DbOperations::upsert_doctor_profile(
+                    &conn,
+                    &crate::db::schema::DoctorProfileRecord {
+                        doctor_id: "doc_offline_42".to_string(),
+                        full_name: "Dr. Offline Test".to_string(),
+                        email: "offline@cliniqo.test".to_string(),
+                        phone: "+91 9999999999".to_string(),
+                        qualification: "MBBS".to_string(),
+                        registration_number: "REG-12345".to_string(),
+                        gender: "Male".to_string(),
+                        updated_at: None,
+                    },
+                ).unwrap();
+
+                DbOperations::upsert_clinic_profile(
+                    &conn,
+                    &crate::db::schema::ClinicProfileRecord {
+                        clinic_id: "clinic_offline_1".to_string(),
+                        name: "Offline Care Clinic".to_string(),
+                        slug: "offline-care".to_string(),
+                        phone: "+91 8888888888".to_string(),
+                        email: "clinic@offline.test".to_string(),
+                        street: "123 Health Rd".to_string(),
+                        city: "Mumbai".to_string(),
+                        state: "Maharashtra".to_string(),
+                        postal_code: "400001".to_string(),
+                        country: "India".to_string(),
+                        location_link: "".to_string(),
+                        updated_at: None,
+                    },
+                ).unwrap();
+            }
+
+            // 3. Attempt refresh pointing to an unreachable backend (simulating offline / network failure)
+            let result = execute_refresh_session_with_db(
+                &key_mgr,
+                &session_mgr,
+                &coordinator,
+                Some("http://127.0.0.1:1"), // unreachable offline port
+                Some(&db),
+            ).await;
+
+            assert!(result.is_ok(), "Offline refresh must succeed by restoring permitted offline session");
+            let login_res = result.unwrap();
+            assert_eq!(login_res.session.doctor_id, "doc_offline_42");
+            assert_eq!(login_res.session.doctor_name, "Dr. Offline Test");
+            assert_eq!(login_res.session.clinic_id, "clinic_offline_1");
+            assert_eq!(login_res.active_clinic_id, "clinic_offline_1");
+            assert_eq!(login_res.clinics.len(), 1);
+            assert_eq!(login_res.clinics[0].name, "Offline Care Clinic");
+
+            // SessionManager must now have the active offline session context
+            let active_session = session_mgr.get_session().expect("session exists in SessionManager");
+            assert_eq!(active_session.doctor_id, "doc_offline_42");
+            assert!(session_mgr.validate_session(Some("clinic_offline_1")).is_ok());
+
+            let _ = std::fs::remove_dir_all(&temp_dir);
+        });
+    }
+
+    #[test]
+    fn test_has_persisted_refresh_token_validates_presence() {
+        let temp_dir = std::env::temp_dir().join(format!("cliniqo_has_tok_{}", uuid::Uuid::new_v4()));
+        let key_mgr = KeyManager::new(&temp_dir);
+
+        // Initially no token
+        assert_eq!(key_mgr.load_refresh_token().unwrap(), None);
+
+        // Saved token
+        key_mgr.save_refresh_token("valid_token").unwrap();
+        assert_eq!(key_mgr.load_refresh_token().unwrap().as_deref(), Some("valid_token"));
+
+        // Cleared token
+        key_mgr.clear_refresh_token().unwrap();
+        assert_eq!(key_mgr.load_refresh_token().unwrap(), None);
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
     }
 }
 

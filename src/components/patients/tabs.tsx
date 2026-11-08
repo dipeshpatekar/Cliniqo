@@ -1,6 +1,13 @@
 import { Button, StatusPill } from "../common"
 import { cn } from "../../utils/cn"
-import { getPublicPatientId, type Page, type Patient } from "../../types"
+import { analyzeAllergies } from "../../utils/allergy"
+import {
+  formatDateDDMMYYYY,
+  formatIndiaDateTime,
+  getPublicPatientId,
+  type Page,
+  type Patient,
+} from "../../types"
 import type {
   DesktopSessionContext,
   LocalConsultationRecord,
@@ -33,7 +40,6 @@ export function OverviewTab({
         <div className="panel-head">
           <div>
             <h2>Patient details</h2>
-            <p>Demographic information</p>
           </div>
           <button className="text-btn" onClick={() => go("patient-form")}>
             Edit
@@ -56,13 +62,37 @@ export function OverviewTab({
             <dt>Patient ID</dt>
             <dd>{getPublicPatientId(patient)}</dd>
           </div>
+          {patient.registeredAt && (
+            <div>
+              <dt>Registered</dt>
+              <dd>{formatIndiaDateTime(patient.registeredAt)}</dd>
+            </div>
+          )}
+          {patient.dateOfBirth && (
+            <div>
+              <dt>Date of birth</dt>
+              <dd>{formatDateDDMMYYYY(patient.dateOfBirth)}</dd>
+            </div>
+          )}
+          {patient.alternatePhone && (
+            <div>
+              <dt>Alternate phone</dt>
+              <dd>{patient.alternatePhone}</dd>
+            </div>
+          )}
+          {patient.address && (
+            <div className="wide">
+              <dt>Address</dt>
+              <dd>{patient.address}</dd>
+            </div>
+          )}
           <div className="wide">
             <dt>Consultation status</dt>
             <dd>
               {consultations.length > 0
-                ? `Last visit: ${consultations[0].consultation_date || "Recorded"}`
+                ? `Last visit: ${formatDateDDMMYYYY(consultations[0].consultation_date) || consultations[0].consultation_date || "Recorded"}`
                 : hasHistory
-                  ? patient.lastVisit
+                  ? formatDateDDMMYYYY(patient.lastVisit) || patient.lastVisit
                   : "No consultations recorded"}
             </dd>
           </div>
@@ -72,14 +102,18 @@ export function OverviewTab({
         <div className="panel-head">
           <div>
             <h2>Clinical background</h2>
-            <p>Persistent across consultations</p>
           </div>
         </div>
         <div className="clinical-item">
           <span>Known allergies</span>
-          <strong className={patient.allergies.length > 0 ? "danger-text" : ""}>
-            {patient.allergies.join(", ") || "None recorded"}
-          </strong>
+          {(() => {
+            const allergyAnalysis = analyzeAllergies(patient.allergies)
+            return (
+              <strong className={allergyAnalysis.hasGenuineAllergies ? "danger-text" : ""}>
+                {allergyAnalysis.displayLabel}
+              </strong>
+            )
+          })()}
         </div>
         <div className="clinical-item">
           <span>Medical conditions</span>
@@ -89,7 +123,9 @@ export function OverviewTab({
           <span>Current medicines</span>
           <strong>
             {prescriptions.length > 0
-              ? `${prescriptions.length} active ${prescriptions.length === 1 ? "prescription" : "prescriptions"}`
+              ? `${prescriptions.length} active ${
+                  prescriptions.length === 1 ? "prescription" : "prescriptions"
+                }`
               : "None recorded"}
           </strong>
         </div>
@@ -102,7 +138,6 @@ export function OverviewTab({
         <div className="panel-head">
           <div>
             <h2>Recent clinical activity</h2>
-            <p>Consultations and prescriptions</p>
           </div>
           <button className="text-btn" onClick={() => go("consultation")}>
             New consultation
@@ -111,15 +146,23 @@ export function OverviewTab({
         {consultations.length > 0 ? (
           consultations.slice(0, 3).map((entry, index) => {
             const isDraft = entry.status === "DRAFT"
-            const dateStr = entry.consultation_date || entry.updated_at?.slice(0, 10) || "Recorded"
+            const dateStr =
+              formatDateDDMMYYYY(entry.consultation_date || entry.updated_at) ||
+              "Recorded"
             return (
               <div className="timeline-row" key={entry.id}>
                 <span className={cn("timeline-icon", isDraft && "draft")}>
                   <FileText size={16} />
                 </span>
                 <div>
-                  <strong>{isDraft ? "Consultation draft" : "Consultation finalized"}</strong>
-                  <p>{entry.diagnosis || entry.chief_complaint || "Clinical notes recorded"}</p>
+                  <strong>
+                    {isDraft ? "Consultation draft" : "Consultation finalized"}
+                  </strong>
+                  <p>
+                    {entry.diagnosis ||
+                      entry.chief_complaint ||
+                      "Clinical notes recorded"}
+                  </p>
                 </div>
                 <time>{dateStr}</time>
                 <Button
@@ -140,11 +183,11 @@ export function OverviewTab({
               "Clinical notes saved · Not finalized",
             ],
             [
-              "12 Mar 2025",
+              "12/03/2025",
               "Consultation finalized",
               "Prescription revision 1 · Delivered",
             ],
-            ["18 Nov 2024", "Consultation finalized", "Printed at clinic"],
+            ["18/11/2024", "Consultation finalized", "Printed at clinic"],
           ].map((entry, index) => (
             <div className="timeline-row" key={entry[0]}>
               <span className={cn("timeline-icon", index === 0 && "draft")}>
@@ -208,21 +251,34 @@ export function HistoryTab({ patient }: { patient: Patient }) {
       </div>
       <div className="history-block">
         <h2>Allergy record</h2>
-        <p>
-          {patient.allergies.length > 0
-            ? patient.allergies.map((allergy) => (
-                <StatusPill key={allergy} tone="danger">
-                  {allergy}
-                </StatusPill>
-              ))
-            : "No known allergies recorded."}
-        </p>
-        {patient.allergies.length > 0 && (
-          <small>
-            Reaction details not recorded. Confirm with patient before
-            prescribing.
-          </small>
-        )}
+        {(() => {
+          const allergyAnalysis = analyzeAllergies(patient.allergies)
+          return (
+            <>
+              <p>
+                {allergyAnalysis.hasGenuineAllergies ? (
+                  allergyAnalysis.genuineAllergies.map((allergy) => (
+                    <StatusPill key={allergy} tone="danger">
+                      {allergy}
+                    </StatusPill>
+                  ))
+                ) : allergyAnalysis.isNoKnownAllergies ? (
+                  <StatusPill tone="success">No known allergies</StatusPill>
+                ) : allergyAnalysis.isUnknown ? (
+                  <StatusPill tone="warning">Unknown (not allergy-free)</StatusPill>
+                ) : (
+                  "No known allergies recorded."
+                )}
+              </p>
+              {allergyAnalysis.hasGenuineAllergies && (
+                <small>
+                  Reaction details not recorded. Confirm with patient before
+                  prescribing.
+                </small>
+              )}
+            </>
+          )
+        })()}
       </div>
     </section>
   )
@@ -248,7 +304,6 @@ export function ConsultationsTab({
       <div className="panel-head">
         <div>
           <h2>Consultation history</h2>
-          <p>Finalized visits cannot be overwritten</p>
         </div>
         <Button size="sm" onClick={() => go("consultation")} icon={Plus}>
           New consultation
@@ -260,7 +315,9 @@ export function ConsultationsTab({
         </div>
       ) : consultations.length > 0 ? (
         consultations.map((c) => {
-          const dateStr = c.consultation_date || c.updated_at?.slice(0, 10) || "Recorded"
+          const dateStr =
+            formatDateDDMMYYYY(c.consultation_date || c.updated_at) ||
+            "Recorded"
           const isDraft = c.status === "DRAFT"
           return (
             <button
@@ -271,8 +328,12 @@ export function ConsultationsTab({
                 <ClipboardList size={18} />
               </span>
               <span>
-                <strong>{c.diagnosis || c.chief_complaint || "Clinical consultation"}</strong>
-                <small>{desktopSession?.doctor_name || "Doctor"} · {dateStr}</small>
+                <strong>
+                  {c.diagnosis || c.chief_complaint || "Clinical consultation"}
+                </strong>
+                <small>
+                  {desktopSession?.doctor_name || "Doctor"} · {dateStr}
+                </small>
               </span>
               <StatusPill tone={isDraft ? "warning" : "success"}>
                 {isDraft ? "Draft" : "Finalized"}
@@ -284,8 +345,8 @@ export function ConsultationsTab({
       ) : hasHistory ? (
         [
           ["Today", "Draft", "Follow-up visit"],
-          ["12 Mar 2025", "Finalized", "New consultation"],
-          ["18 Nov 2024", "Routine consultation", "Routine consultation"],
+          ["12/03/2025", "Finalized", "New consultation"],
+          ["18/11/2024", "Routine consultation", "Routine consultation"],
         ].map((r) => (
           <button
             key={r[0]}
@@ -296,7 +357,9 @@ export function ConsultationsTab({
             </span>
             <span>
               <strong>{r[2]}</strong>
-              <small>{desktopSession?.doctor_name || "Doctor"} · {r[0]}</small>
+              <small>
+                {desktopSession?.doctor_name || "Doctor"} · {r[0]}
+              </small>
             </span>
             <StatusPill tone={r[1] === "Draft" ? "warning" : "success"}>
               {r[1]}
@@ -335,7 +398,6 @@ export function PrescriptionsTab({
       <div className="panel-head">
         <div>
           <h2>Prescription history</h2>
-          <p>Finalized records and tracked revisions</p>
         </div>
       </div>
       {loading ? (
@@ -344,8 +406,11 @@ export function PrescriptionsTab({
         </div>
       ) : prescriptions.length > 0 ? (
         prescriptions.map((r) => {
-          const dateStr = r.created_at ? r.created_at.slice(0, 10) : "Finalized"
-          const revLabel = r.revision_number > 1 ? `Revision ${r.revision_number}` : "Original"
+          const dateStr = r.created_at
+            ? formatDateDDMMYYYY(r.created_at)
+            : "Finalized"
+          const revLabel =
+            r.revision_number > 1 ? `Revision ${r.revision_number}` : "Original"
           let itemCount = 0
           try {
             if (r.items_json) {
@@ -360,8 +425,13 @@ export function PrescriptionsTab({
                 <FileText size={18} />
               </span>
               <span>
-                <strong>{r.prescription_number} · {revLabel}</strong>
-                <small>Finalized {dateStr} · {itemCount} {itemCount === 1 ? "medicine" : "medicines"}</small>
+                <strong>
+                  {r.prescription_number} · {revLabel}
+                </strong>
+                <small>
+                  Finalized {dateStr} · {itemCount}{" "}
+                  {itemCount === 1 ? "medicine" : "medicines"}
+                </small>
               </span>
               <StatusPill tone="success">
                 {r.status === "ACTIVE" ? "Finalized" : r.status}
@@ -372,9 +442,9 @@ export function PrescriptionsTab({
         })
       ) : hasHistory ? (
         [
-          ["12 Mar 2025", "Revision 1", "Delivered"],
-          ["18 Nov 2024", "Original", "Printed"],
-          ["03 Jul 2024", "Original", "Delivered"],
+          ["12/03/2025", "Revision 1", "Delivered"],
+          ["18/11/2024", "Original", "Printed"],
+          ["03/07/2024", "Original", "Delivered"],
         ].map((r) => (
           <button key={r[0]} onClick={() => go("preview")}>
             <span className="record-icon">

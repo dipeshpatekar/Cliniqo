@@ -3446,6 +3446,70 @@ impl DbOperations {
         Ok(res)
     }
 
+    /// Retrieves the most recent local doctor profile record, if any exists.
+    pub fn get_doctor_profile_any(
+        conn: &Connection,
+    ) -> Result<Option<DoctorProfileRecord>, DatabaseOpError> {
+        let mut stmt = conn.prepare(
+            r#"
+            SELECT doctor_id, full_name, email, phone, qualification, registration_number, gender, updated_at
+            FROM local_doctor_profile
+            ORDER BY updated_at DESC
+            LIMIT 1
+            "#,
+        )?;
+        let res = stmt
+            .query_row([], |row| {
+                Ok(DoctorProfileRecord {
+                    doctor_id: row.get(0)?,
+                    full_name: row.get(1)?,
+                    email: row.get(2)?,
+                    phone: row.get(3)?,
+                    qualification: row.get(4)?,
+                    registration_number: row.get(5)?,
+                    gender: row.get(6)?,
+                    updated_at: row.get(7)?,
+                })
+            })
+            .optional()?;
+        Ok(res)
+    }
+
+    /// Retrieves all local clinic profile records.
+    pub fn get_all_clinic_profiles(
+        conn: &Connection,
+    ) -> Result<Vec<ClinicProfileRecord>, DatabaseOpError> {
+        let mut stmt = conn.prepare(
+            r#"
+            SELECT clinic_id, name, slug, phone, email, street, city, state, postal_code, country, location_link, updated_at
+            FROM local_clinic_profile
+            ORDER BY name ASC
+            "#,
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(ClinicProfileRecord {
+                clinic_id: row.get(0)?,
+                name: row.get(1)?,
+                slug: row.get(2)?,
+                phone: row.get(3)?,
+                email: row.get(4)?,
+                street: row.get(5)?,
+                city: row.get(6)?,
+                state: row.get(7)?,
+                postal_code: row.get(8)?,
+                country: row.get(9)?,
+                location_link: row.get(10)?,
+                updated_at: row.get(11)?,
+            })
+        })?;
+
+        let mut list = Vec::new();
+        for r in rows {
+            list.push(r.map_err(DatabaseOpError::Sqlite)?);
+        }
+        Ok(list)
+    }
+
 
     /// Imports batch/inventory stock records for a clinic.
     /// Deduplicates by (clinic_id, LOWER(TRIM(product_name)), LOWER(TRIM(unit)), LOWER(TRIM(company))).
@@ -6289,6 +6353,53 @@ mod tests {
         assert_eq!(refetched.full_name, "Dr. Dipesh Patekar", "Existing full name must be preserved");
         assert_eq!(refetched.qualification, "MBBS, MD (Medicine)", "Existing qualification must be preserved");
         assert_eq!(refetched.registration_number, "MMC 2024/05/98765", "Existing registration number must be preserved");
+
+        // Test get_doctor_profile_any retrieves the active profile
+        let any_profile = DbOperations::get_doctor_profile_any(&conn).unwrap().expect("found profile");
+        assert_eq!(any_profile.doctor_id, doctor_id);
+        assert_eq!(any_profile.full_name, "Dr. Dipesh Patekar");
+    }
+
+    #[test]
+    fn test_get_all_clinic_profiles() {
+        let (conn, _dek) = setup_test_db();
+
+        let p1 = ClinicProfileRecord {
+            clinic_id: "clinic-b".to_string(),
+            name: "B Clinic".to_string(),
+            slug: "b-clinic".to_string(),
+            phone: "111".to_string(),
+            email: "b@clinic.test".to_string(),
+            street: "".to_string(),
+            city: "".to_string(),
+            state: "".to_string(),
+            postal_code: "".to_string(),
+            country: "India".to_string(),
+            location_link: "".to_string(),
+            updated_at: None,
+        };
+        let p2 = ClinicProfileRecord {
+            clinic_id: "clinic-a".to_string(),
+            name: "A Clinic".to_string(),
+            slug: "a-clinic".to_string(),
+            phone: "222".to_string(),
+            email: "a@clinic.test".to_string(),
+            street: "".to_string(),
+            city: "".to_string(),
+            state: "".to_string(),
+            postal_code: "".to_string(),
+            country: "India".to_string(),
+            location_link: "".to_string(),
+            updated_at: None,
+        };
+
+        DbOperations::upsert_clinic_profile(&conn, &p1).unwrap();
+        DbOperations::upsert_clinic_profile(&conn, &p2).unwrap();
+
+        let all = DbOperations::get_all_clinic_profiles(&conn).unwrap();
+        assert_eq!(all.len(), 2);
+        assert_eq!(all[0].name, "A Clinic", "Must be ordered by name");
+        assert_eq!(all[1].name, "B Clinic");
     }
 
     #[test]

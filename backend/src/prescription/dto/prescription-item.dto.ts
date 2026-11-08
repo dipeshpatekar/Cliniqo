@@ -12,8 +12,8 @@ import {
   MaxLength,
   ValidateNested,
   ArrayMinSize,
-} from 'class-validator';
-import { Type } from 'class-transformer';
+} from "class-validator"
+import { Type } from "class-transformer"
 import {
   MedicineFormulation,
   DoseUnit,
@@ -21,176 +21,173 @@ import {
   TimingType,
   FrequencyCode,
   FoodInstruction,
-} from '../schemas/prescription-item.schema.js';
+} from "../schemas/prescription-item.schema.js"
 
 export class IngredientComponentDto {
   @IsString()
-  @IsNotEmpty({ message: 'Ingredient name is required' })
+  @IsNotEmpty({ message: "Ingredient name is required" })
   @MaxLength(200)
-  ingredientName: string;
+  ingredientName: string
 
   @IsOptional()
-  @IsNumber(
-    { allowNaN: false, allowInfinity: false },
-    { message: 'Ingredient amount must be a finite number' },
-  )
-  @IsPositive({ message: 'Ingredient amount must be strictly greater than 0' })
-  amount?: number | null;
+  @IsNumber({ allowNaN: false, allowInfinity: false }, {
+    message: "Ingredient amount must be a finite number",
+  })
+  @IsPositive({ message: "Ingredient amount must be strictly greater than 0" })
+  amount?: number | null
 
   @IsString()
-  @IsNotEmpty({ message: 'Ingredient unit is required' })
+  @IsNotEmpty({ message: "Ingredient unit is required" })
   @MaxLength(50)
-  unit: string;
+  unit: string
 }
 
 export class ProductStrengthDto {
   @ValidateNested({ each: true })
   @Type(() => IngredientComponentDto)
   @ArrayMinSize(1, {
-    message: 'At least one ingredient component is required',
+    message: "At least one ingredient component is required",
   })
-  components: IngredientComponentDto[];
+  components: IngredientComponentDto[]
 
   @IsOptional()
   @IsString()
   @MaxLength(50)
-  perDenominator?: string | null;
+  perDenominator?: string | null
 
   @IsString()
-  @IsNotEmpty({ message: 'Strength display string is required' })
+  @IsNotEmpty({ message: "Strength display string is required" })
   @MaxLength(300)
-  display: string;
+  display: string
 }
 
 export class AdministeredDoseDto {
-  @IsNumber(
-    { allowNaN: false, allowInfinity: false },
-    { message: 'Administered dose magnitude must be a finite number' },
-  )
-  @IsPositive({
-    message: 'Administered dose magnitude must be strictly greater than 0',
+  @IsNumber({ allowNaN: false, allowInfinity: false }, {
+    message: "Administered dose magnitude must be a finite number",
   })
-  magnitude: number;
+  @IsPositive({
+    message: "Administered dose magnitude must be strictly greater than 0",
+  })
+  magnitude: number
 
   @IsEnum(DoseUnit, {
     message: `Dose unit must be a valid DoseUnit enum value`,
   })
-  unit: DoseUnit;
+  unit: DoseUnit
 }
 
 export class DosageFrequencyDto {
   @IsEnum(TimingType, {
     message: `Timing type must be STANDARD, INTERVAL, PRN_AS_NEEDED, or STAT`,
   })
-  timingType: TimingType;
+  timingType: TimingType
 
   @IsOptional()
   @IsEnum(FrequencyCode, {
     message: `Frequency code must be a valid FrequencyCode enum value`,
   })
-  frequencyCode?: FrequencyCode | null;
+  frequencyCode?: FrequencyCode | null
 
   @IsOptional()
-  @IsInt({ message: 'Interval hours must be an integer' })
-  @Min(1, { message: 'Interval hours must be at least 1' })
-  @Max(168, { message: 'Interval hours cannot exceed 168 (7 days)' })
-  intervalHours?: number | null;
-
-  @IsOptional()
-  @IsString()
-  @MaxLength(200)
-  prnIndication?: string | null;
+  @IsInt({ message: "Interval hours must be an integer" })
+  @Min(1, { message: "Interval hours must be at least 1" })
+  @Max(168, { message: "Interval hours cannot exceed 168 (7 days)" })
+  intervalHours?: number | null
 
   @IsOptional()
   @IsString()
   @MaxLength(200)
-  scheduleLabel?: string | null;
+  prnIndication?: string | null
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  scheduleLabel?: string | null
 }
 
 export class PrescriptionDurationDto {
-  @IsInt({ message: 'Duration value must be an integer' })
-  @Min(1, { message: 'Duration value must be at least 1' })
-  @Max(365, { message: 'Duration value cannot exceed 365' })
-  value: number;
+  @IsInt({ message: "Duration value must be an integer" })
+  @Min(1, { message: "Duration value must be at least 1" })
+  @Max(365, { message: "Duration value cannot exceed 365" })
+  value: number
 
   @IsString()
   @IsNotEmpty()
-  unit: 'DAYS' | 'WEEKS' | 'MONTHS' | 'STAT';
+  unit: "DAYS" | "WEEKS" | "MONTHS" | "STAT"
 }
 
 export class DispenseQuantityDto {
-  @IsNumber(
-    { allowNaN: false, allowInfinity: false },
-    { message: 'Dispense quantity count must be a finite number' },
-  )
-  @IsPositive({
-    message: 'Dispense quantity count must be strictly greater than 0',
+  @IsNumber({ allowNaN: false, allowInfinity: false }, {
+    message: "Dispense quantity count must be a finite number",
   })
-  count: number;
+  @IsPositive({
+    message: "Dispense quantity count must be strictly greater than 0",
+  })
+  count: number
 
   @IsString()
-  @IsNotEmpty({ message: 'Package description is required' })
+  @IsNotEmpty({ message: "Package description is required" })
   @MaxLength(100)
-  packageDescription: string;
+  packageDescription: string
 }
 
 export class PrescriptionItemDto {
   @IsOptional()
   @IsString()
-  catalogueMedicineId?: string | null;
+  catalogueMedicineId?: string | null
 
   @IsOptional()
   @IsBoolean()
-  isCustom?: boolean;
+  isCustom?: boolean
 
   @IsString()
-  @IsNotEmpty({ message: 'Medicine name is required' })
+  @IsNotEmpty({ message: "Medicine name is required" })
   @MaxLength(200)
-  name: string;
+  name: string
 
   @IsOptional()
   @IsString()
   @MaxLength(200)
-  genericName?: string | null;
+  genericName?: string | null
 
   @IsEnum(MedicineFormulation, {
-    message: 'Invalid medicine formulation',
+    message: "Invalid medicine formulation",
   })
-  formulation: MedicineFormulation;
+  formulation: MedicineFormulation
 
   @ValidateNested()
   @Type(() => ProductStrengthDto)
-  strength: ProductStrengthDto;
+  strength: ProductStrengthDto
 
   @ValidateNested()
   @Type(() => AdministeredDoseDto)
-  administeredDose: AdministeredDoseDto;
+  administeredDose: AdministeredDoseDto
 
   @IsEnum(MedicineRoute, {
-    message: 'Invalid medicine route',
+    message: "Invalid medicine route",
   })
-  route: MedicineRoute;
+  route: MedicineRoute
 
   @ValidateNested()
   @Type(() => DosageFrequencyDto)
-  frequency: DosageFrequencyDto;
+  frequency: DosageFrequencyDto
 
   @ValidateNested()
   @Type(() => PrescriptionDurationDto)
-  duration: PrescriptionDurationDto;
+  duration: PrescriptionDurationDto
 
   @ValidateNested()
   @Type(() => DispenseQuantityDto)
-  dispenseQuantity: DispenseQuantityDto;
+  dispenseQuantity: DispenseQuantityDto
 
   @IsOptional()
   @IsEnum(FoodInstruction, {
-    message: 'Invalid food instruction',
+    message: "Invalid food instruction",
   })
-  foodInstruction?: FoodInstruction;
+  foodInstruction?: FoodInstruction
 
   @IsOptional()
   @IsString()
   @MaxLength(500)
-  instructions?: string | null;
+  instructions?: string | null
 }

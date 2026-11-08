@@ -365,7 +365,10 @@ export async function registerDoctor(
         const loginRes = await fetch(`${baseUrl}/auth/login`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ email: input.email, password: input.password }),
+          body: JSON.stringify({
+            email: input.email,
+            password: input.password,
+          }),
         })
         if (loginRes.ok) {
           const loginData = await loginRes.json()
@@ -1164,8 +1167,12 @@ export function mapStockUnitToFormulation(unit?: string | null): string {
     return "Injection"
   if (u.includes("CREAM")) return "Cream"
   if (u.includes("LOTION")) return "Lotion"
+  if (u.includes("EYE DROP") || u.includes("OPHTH")) return "Eye Drops"
+  if (u.includes("EAR DROP") || u.includes("OTIC")) return "Ear Drops"
   if (u.includes("DROP")) return "Drops"
   if (u.includes("POW")) return "Powder"
+  if (u.includes("MOUTHWASH") || u.includes("GARGLE")) return "Mouthwash"
+  if (u.includes("SUPP")) return "Suppository"
   if (u.includes("SPRAY")) return "Spray"
   if (u.includes("SOLUTION")) return "Solution"
   if (u.includes("OINT") || u.includes("PASTE")) return "Ointment"
@@ -1249,7 +1256,8 @@ export async function searchCatalogue(
           page: 1,
           limit,
           totalPages: Math.ceil(localItems.length / limit) || 1,
-          attribution: "Cliniqo Clinical Formulary & Stock — Local Offline Cache",
+          attribution:
+            "Cliniqo Clinical Formulary & Stock — Local Offline Cache",
           isOfflineCache: true,
         }
       }
@@ -1702,10 +1710,13 @@ export async function importClinicalLibrary(
   batch: ClinicalImportBatchInput,
 ): Promise<ClinicalImportSummary> {
   if (isTauriDesktop()) {
-    const res = await invokeTauri<ClinicalImportSummary>("import_clinical_library", {
-      clinicId: batch.clinic_id,
-      batch,
-    })
+    const res = await invokeTauri<ClinicalImportSummary>(
+      "import_clinical_library",
+      {
+        clinicId: batch.clinic_id,
+        batch,
+      },
+    )
     if (res) return res
   }
 
@@ -1716,7 +1727,9 @@ export async function importClinicalLibrary(
   const batchKey = `cliniqo_clinical_batches_${batch.clinic_id}`
 
   const existingRaw = localStorage.getItem(storageKey)
-  const existing: ClinicalMedicineRecord[] = existingRaw ? JSON.parse(existingRaw) : []
+  const existing: ClinicalMedicineRecord[] = existingRaw
+    ? JSON.parse(existingRaw)
+    : []
 
   let importedRows = 0
   let skippedRows = 0
@@ -1726,7 +1739,8 @@ export async function importClinicalLibrary(
       (e) =>
         e.is_active &&
         e.name.toLowerCase().trim() === item.name.toLowerCase().trim() &&
-        e.formulation.toLowerCase().trim() === item.formulation.toLowerCase().trim() &&
+        e.formulation.toLowerCase().trim() ===
+          item.formulation.toLowerCase().trim() &&
         e.strength.toLowerCase().trim() === item.strength.toLowerCase().trim(),
     )
     if (isDup && !batch.allow_update) {
@@ -1764,7 +1778,9 @@ export async function importClinicalLibrary(
   localStorage.setItem(storageKey, JSON.stringify(existing))
 
   const batchesRaw = localStorage.getItem(batchKey)
-  const batches: ClinicalImportBatchRecord[] = batchesRaw ? JSON.parse(batchesRaw) : []
+  const batches: ClinicalImportBatchRecord[] = batchesRaw
+    ? JSON.parse(batchesRaw)
+    : []
   const batchRecord: ClinicalImportBatchRecord = {
     id: batchId,
     clinic_id: batch.clinic_id,
@@ -1843,12 +1859,15 @@ export async function getClinicalLibraryItems(
   offset = 0,
 ): Promise<ClinicalMedicineRecord[]> {
   if (isTauriDesktop()) {
-    const res = await invokeTauri<ClinicalMedicineRecord[]>("get_clinical_library_items", {
-      clinicId,
-      query: query || null,
-      limit,
-      offset,
-    })
+    const res = await invokeTauri<ClinicalMedicineRecord[]>(
+      "get_clinical_library_items",
+      {
+        clinicId,
+        query: query || null,
+        limit,
+        offset,
+      },
+    )
     if (res) return res
   }
 
@@ -1874,9 +1893,12 @@ export async function getClinicalLibraryBatches(
   clinicId: string,
 ): Promise<ClinicalImportBatchRecord[]> {
   if (isTauriDesktop()) {
-    const res = await invokeTauri<ClinicalImportBatchRecord[]>("get_clinical_library_batches", {
-      clinicId,
-    })
+    const res = await invokeTauri<ClinicalImportBatchRecord[]>(
+      "get_clinical_library_batches",
+      {
+        clinicId,
+      },
+    )
     if (res) return res
   }
 
@@ -1961,4 +1983,3 @@ export async function archiveClinicalLibraryItem(
     localStorage.setItem(storageKey, JSON.stringify(items))
   }
 }
-

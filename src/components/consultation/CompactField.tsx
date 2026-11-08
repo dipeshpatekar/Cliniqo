@@ -1,6 +1,7 @@
 import { cn } from "../../utils/cn"
 
 export interface CompactFieldProps {
+  id?: string
   label: string
   suffix: string
   placeholder: string
@@ -14,6 +15,7 @@ export interface CompactFieldProps {
 }
 
 export function CompactField({
+  id,
   label,
   suffix,
   placeholder,
@@ -30,6 +32,7 @@ export function CompactField({
       <span>{label}</span>
       <div>
         <input
+          id={id}
           type="number"
           inputMode="decimal"
           min="0"

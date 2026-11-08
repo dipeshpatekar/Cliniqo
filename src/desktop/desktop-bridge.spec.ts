@@ -472,7 +472,9 @@ describe("Desktop Bridge (Tauri 2 Frontend Integration)", () => {
         return Promise.resolve({
           ok: false,
           status: 409,
-          json: async () => ({ message: "An account with this email address already exists." }),
+          json: async () => ({
+            message: "An account with this email address already exists.",
+          }),
         })
       }) as any)
 
@@ -491,7 +493,11 @@ describe("Desktop Bridge (Tauri 2 Frontend Integration)", () => {
       let callCount = 0
       const successResult = {
         accessToken: "retry-success-token",
-        doctor: { id: "doc-retry", fullName: "Dr. Retry", email: "retry@clinic.com" },
+        doctor: {
+          id: "doc-retry",
+          fullName: "Dr. Retry",
+          email: "retry@clinic.com",
+        },
       }
 
       globalThis.fetch = (vi.fn().mockImplementation((url: string) => {
@@ -1094,7 +1100,10 @@ describe("Desktop Bridge (Tauri 2 Frontend Integration)", () => {
       expect(batches[0].status).toBe("COMPLETED")
 
       // 5. Rollback
-      const rolledBack = await rollbackClinicalLibraryBatch(clinicId, summary1.batch_id)
+      const rolledBack = await rollbackClinicalLibraryBatch(
+        clinicId,
+        summary1.batch_id,
+      )
       expect(rolledBack).toBe(2)
 
       const activeAfterRollback = await getClinicalLibraryItems(clinicId)

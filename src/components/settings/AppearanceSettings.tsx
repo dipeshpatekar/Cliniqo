@@ -14,7 +14,6 @@ export function AppearanceSettings({
     <section className="settings-section">
       <div className="settings-title">
         <h2>Appearance</h2>
-        <p>Choose how the clinic workspace appears on this device.</p>
       </div>
       <div className="appearance-card">
         <span className="appearance-icon">

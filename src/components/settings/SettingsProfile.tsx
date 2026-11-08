@@ -14,7 +14,7 @@ import {
 
 export interface SettingsProfileProps {
   title: string
-  description: string
+  description?: string
   clinic: boolean
   desktopSession?: DesktopSessionContext | null
   onSave?: (handler: () => Promise<boolean>) => void
@@ -299,7 +299,7 @@ export function SettingsProfile({
     <section className="settings-section">
       <div className="settings-title">
         <h2>{title}</h2>
-        <p>{description}</p>
+        {description && <p>{description}</p>}
       </div>
       <div className="photo-upload">
         <span

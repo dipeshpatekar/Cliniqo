@@ -174,25 +174,18 @@ export function Register({ go, onRegisterSuccess }: RegisterProps) {
             <br />
             set up with care.
           </h1>
-          <p>
-            Create the doctor profile used for your workspace, then add the
-            clinic details shown on patient documents.
-          </p>
           <div className="auth-feature-grid">
             <span>
               <ShieldCheck size={18} />
               <strong>Doctor-first</strong>
-              <small>Built around clinical workflows</small>
             </span>
             <span>
               <LockKeyhole size={18} />
               <strong>Private workspace</strong>
-              <small>Clinic access stays separated</small>
             </span>
             <span>
               <FileText size={18} />
               <strong>Ready to configure</strong>
-              <small>Continue into profile setup</small>
             </span>
           </div>
         </div>
@@ -236,12 +229,7 @@ export function Register({ go, onRegisterSuccess }: RegisterProps) {
             </div>
           ) : (
             <>
-              <span className="eyebrow">Register new user</span>
               <h2>Create your account</h2>
-              <p>
-                Enter your professional details to continue to doctor and clinic
-                setup.
-              </p>
               {(status === "duplicate" || status === "failure") && (
                 <div className="auth-error" role="alert">
                   <AlertCircle size={16} />

@@ -126,9 +126,7 @@ export function Sidebar({
               : "DR"}
           </span>
           <button onClick={onDoctorProfile}>
-            <strong>
-              {desktopSession?.doctor_name || "Doctor"}
-            </strong>
+            <strong>{desktopSession?.doctor_name || "Doctor"}</strong>
             <small>
               {clinicName ||
                 (desktopSession?.clinic_id

@@ -6,7 +6,7 @@ import {
   type DesktopSessionContext,
   type LocalInvoiceRecord,
 } from "../../desktop/desktop-bridge"
-import type { Patient } from "../../types"
+import { formatDateDDMMYYYY, type Patient } from "../../types"
 import { ChevronRight, Plus, ReceiptIndianRupee } from "lucide-react"
 
 export function InvoicesTab({
@@ -47,9 +47,6 @@ export function InvoicesTab({
       <div className="panel-head">
         <div>
           <h2>Patient invoices</h2>
-          <p>
-            Preserved billing records with safe minor-unit monetary arithmetic
-          </p>
         </div>
         <Button size="sm" icon={Plus} onClick={() => onStartBill?.(patient)}>
           New bill
@@ -73,8 +70,8 @@ export function InvoicesTab({
                 })}
               </strong>
               <small>
-                {inv.created_at ? inv.created_at.slice(0, 10) : "Today"} ·{" "}
-                {inv.items ? inv.items.length : 0}{" "}
+                {inv.created_at ? formatDateDDMMYYYY(inv.created_at) : "Today"}{" "}
+                · {inv.items ? inv.items.length : 0}{" "}
                 {inv.items && inv.items.length === 1 ? "item" : "items"}
               </small>
             </span>

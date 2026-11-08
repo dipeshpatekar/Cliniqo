@@ -331,7 +331,7 @@ impl KeyManager {
     }
 
     #[cfg(not(windows))]
-    pub fn protect_data(&self, plaintext: &[u8]) -> Result<Vec<u8>, CryptoError> {
+    pub fn protect_data(&self, _plaintext: &[u8]) -> Result<Vec<u8>, CryptoError> {
         // Enforce that release builds on non-Windows cannot silently fall back to plaintext
         #[cfg(not(debug_assertions))]
         {
@@ -343,15 +343,15 @@ impl KeyManager {
 
         #[cfg(debug_assertions)]
         {
-            let mut obfuscated = Vec::with_capacity(4 + plaintext.len());
+            let mut obfuscated = Vec::with_capacity(4 + _plaintext.len());
             obfuscated.extend_from_slice(b"DPAP");
-            obfuscated.extend_from_slice(plaintext);
+            obfuscated.extend_from_slice(_plaintext);
             Ok(obfuscated)
         }
     }
 
     #[cfg(not(windows))]
-    pub fn unprotect_data(&self, protected_bytes: &[u8]) -> Result<Vec<u8>, CryptoError> {
+    pub fn unprotect_data(&self, _protected_bytes: &[u8]) -> Result<Vec<u8>, CryptoError> {
         #[cfg(not(debug_assertions))]
         {
             return Err(CryptoError::KeyStoreError(
@@ -362,13 +362,13 @@ impl KeyManager {
 
         #[cfg(debug_assertions)]
         {
-            if protected_bytes.len() < 4 || &protected_bytes[..4] != b"DPAP" {
+            if _protected_bytes.len() < 4 || &_protected_bytes[..4] != b"DPAP" {
                 return Err(CryptoError::KeyStoreError(
                     "Invalid protected data format: missing mock DPAPI envelope".to_string(),
                 ));
             }
 
-            Ok(protected_bytes[4..].to_vec())
+            Ok(_protected_bytes[4..].to_vec())
         }
     }
 }

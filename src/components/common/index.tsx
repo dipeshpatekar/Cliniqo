@@ -133,6 +133,7 @@ export function SearchableOptionSelect({
   placeholder,
   ariaLabel,
   emptyMessage,
+  numericShortcuts,
 }: {
   id: string
   value: string
@@ -142,6 +143,7 @@ export function SearchableOptionSelect({
   placeholder: string
   ariaLabel: string
   emptyMessage: string
+  numericShortcuts?: Record<string, string>
 }) {
   const [open, setOpen] = useState(false)
   const [highlightedIndex, setHighlightedIndex] = useState(-1)
@@ -159,11 +161,21 @@ export function SearchableOptionSelect({
   )
 
   const lowerVal = value.toLowerCase()
-  const filteredOptions = uniqueOptions.filter(
-    (option) =>
-      (option.label || option.value).toLowerCase().includes(lowerVal) ||
-      (option.subtitle && option.subtitle.toLowerCase().includes(lowerVal)),
-  )
+  const isExactSelectedOption =
+    Boolean(lowerVal) &&
+    uniqueOptions.some(
+      (o) =>
+        o.value.toLowerCase() === lowerVal ||
+        (o.label && o.label.toLowerCase() === lowerVal),
+    )
+
+  const filteredOptions = isExactSelectedOption
+    ? uniqueOptions
+    : uniqueOptions.filter(
+        (option) =>
+          (option.label || option.value).toLowerCase().includes(lowerVal) ||
+          (option.subtitle && option.subtitle.toLowerCase().includes(lowerVal)),
+      )
 
   // Ensure highlighted index stays in bounds when filteredOptions change
   useEffect(() => {
@@ -176,12 +188,25 @@ export function SearchableOptionSelect({
     }
   }, [open, filteredOptions.length])
 
-  // Auto-scroll highlighted option into view
+  // Scroll highlighted option into view cleanly without page jump
   useEffect(() => {
-    if (open && highlightedIndex >= 0 && listRef.current) {
-      const activeEl = listRef.current.children[highlightedIndex] as HTMLElement
-      if (activeEl && typeof activeEl.scrollIntoView === "function") {
-        activeEl.scrollIntoView({ block: "nearest" })
+    if (open && listRef.current) {
+      const container = listRef.current
+      if (highlightedIndex <= 0) {
+        container.scrollTop = 0
+      } else {
+        const activeEl = container.children[
+          highlightedIndex
+        ] as HTMLElement | undefined
+        if (activeEl) {
+          const elTop = activeEl.offsetTop
+          const elBottom = elTop + activeEl.offsetHeight
+          if (elTop < container.scrollTop) {
+            container.scrollTop = elTop
+          } else if (elBottom > container.scrollTop + container.clientHeight) {
+            container.scrollTop = elBottom - container.clientHeight
+          }
+        }
       }
     }
   }, [highlightedIndex, open])
@@ -197,6 +222,30 @@ export function SearchableOptionSelect({
   }
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (
+      numericShortcuts &&
+      !e.ctrlKey &&
+      !e.altKey &&
+      !e.metaKey &&
+      numericShortcuts[e.key]
+    ) {
+      e.preventDefault()
+      const targetVal = numericShortcuts[e.key]
+      const matched = uniqueOptions.find(
+        (o) =>
+          o.value.toLowerCase() === targetVal.toLowerCase() ||
+          (o.label && o.label.toLowerCase() === targetVal.toLowerCase()),
+      )
+      if (matched) {
+        selectOption(matched)
+      } else {
+        onChange(targetVal)
+        setOpen(false)
+        setHighlightedIndex(-1)
+      }
+      return
+    }
+
     if (e.key === "ArrowDown") {
       e.preventDefault()
       if (!open) {
@@ -256,8 +305,11 @@ export function SearchableOptionSelect({
           }
           autoComplete="off"
           placeholder={placeholder}
-          onFocus={() => {
+          onFocus={(e) => {
             setOpen(true)
+            try {
+              e.currentTarget.select()
+            } catch {}
             const matchIdx = filteredOptions.findIndex(
               (o) =>
                 o.value.toLowerCase() === lowerVal ||
@@ -268,7 +320,29 @@ export function SearchableOptionSelect({
           onBlur={() => window.setTimeout(() => setOpen(false), 150)}
           onKeyDown={handleKeyDown}
           onChange={(event) => {
-            onChange(event.target.value)
+            const rawVal = event.target.value
+            if (
+              numericShortcuts &&
+              rawVal.trim().length === 1 &&
+              numericShortcuts[rawVal.trim()]
+            ) {
+              const targetVal = numericShortcuts[rawVal.trim()]
+              const matched = uniqueOptions.find(
+                (o) =>
+                  o.value.toLowerCase() === targetVal.toLowerCase() ||
+                  (o.label &&
+                    o.label.toLowerCase() === targetVal.toLowerCase()),
+              )
+              if (matched) {
+                selectOption(matched)
+              } else {
+                onChange(targetVal)
+                setOpen(false)
+                setHighlightedIndex(-1)
+              }
+              return
+            }
+            onChange(rawVal)
             setOpen(true)
             setHighlightedIndex(0)
           }}
@@ -479,7 +553,7 @@ export function FormSection({
 }: {
   icon: ComponentType<{ size?: number }>
   title: string
-  description: string
+  description?: string
   children: ReactNode
 }) {
   return (
@@ -490,7 +564,7 @@ export function FormSection({
         </span>
         <div>
           <h2>{title}</h2>
-          <p>{description}</p>
+          {description && <p>{description}</p>}
         </div>
       </div>
       {children}
@@ -560,3 +634,7 @@ export function ConfirmDialog({
     </Modal>
   )
 }
+
+export { ShortcutGuideModal } from "./ShortcutGuideModal"
+export { GlobalSearchModal, GlobalPatientSearch } from "./GlobalSearchModal"
+export type { GlobalPatientSearchProps } from "./GlobalSearchModal"

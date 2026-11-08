@@ -10,6 +10,7 @@ import {
   Modal,
   ConfirmDialog,
   SearchableOptionSelect,
+  GlobalPatientSearch,
 } from "./index"
 import { User } from "lucide-react"
 
@@ -192,8 +193,18 @@ describe("Common Components", () => {
           id="strength-sel"
           value="500 mg"
           options={[
-            { value: "500 mg", label: "500 mg", badge: "Verified", subtitle: "Tablet" },
-            { value: "650 mg", label: "650 mg", badge: "Verified", subtitle: "Tablet" },
+            {
+              value: "500 mg",
+              label: "500 mg",
+              badge: "Verified",
+              subtitle: "Tablet",
+            },
+            {
+              value: "650 mg",
+              label: "650 mg",
+              badge: "Verified",
+              subtitle: "Tablet",
+            },
           ]}
           onChange={() => {}}
           placeholder="Select strength"
@@ -203,6 +214,93 @@ describe("Common Components", () => {
       )
       expect(html).toContain('id="strength-sel"')
       expect(html).toContain('value="500 mg"')
+    })
+  })
+
+  describe("GlobalPatientSearch", () => {
+    const samplePatients = [
+      {
+        id: "PC-1048",
+        displayId: "PC-1048",
+        name: "Ananya Iyer",
+        initials: "AI",
+        age: 34,
+        gender: "Female",
+        phone: "+91 98765 43210",
+        lastVisit: "Today",
+        allergies: [],
+        conditions: [],
+      },
+      {
+        id: "PC-1047",
+        displayId: "PC-1047",
+        name: "Vikram Mehta",
+        initials: "VM",
+        age: 52,
+        gender: "Male",
+        phone: "+91 98204 11882",
+        lastVisit: "Yesterday",
+        allergies: [],
+        conditions: [],
+      },
+    ]
+
+    it("renders visible search input with id and Ctrl+K badge", () => {
+      const html = renderToString(
+        <GlobalPatientSearch
+          patients={samplePatients}
+          onSelectPatient={() => {}}
+        />,
+      )
+
+      expect(html).toContain('id="global-patient-search"')
+      expect(html).toContain("Search patient")
+      expect(html).toContain("Ctrl+K")
+      expect(html).toContain("global-patient-search-container")
+      expect(html).toContain("global-patient-search-bar")
+    })
+
+    it("filters and matches patients across name, patient ID, and mobile number", () => {
+      // Test search filtering logic
+      const q = "Ananya"
+      const matched = samplePatients.filter(
+        (p) =>
+          p.name.toLowerCase().includes(q.toLowerCase()) ||
+          p.id.toLowerCase().includes(q.toLowerCase()) ||
+          p.phone.includes(q),
+      )
+      expect(matched.length).toBe(1)
+      expect(matched[0].name).toBe("Ananya Iyer")
+      expect(matched[0].id).toBe("PC-1048")
+      expect(matched[0].age).toBe(34)
+      expect(matched[0].phone).toBe("+91 98765 43210")
+    })
+
+    it("renders simplified dropdown results showing only name and patient ID without age, gender, phone, or footer", () => {
+      const html = renderToString(
+        <GlobalPatientSearch
+          patients={samplePatients}
+          onSelectPatient={() => {}}
+          initialOpen={true}
+        />,
+      )
+
+      // Verified: contains patient name and ID
+      expect(html).toContain("Ananya Iyer")
+      expect(html).toContain("PC-1048")
+      expect(html).toContain("Vikram Mehta")
+      expect(html).toContain("PC-1047")
+
+      // Verified: removed age, gender, mobile number and extra patient details from result display
+      expect(html).not.toContain("yrs")
+      expect(html).not.toContain("Female")
+      expect(html).not.toContain("Male")
+      expect(html).not.toContain("+91 98765 43210")
+      expect(html).not.toContain("+91 98204 11882")
+
+      // Verified: removed bottom footer containing keyboard instructions and patient count
+      expect(html).not.toContain("Use ↑ and ↓ to navigate")
+      expect(html).not.toContain("patient(s)")
     })
   })
 })

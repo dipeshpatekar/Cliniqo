@@ -1,5 +1,6 @@
 import { ShieldCheck } from "lucide-react"
 import { Button, StatusPill } from "../common"
+import { formatDateTimeDDMMYYYY } from "../../types"
 import type { DesktopSessionContext } from "../../desktop/desktop-bridge"
 
 export interface SecuritySettingsProps {
@@ -15,11 +16,9 @@ export function SecuritySettings({
     <section className="settings-section">
       <div className="settings-title">
         <h2>Security</h2>
-        <p>
-          {desktopSession
-            ? "Cryptographically verified RS256 desktop session with DPAPI-protected credentials."
-            : "Authentication and clinic access controls require a backend."}
-        </p>
+        {!desktopSession && (
+          <p>Authentication and clinic access controls require a backend.</p>
+        )}
       </div>
       <div className="security-row">
         <span>
@@ -35,9 +34,9 @@ export function SecuritySettings({
             {desktopSession
               ? `Clinic: ${desktopSession.clinic_id} • Role: ${
                   desktopSession.role
-                } • Expires: ${new Date(
-                  desktopSession.expires_at * 1000,
-                ).toLocaleTimeString()}`
+                } • Expires: ${formatDateTimeDDMMYYYY(
+                  new Date(desktopSession.expires_at * 1000),
+                )}`
               : "No verified session, account, role, or clinic access boundary is active."}
           </p>
         </div>
@@ -50,11 +49,12 @@ export function SecuritySettings({
           <strong>
             {desktopSession ? "End desktop session" : "Return to sign in"}
           </strong>
-          <p>
-            {desktopSession
-              ? "Revokes server session, clears in-memory keys, and wipes DPAPI-persisted refresh token."
-              : "This clears the current UI route; no server session exists to revoke."}
-          </p>
+          {!desktopSession && (
+            <p>
+              This clears the current UI route; no server session exists to
+              revoke.
+            </p>
+          )}
         </div>
         <Button variant="danger" onClick={logout}>
           Log out

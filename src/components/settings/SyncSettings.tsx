@@ -2,6 +2,7 @@ import { useState, useEffect } from "react"
 import { Cloud, AlertCircle, WifiOff } from "lucide-react"
 import { cn } from "../../utils/cn"
 import { StatusPill } from "../common"
+import { formatDateTimeDDMMYYYY } from "../../types"
 import {
   isTauriDesktop,
   getSyncStatus,
@@ -55,10 +56,6 @@ export function SyncSettings({ onOpenConflictModal }: SyncSettingsProps) {
         <div className="settings-title with-status">
           <div>
             <h2>Native Synchronization Engine</h2>
-            <p>
-              Background worker with transactional SQLite persistence and cloud
-              sync.
-            </p>
           </div>
           <StatusPill tone={tone}>
             {nativeStatus?.status || (isLive ? "RUNNING" : "STOPPED")}
@@ -77,9 +74,9 @@ export function SyncSettings({ onOpenConflictModal }: SyncSettingsProps) {
             </strong>
             <p>
               {nativeStatus?.last_synced_at
-                ? `Last synchronized: ${new Date(
+                ? `Last synchronized: ${formatDateTimeDDMMYYYY(
                     nativeStatus.last_synced_at,
-                  ).toLocaleTimeString()}`
+                  )}`
                 : "Awaiting initial sync cycle"}
             </p>
           </div>
@@ -157,9 +154,6 @@ export function SyncSettings({ onOpenConflictModal }: SyncSettingsProps) {
       <div className="settings-title with-status">
         <div>
           <h2>Synchronization & data</h2>
-          <p>
-            This frontend keeps workflow data in memory unless explicitly noted.
-          </p>
         </div>
         <StatusPill tone={syncEnabled ? "info" : "warning"}>
           {syncEnabled ? "UI demo on" : "UI demo off"}

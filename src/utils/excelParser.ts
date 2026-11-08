@@ -5,21 +5,7 @@
 
 import type { ClinicalImportItemInput } from "../desktop/desktop-bridge"
 
-export type ClinicalFieldKey =
-  | "name"
-  | "genericName"
-  | "brandName"
-  | "composition"
-  | "strength"
-  | "formulation"
-  | "dosageForm"
-  | "route"
-  | "manufacturer"
-  | "category"
-  | "packSize"
-  | "mrp"
-  | "storageInstructions"
-  | "defaultInstructions"
+export type ClinicalFieldKey = "name" | "genericName" | "brandName" | "composition" | "strength" | "formulation" | "dosageForm" | "route" | "manufacturer" | "category" | "packSize" | "mrp" | "storageInstructions" | "defaultInstructions"
 
 export interface ColumnMapping {
   name: number | null
@@ -105,9 +91,15 @@ const FORMULATION_SYNONYMS: Record<string, string> = {
   resp: "Respule",
   respule: "Respule",
   respules: "Respule",
-  gargle: "Gargle",
+  gargle: "Mouthwash",
   mouthwash: "Mouthwash",
   spray: "Nasal Spray",
+  "eye drops": "Eye Drops",
+  "eye drop": "Eye Drops",
+  "ear drops": "Ear Drops",
+  "ear drop": "Ear Drops",
+  suppository: "Suppository",
+  supp: "Suppository",
 }
 
 /**
@@ -130,7 +122,9 @@ export function normalizeFormulation(raw: string, medicineName = ""): string {
 
   // Capitalize first letter if unrecognized
   if (raw.trim()) {
-    return raw.trim().charAt(0).toUpperCase() + raw.trim().slice(1).toLowerCase()
+    return (
+      raw.trim().charAt(0).toUpperCase() + raw.trim().slice(1).toLowerCase()
+    )
   }
 
   return "Tablet"
@@ -144,7 +138,7 @@ export function normalizeStrength(raw: string, medicineName = ""): string {
   if (!s && medicineName) {
     // Attempt extracting strength pattern from medicine name (e.g. 500mg, 10 mg, 0.5 mcg, 250 mg/5ml)
     const match = medicineName.match(
-      /\b(\d+(?:\.\d+)?\s*(?:mg|g|mcg|ml|iu|%|v\/v|w\/v|w\/w)(?:\s*\/\s*\d*(?:\.\d+)?\s*(?:mg|g|mcg|ml))?)\b/i
+      /\b(\d+(?:\.\d+)?\s*(?:mg|g|mcg|ml|iu|%|v\/v|w\/v|w\/w)(?:\s*\/\s*\d*(?:\.\d+)?\s*(?:mg|g|mcg|ml))?)\b/i,
     )
     if (match) {
       s = match[1]
@@ -177,7 +171,9 @@ export function parseMrp(raw: string | undefined): number | null {
 /**
  * Parses an XLSX file from raw ArrayBuffer using DecompressionStream and XML parser.
  */
-export async function parseXlsxBuffer(buffer: ArrayBuffer): Promise<string[][]> {
+export async function parseXlsxBuffer(
+  buffer: ArrayBuffer,
+): Promise<string[][]> {
   const uint8 = new Uint8Array(buffer)
   const files: Record<string, string> = {}
 
@@ -196,7 +192,9 @@ export async function parseXlsxBuffer(buffer: ArrayBuffer): Promise<string[][]> 
       const fnLen = view.getUint16(26, true)
       const extraLen = view.getUint16(28, true)
 
-      const fn = new TextDecoder().decode(uint8.subarray(pos + 30, pos + 30 + fnLen))
+      const fn = new TextDecoder().decode(
+        uint8.subarray(pos + 30, pos + 30 + fnLen),
+      )
       const dataOffset = pos + 30 + fnLen + extraLen
       const compData = uint8.subarray(dataOffset, dataOffset + compSize)
 
@@ -249,14 +247,23 @@ export async function parseXlsxBuffer(buffer: ArrayBuffer): Promise<string[][]> 
       // Collect all text tags inside this string item
       const tMatches = si.match(/<t[^>]*>(.*?)<\/t>/gs) || []
       const text = tMatches
-        .map((t) => t.replace(/<[^>]+>/g, "").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"'))
+        .map((t) =>
+          t.replace(/<[^>]+>/g, "")
+            .replace(/&amp;/g, "&")
+            .replace(/&lt;/g, "<")
+            .replace(/&gt;/g, ">")
+            .replace(/&quot;/g, '"'),
+        )
         .join("")
       sharedStrings.push(text)
     }
   }
 
   // 2. Locate active sheet (default sheet1.xml)
-  const sheetKey = Object.keys(files).find((k) => k.startsWith("xl/worksheets/sheet") && k.endsWith(".xml")) || "xl/worksheets/sheet1.xml"
+  const sheetKey =
+    Object.keys(files).find(
+      (k) => k.startsWith("xl/worksheets/sheet") && k.endsWith(".xml"),
+    ) || "xl/worksheets/sheet1.xml"
   const sheetXml = files[sheetKey]
   if (!sheetXml) {
     throw new Error("No worksheet found in XLSX archive")
@@ -338,7 +345,9 @@ export function parseCsvText(text: string): string[][] {
   let delimiter = ","
   if ((sample.match(/\t/g) || []).length > (sample.match(/,/g) || []).length) {
     delimiter = "\t"
-  } else if ((sample.match(/;/g) || []).length > (sample.match(/,/g) || []).length) {
+  } else if (
+    (sample.match(/;/g) || []).length > (sample.match(/,/g) || []).length
+  ) {
     delimiter = ";"
   }
 
@@ -375,7 +384,9 @@ export function parseCsvText(text: string): string[][] {
  * Intelligent Header Detection
  * Scans first 10 rows to detect true table header row by matching domain keywords.
  */
-export function detectHeaderRow(grid: string[][]): {
+export function detectHeaderRow(
+  grid: string[][],
+): {
   headerRowIndex: number
   headers: string[]
 } {
@@ -423,7 +434,9 @@ export function detectHeaderRow(grid: string[][]): {
   }
 
   const headerRowIndex = bestScore >= 2 ? bestIndex : 0
-  const headers = (grid[headerRowIndex] || []).map((h, i) => h.trim() || `Column ${i + 1}`)
+  const headers = (grid[headerRowIndex] || []).map(
+    (h, i) => h.trim() || `Column ${i + 1}`,
+  )
 
   return { headerRowIndex, headers }
 }
@@ -472,11 +485,29 @@ export function autoMapColumns(headers: string[]): ColumnMapping {
     brandName: [/^brand(?:\s*name)?$/i, /^trade\s*name$/i],
     composition: [/composition/i, /contents/i, /ingredients/i, /formula/i],
     strength: [/strength/i, /potency/i, /^power$/i, /^dose$/i, /^str$/i],
-    formulation: [/formulation/i, /^dosage\s*form$/i, /^form$/i, /^type$/i, /^unit$/i],
+    formulation: [
+      /formulation/i,
+      /^dosage\s*form$/i,
+      /^form$/i,
+      /^type$/i,
+      /^unit$/i,
+    ],
     dosageForm: [/dosage\s*form/i, /presentation/i],
     route: [/^route(?:\s*of\s*admin(?:istration)?)?$/i],
-    manufacturer: [/manufacturer/i, /^company$/i, /mfg(?:\s*by)?/i, /mkt(?:\s*by)?/i, /pharma/i],
-    category: [/category/i, /schedule/i, /therapeutic/i, /drug\s*class/i, /^class$/i],
+    manufacturer: [
+      /manufacturer/i,
+      /^company$/i,
+      /mfg(?:\s*by)?/i,
+      /mkt(?:\s*by)?/i,
+      /pharma/i,
+    ],
+    category: [
+      /category/i,
+      /schedule/i,
+      /therapeutic/i,
+      /drug\s*class/i,
+      /^class$/i,
+    ],
     packSize: [/pack\s*size/i, /^pack$/i, /packaging/i, /^pkg$/i],
     mrp: [
       /m\.?r\.?p/i,
@@ -488,14 +519,24 @@ export function autoMapColumns(headers: string[]): ColumnMapping {
       /selling\s*price/i,
     ],
     storageInstructions: [/storage/i, /temperature/i],
-    defaultInstructions: [/instructions/i, /directions/i, /usage/i, /remarks/i, /^notes$/i],
+    defaultInstructions: [
+      /instructions/i,
+      /directions/i,
+      /usage/i,
+      /remarks/i,
+      /^notes$/i,
+    ],
   }
 
   const assignedCols = new Set<number>()
 
-  for (const [key, regexList] of Object.entries(patterns) as [ClinicalFieldKey, RegExp[]][]) {
+  for (const [key, regexList] of Object.entries(
+    patterns,
+  ) as [ClinicalFieldKey, RegExp[]][]) {
     for (const regex of regexList) {
-      const idx = cleanHeaders.findIndex((h, i) => !assignedCols.has(i) && regex.test(h))
+      const idx = cleanHeaders.findIndex(
+        (h, i) => !assignedCols.has(i) && regex.test(h),
+      )
       if (idx !== -1) {
         mapping[key] = idx
         assignedCols.add(idx)
@@ -517,7 +558,7 @@ export function autoMapColumns(headers: string[]): ColumnMapping {
  */
 export async function parseSpreadsheetFile(
   file: File | ArrayBuffer,
-  fileName: string
+  fileName: string,
 ): Promise<ParsedSpreadsheet> {
   let grid: string[][] = []
   const isXlsx = /\.xlsx$/i.test(fileName)
@@ -566,12 +607,17 @@ export async function parseSpreadsheetFile(
  */
 function parseXmlSpreadsheet(content: string): string[][] {
   const grid: string[][] = []
-  const rowMatches = content.match(/<tr[^>]*>(.*?)<\/tr>/gis) || content.match(/<Row[^>]*>(.*?)<\/Row>/gis) || []
+  const rowMatches =
+    content.match(/<tr[^>]*>(.*?)<\/tr>/gis) ||
+    content.match(/<Row[^>]*>(.*?)<\/Row>/gis) ||
+    []
 
   for (const rXml of rowMatches) {
     const cells: string[] = []
     const cellMatches =
-      rXml.match(/<t[dh][^>]*>(.*?)<\/t[dh]>/gis) || rXml.match(/<Cell[^>]*>(.*?)<\/Cell>/gis) || []
+      rXml.match(/<t[dh][^>]*>(.*?)<\/t[dh]>/gis) ||
+      rXml.match(/<Cell[^>]*>(.*?)<\/Cell>/gis) ||
+      []
     for (const cXml of cellMatches) {
       const text = cXml.replace(/<[^>]+>/g, "").trim()
       cells.push(text)
@@ -592,7 +638,11 @@ export function validateAndNormalizeRecords(
   grid: string[][],
   headerRowIndex: number,
   mapping: ColumnMapping,
-  existingMedicines: { name: string; formulation: string; strength: string }[] = []
+  existingMedicines: {
+    name: string
+    formulation: string
+    strength: string
+  }[] = [],
 ): ValidationResult {
   const readyToImport: ClinicalImportItemInput[] = []
   const duplicates: ValidationDuplicate[] = []
@@ -608,7 +658,12 @@ export function validateAndNormalizeRecords(
   const inBatchKeySet = new Set<string>()
 
   const getCell = (row: string[], colIdx: number | null): string => {
-    if (colIdx === null || colIdx === undefined || colIdx < 0 || colIdx >= row.length) {
+    if (
+      colIdx === null ||
+      colIdx === undefined ||
+      colIdx < 0 ||
+      colIdx >= row.length
+    ) {
       return ""
     }
     return (row[colIdx] || "").trim()
@@ -668,8 +723,10 @@ export function validateAndNormalizeRecords(
       category: getCell(row, mapping.category) || undefined,
       pack_size: getCell(row, mapping.packSize) || undefined,
       mrp: mrp !== null ? mrp : undefined,
-      storage_instructions: getCell(row, mapping.storageInstructions) || undefined,
-      default_instructions: getCell(row, mapping.defaultInstructions) || undefined,
+      storage_instructions:
+        getCell(row, mapping.storageInstructions) || undefined,
+      default_instructions:
+        getCell(row, mapping.defaultInstructions) || undefined,
       default_dosage: undefined,
       default_frequency: undefined,
       default_duration: undefined,

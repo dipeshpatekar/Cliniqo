@@ -25,7 +25,7 @@ describe("AuthService", () => {
       RATE_LIMIT_RECOVERY_WINDOW_SEC: "300",
     })
 
-    const doctorModelFn: any = vi.fn().mockImplementation(function (this: any, data: any) {
+    const doctorModelFn: any = vi.fn().mockImplementation(function (data: any) {
       Object.assign(this, data, {
         _id: new Types.ObjectId(),
         save: vi.fn().mockResolvedValue(true),
@@ -390,7 +390,7 @@ describe("AuthService", () => {
       mockDoctorModel.findOne.mockResolvedValue(null)
       mockPasswordService.hashPassword.mockResolvedValue("$argon2id$hashed")
       const testDoctorId = new Types.ObjectId()
-      mockDoctorModel.mockImplementation(function (this: any, data: any) {
+      mockDoctorModel.mockImplementation(function (data: any) {
         Object.assign(this, data, {
           _id: testDoctorId,
           save: vi.fn().mockResolvedValue(true),

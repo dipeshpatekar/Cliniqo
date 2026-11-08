@@ -34,7 +34,7 @@ describe("excelParser Unit Tests", () => {
   })
 
   it("parses MRP strings and strips currency symbols", () => {
-    expect(parseMrp("₹120.50")).toBe(120.50)
+    expect(parseMrp("₹120.50")).toBe(120.5)
     expect(parseMrp("Rs. 45")).toBe(45)
     expect(parseMrp("1,250.00")).toBe(1250)
     expect(parseMrp("")).toBeNull()
@@ -58,11 +58,24 @@ describe("excelParser Unit Tests", () => {
     ]
     const detected = detectHeaderRow(grid)
     expect(detected.headerRowIndex).toBe(2)
-    expect(detected.headers).toEqual(["Medicine Name", "Generic Name", "Formulation", "Strength", "MRP"])
+    expect(detected.headers).toEqual([
+      "Medicine Name",
+      "Generic Name",
+      "Formulation",
+      "Strength",
+      "MRP",
+    ])
   })
 
   it("auto-maps column headers to clinical field keys", () => {
-    const headers = ["Drug Name", "Active Ingredient", "Form", "Power", "Company", "M.R.P"]
+    const headers = [
+      "Drug Name",
+      "Active Ingredient",
+      "Form",
+      "Power",
+      "Company",
+      "M.R.P",
+    ]
     const mapping = autoMapColumns(headers)
     expect(mapping.name).toBe(0)
     expect(mapping.genericName).toBe(1)
@@ -97,7 +110,9 @@ describe("excelParser Unit Tests", () => {
       storageInstructions: null,
       defaultInstructions: null,
     }
-    const existing = [{ name: "Paracetamol", formulation: "Tablet", strength: "500 mg" }]
+    const existing = [
+      { name: "Paracetamol", formulation: "Tablet", strength: "500 mg" },
+    ]
     const result = validateAndNormalizeRecords(grid, 0, mapping, existing)
 
     expect(result.validRows).toBe(1)
@@ -111,14 +126,19 @@ describe("excelParser Unit Tests", () => {
   })
 
   it("parses real XLSX file from disk using standard decompressor", async () => {
-    const xlsxPath = "/Users/dipeshpatekar/.gemini/antigravity/brain/4b5c37bc-2847-4264-ad9d-17917f943ec6/.user_uploaded/media_1793817185895_a6dd45f6.xlsx"
+    const xlsxPath =
+      "/Users/dipeshpatekar/.gemini/antigravity/brain/4b5c37bc-2847-4264-ad9d-17917f943ec6/.user_uploaded/media_1793817185895_a6dd45f6.xlsx"
     if (fs.existsSync(xlsxPath)) {
       const buffer = fs.readFileSync(xlsxPath).buffer
-      const parsed = await parseSpreadsheetFile(buffer, "Stock_Report_Converted.xlsx")
+      const parsed = await parseSpreadsheetFile(
+        buffer,
+        "Stock_Report_Converted.xlsx",
+      )
       expect(parsed.grid.length).toBeGreaterThan(100)
       expect(parsed.detectedHeaderRow).toBeGreaterThanOrEqual(0)
-      expect(parsed.headers.some((h) => /product|name|unit|company/i.test(h))).toBe(true)
+      expect(
+        parsed.headers.some((h) => /product|name|unit|company/i.test(h)),
+      ).toBe(true)
     }
   })
 })
-

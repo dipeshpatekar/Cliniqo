@@ -6,12 +6,12 @@ import {
   Headers,
   UnauthorizedException,
   Optional,
-} from '@nestjs/common';
-import type { Response } from 'express';
-import { HealthService } from './health.service.js';
-import { ConfigService } from '../config/config.service.js';
+} from "@nestjs/common"
+import type { Response } from "express"
+import { HealthService } from "./health.service.js"
+import { ConfigService } from "../config/config.service.js"
 
-@Controller('health')
+@Controller("health")
 export class HealthController {
   constructor(
     private readonly healthService: HealthService,
@@ -21,29 +21,29 @@ export class HealthController {
 
   @Get()
   getHealth() {
-    return this.healthService.getLiveness();
+    return this.healthService.getLiveness()
   }
 
-  @Get('live')
+  @Get("live")
   getLiveness() {
-    return this.healthService.getLiveness();
+    return this.healthService.getLiveness()
   }
 
-  @Get('ready')
+  @Get("ready")
   async getReadiness(@Res({ passthrough: true }) res: Response) {
-    const readiness = await this.healthService.getReadiness();
-    if (readiness.status !== 'ready') {
-      res.status(HttpStatus.SERVICE_UNAVAILABLE);
+    const readiness = await this.healthService.getReadiness()
+    if (readiness.status !== "ready") {
+      res.status(HttpStatus.SERVICE_UNAVAILABLE)
     }
-    return readiness;
+    return readiness
   }
 
-  @Get('diag')
-  async getDiagnostics(@Headers('x-admin-key') adminKey?: string) {
-    const configuredKey = this.configService?.adminDiagnosticKey;
+  @Get("diag")
+  async getDiagnostics(@Headers("x-admin-key") adminKey?: string) {
+    const configuredKey = this.configService?.adminDiagnosticKey
     if (!configuredKey || !adminKey || adminKey !== configuredKey) {
-      throw new UnauthorizedException('Unauthorized diagnostic access');
+      throw new UnauthorizedException("Unauthorized diagnostic access")
     }
-    return this.healthService.getSanitizedDiagnostics();
+    return this.healthService.getSanitizedDiagnostics()
   }
 }

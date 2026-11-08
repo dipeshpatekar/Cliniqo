@@ -12,6 +12,7 @@ import {
   Check,
 } from "lucide-react"
 import {
+  formatDateDDMMYYYY,
   getPublicPatientId,
   type Page,
   type Patient,
@@ -67,8 +68,9 @@ export function BillPreview({
       })
       if (typeof window !== "undefined" && window.localStorage) {
         const storedLogo =
-          window.localStorage.getItem(`cliniqo_clinic_logo_${desktopSession.clinic_id}`) ||
-          window.localStorage.getItem("cliniqo_clinic_logo")
+          window.localStorage.getItem(
+            `cliniqo_clinic_logo_${desktopSession.clinic_id}`,
+          ) || window.localStorage.getItem("cliniqo_clinic_logo")
         if (storedLogo) setClinicLogo(storedLogo)
       }
     }
@@ -87,13 +89,7 @@ export function BillPreview({
     totalRupees,
   } = computeBillTotals(bill.items, bill.discount, bill.taxRatePercent)
 
-  const formattedDate = bill.date
-    ? new Date(`${bill.date}T00:00:00`).toLocaleDateString("en-IN", {
-        day: "2-digit",
-        month: "long",
-        year: "numeric",
-      })
-    : "—"
+  const formattedDate = bill.date ? formatDateDDMMYYYY(bill.date) : "—"
 
   const isFinalized = bill.status === "FINALIZED"
   const doctorName = desktopSession?.doctor_name || "Doctor"
@@ -180,21 +176,44 @@ export function BillPreview({
                       <img
                         src={clinicLogo}
                         alt="Clinic logo"
-                        style={{ width: "100%", height: "100%", objectFit: "contain", borderRadius: "4px" }}
+                        style={{
+                          width: "100%",
+                          height: "100%",
+                          objectFit: "contain",
+                          borderRadius: "4px",
+                        }}
                       />
                     ) : (
                       <HeartPulse size={24} />
                     )}
                   </span>
                   <div>
-                    <h2>{clinicProfile?.name || (desktopSession?.clinic_id ? `Clinic ${desktopSession.clinic_id}` : "Medical Clinic")}</h2>
+                    <h2>
+                      {clinicProfile?.name ||
+                        (desktopSession?.clinic_id
+                          ? `Clinic ${desktopSession.clinic_id}`
+                          : "Medical Clinic")}
+                    </h2>
                     <p>
-                      {[clinicProfile?.street, clinicProfile?.city, clinicProfile?.state, clinicProfile?.postal_code]
+                      {[
+                        clinicProfile?.street,
+                        clinicProfile?.city,
+                        clinicProfile?.state,
+                        clinicProfile?.postal_code,
+                      ]
                         .filter(Boolean)
-                        .join(", ") || (desktopSession?.clinic_id ? "Registered Healthcare Facility" : "Local Clinic Workspace")}
+                        .join(", ") ||
+                        (desktopSession?.clinic_id
+                          ? "Registered Healthcare Facility"
+                          : "Local Clinic Workspace")}
                     </p>
                     {clinicProfile?.phone && (
-                      <p style={{ fontSize: "11px", color: "var(--text-muted, #64748b)" }}>
+                      <p
+                        style={{
+                          fontSize: "11px",
+                          color: "var(--text-muted, #64748b)",
+                        }}
+                      >
                         Ph: {clinicProfile.phone}
                       </p>
                     )}
@@ -212,8 +231,17 @@ export function BillPreview({
                   </div>
                 </div>
                 <div className="rx-doctor">
-                  <strong>{desktopSession?.doctor_name || doctorProfile?.full_name || doctorName}</strong>
-                  <span>{doctorProfile?.qualification || (desktopSession ? "Authorized Medical Practitioner" : "Medical Practitioner")}</span>
+                  <strong>
+                    {desktopSession?.doctor_name ||
+                      doctorProfile?.full_name ||
+                      doctorName}
+                  </strong>
+                  <span>
+                    {doctorProfile?.qualification ||
+                      (desktopSession
+                        ? "Authorized Medical Practitioner"
+                        : "Medical Practitioner")}
+                  </span>
                   {doctorProfile?.registration_number && (
                     <span>Reg. No: {doctorProfile.registration_number}</span>
                   )}
@@ -364,8 +392,8 @@ export function BillPreview({
           >
             <strong>Payment status: {bill.paymentStatus}</strong>
             <span>
-              Thank you for choosing {clinicProfile?.name || "our clinic"}. Please retain this bill
-              for your records.
+              Thank you for choosing {clinicProfile?.name || "our clinic"}.
+              Please retain this bill for your records.
             </span>
           </section>
 

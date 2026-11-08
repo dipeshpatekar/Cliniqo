@@ -1,4 +1,4 @@
-import { useState } from "react"
+import { useState, useEffect } from "react"
 import {
   ArrowLeft,
   ReceiptIndianRupee,
@@ -10,7 +10,13 @@ import {
   IndianRupee,
   AlertCircle,
 } from "lucide-react"
-import { getPublicPatientId, type Page, type Patient, type BillData, type BillItem } from "../../types"
+import {
+  getPublicPatientId,
+  type Page,
+  type Patient,
+  type BillData,
+  type BillItem,
+} from "../../types"
 import { computeBillTotals } from "../../utils/billing"
 import {
   Button,
@@ -214,6 +220,24 @@ export function BillForm({
     }
   }
 
+  useEffect(() => {
+    const handleShortcut = (e: Event) => {
+      const customEvent = e as CustomEvent<{ action: string }>
+      const { action } = customEvent.detail || {}
+      if (action === "add-bill-item") {
+        addItem()
+      } else if (action === "save-draft") {
+        if (!isFinalized && !isSaving) {
+          handleSaveDraft()
+        }
+      }
+    }
+    window.addEventListener("cliniqo-shortcut", handleShortcut)
+    return () => {
+      window.removeEventListener("cliniqo-shortcut", handleShortcut)
+    }
+  }, [bill, isFinalized, isSaving])
+
   return (
     <>
       <AppHeader
@@ -231,6 +255,7 @@ export function BillForm({
           <>
             <Button
               variant="secondary"
+              title="Save draft (Ctrl+S)"
               onClick={handleSaveDraft}
               disabled={isSaving}
               loading={isSaving}
@@ -248,6 +273,7 @@ export function BillForm({
         )}
         <Button
           variant={isFinalized ? "primary" : "secondary"}
+          title="Print / Preview bill (Ctrl+P)"
           disabled={!canPreview}
           onClick={() => go("bill-preview")}
         >
@@ -313,11 +339,7 @@ export function BillForm({
           </StatusPill>
         </div>
 
-        <FormSection
-          icon={ReceiptIndianRupee}
-          title="Bill details"
-          description="Services, procedure fees, taxes and discounts"
-        >
+        <FormSection icon={ReceiptIndianRupee} title="Bill details">
           <div className="form-grid four bill-meta">
             <Field label="Invoice number">
               <TextInput
@@ -439,7 +461,13 @@ export function BillForm({
           </div>
 
           {!isFinalized && (
-            <Button size="sm" variant="secondary" icon={Plus} onClick={addItem}>
+            <Button
+              size="sm"
+              variant="secondary"
+              icon={Plus}
+              title="Add bill item (Ctrl+Shift+I)"
+              onClick={addItem}
+            >
               Add item
             </Button>
           )}
@@ -515,11 +543,6 @@ export function BillForm({
             <strong>
               {isFinalized ? "Finalized medical invoice" : "Review bill draft"}
             </strong>
-            <p>
-              {isFinalized
-                ? "This invoice is stored durably in the local encrypted database and synced to cloud."
-                : "Save draft to persist locally or finalize to lock invoice totals."}
-            </p>
           </div>
           <Button variant="ghost" onClick={() => go("patient-profile")}>
             {isFinalized ? "Back to patient" : "Cancel"}

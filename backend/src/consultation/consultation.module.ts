@@ -1,30 +1,27 @@
-import { Module } from '@nestjs/common';
-import { MongooseModule } from '@nestjs/mongoose';
-import { ClinicModule } from '../clinic/clinic.module.js';
-import { AuthModule } from '../auth/auth.module.js';
-import { PatientModule } from '../patient/patient.module.js';
+import { Module } from "@nestjs/common"
+import { MongooseModule } from "@nestjs/mongoose"
+import { ClinicModule } from "../clinic/clinic.module.js"
+import { AuthModule } from "../auth/auth.module.js"
+import { PatientModule } from "../patient/patient.module.js"
 import {
   Consultation,
   ConsultationSchema,
-} from './schemas/consultation.schema.js';
+} from "./schemas/consultation.schema.js"
 import {
   ConsultationAddendum,
   ConsultationAddendumSchema,
-} from './schemas/consultation-addendum.schema.js';
+} from "./schemas/consultation-addendum.schema.js"
 import {
   IdempotencyRecord,
   IdempotencyRecordSchema,
-} from '../common/schemas/idempotency-record.schema.js';
-import {
-  Patient,
-  PatientSchema,
-} from '../patient/schemas/patient.schema.js';
+} from "../common/schemas/idempotency-record.schema.js"
+import { Patient, PatientSchema } from "../patient/schemas/patient.schema.js"
 import {
   ClinicAuditLog,
   ClinicAuditLogSchema,
-} from '../clinic/schemas/clinic-audit-log.schema.js';
-import { ConsultationService } from './consultation.service.js';
-import { ConsultationController } from './consultation.controller.js';
+} from "../clinic/schemas/clinic-audit-log.schema.js"
+import { ConsultationService } from "./consultation.service.js"
+import { ConsultationController } from "./consultation.controller.js"
 
 @Module({
   imports: [

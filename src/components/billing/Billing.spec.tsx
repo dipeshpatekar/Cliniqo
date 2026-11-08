@@ -105,6 +105,7 @@ describe("Billing Components & UX", () => {
       expect(html).toContain("Bill preview")
       expect(html).toContain("printable-bill")
       expect(html).toContain("INV-2026-1001")
+      expect(html).toContain("28/10/2026")
       expect(html).toContain("Consultation Fee")
       expect(html).toContain("ECG Test")
       expect(html).toContain("GST (18%)")

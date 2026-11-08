@@ -197,8 +197,10 @@ export class AuthService {
 
     // 3. Hash password using Argon2id
     const passwordHash = await this.passwordService.hashPassword(dto.password)
-    const qualification = dto.qualification?.trim() || dto.qualifications?.trim() || undefined
-    const registrationNumber = dto.registrationNumber?.trim() || dto.licenseNumber?.trim() || undefined
+    const qualification =
+      dto.qualification?.trim() || dto.qualifications?.trim() || undefined
+    const registrationNumber =
+      dto.registrationNumber?.trim() || dto.licenseNumber?.trim() || undefined
 
     const doctor = new this.doctorModel({
       fullName: dto.fullName.trim(),
@@ -218,7 +220,10 @@ export class AuthService {
     try {
       await doctor.save()
     } catch (err: any) {
-      if (err?.code === 11000 || (err?.name === "MongoServerError" && err?.code === 11000)) {
+      if (
+        err?.code === 11000 ||
+        (err?.name === "MongoServerError" && err?.code === 11000)
+      ) {
         throw new ConflictException(
           "An account with this email address already exists.",
         )
@@ -241,9 +246,13 @@ export class AuthService {
       this.logger.error(
         `Failed to issue authentication tokens for new doctor ${doctor._id.toString()}: ${String(tokenErr)}`,
       )
-      await this.doctorModel.deleteOne({ _id: doctor._id }).catch((cleanupErr) => {
-        this.logger.error(`Failed to clean up orphaned doctor ${doctor._id.toString()}: ${String(cleanupErr)}`)
-      })
+      await this.doctorModel
+        .deleteOne({ _id: doctor._id })
+        .catch((cleanupErr) => {
+          this.logger.error(
+            `Failed to clean up orphaned doctor ${doctor._id.toString()}: ${String(cleanupErr)}`,
+          )
+        })
       throw tokenErr
     }
 
@@ -301,7 +310,8 @@ export class AuthService {
     if (dto.phone !== undefined && dto.phone.trim()) {
       doctor.phone = dto.phone.trim()
     }
-    const qualification = dto.qualification?.trim() || dto.qualifications?.trim()
+    const qualification =
+      dto.qualification?.trim() || dto.qualifications?.trim()
     if (qualification) {
       doctor.qualification = qualification
     }

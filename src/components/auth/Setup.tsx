@@ -332,9 +332,13 @@ export function Setup({
         session = {
           doctor_id: doctorId || "doc-1",
           clinic_id: effectiveClinicId,
-          doctor_email: email || doctor?.email || sessionProp?.doctor_email || "",
+          doctor_email:
+            email || doctor?.email || sessionProp?.doctor_email || "",
           doctor_name:
-            fullName || doctor?.fullName || sessionProp?.doctor_name || "Doctor",
+            fullName ||
+            doctor?.fullName ||
+            sessionProp?.doctor_name ||
+            "Doctor",
           role: "OWNER",
           expires_at: Math.floor(Date.now() / 1000) + 3600 * 24,
         }
@@ -354,7 +358,10 @@ export function Setup({
             gender: gender || "Male",
           })
         } catch (profileErr) {
-          console.warn("[Cliniqo Desktop] Failed to persist doctor profile credentials during setup:", profileErr)
+          console.warn(
+            "[Cliniqo Desktop] Failed to persist doctor profile credentials during setup:",
+            profileErr,
+          )
         }
       }
 
@@ -599,7 +606,10 @@ export function Setup({
                     variant="ghost"
                     onClick={() => {
                       setProfilePhoto(null)
-                      if (typeof window !== "undefined" && window.localStorage) {
+                      if (
+                        typeof window !== "undefined" &&
+                        window.localStorage
+                      ) {
                         window.localStorage.removeItem("cliniqo_doctor_photo")
                       }
                       setPhotoError("")
@@ -721,7 +731,10 @@ export function Setup({
                     variant="ghost"
                     onClick={() => {
                       setClinicLogo(null)
-                      if (typeof window !== "undefined" && window.localStorage) {
+                      if (
+                        typeof window !== "undefined" &&
+                        window.localStorage
+                      ) {
                         window.localStorage.removeItem("cliniqo_clinic_logo")
                       }
                       setLogoError("")

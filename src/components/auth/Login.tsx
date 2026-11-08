@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, type FormEvent } from "react"
 import { cn } from "../../utils/cn"
-import { Button, IconButton, Logo } from "../common"
+import { Button, Logo } from "../common"
 import {
   isTauriDesktop,
   loginDesktop,
@@ -14,13 +14,10 @@ import {
   Check,
   Eye,
   EyeOff,
-  FileText,
   KeyRound,
   LockKeyhole,
   Mail,
-  RefreshCw,
   ShieldCheck,
-  WifiOff,
 } from "lucide-react"
 
 export function Login({
@@ -38,6 +35,7 @@ export function Login({
   const [confirmPassword, setConfirmPassword] = useState("")
   const [showPassword, setShowPassword] = useState(false)
   const [showNewPassword, setShowNewPassword] = useState(false)
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false)
   const [errors, setErrors] = useState<Record<string, string>>({})
   const [otp, setOtp] = useState(["", "", "", "", "", ""])
   const [authState, setAuthState] =
@@ -235,74 +233,55 @@ export function Login({
   }[(authState as "invalid" | "expired" | "network" | "limit")]
 
   return (
-    <main className="auth-page">
-      <section className="auth-brand-panel">
-        <Logo large />
-        <div className="auth-message">
-          <span className="eyebrow">Designed for independent practice</span>
-          <h1>
-            Clinical care,
-            <br />
-            beautifully organized.
-          </h1>
-          <p>
-            One calm, secure workspace for patient records, consultations,
-            prescriptions, and everyday clinic operations.
-          </p>
-          <div className="auth-feature-grid">
-            <span>
-              <ShieldCheck size={18} />
-              <strong>Private by design</strong>
-              <small>Protected clinical workspace</small>
-            </span>
-            <span>
-              <WifiOff size={18} />
-              <strong>Offline-ready</strong>
-              <small>Continue through interruptions</small>
-            </span>
-            <span>
-              <FileText size={18} />
-              <strong>Revision-safe</strong>
-              <small>Preserve finalized records</small>
-            </span>
+    <main className="login-screen-root">
+      <div className="login-split-card">
+        {/* Left promotional panel with brand headline and description */}
+        <aside className="login-promo-panel" aria-label="Cliniqo overview">
+          <div className="login-promo-content">
+            <h1 className="login-promo-heading">
+              Manage your clinic with Cliniqo
+            </h1>
+            <p className="login-promo-description">
+              A simple and powerful clinic management system for modern doctors.
+            </p>
           </div>
-        </div>
-        <div className="trust-row">
-          <span>
-            <ShieldCheck size={16} /> Secure clinic workspace
-          </span>
-          <span>
-            <LockKeyhole size={16} /> Doctor-only access
-          </span>
-        </div>
-      </section>
-      <section className="auth-form-panel">
-        <div className="login-card">
-          <div className="auth-card-logo">
-            <Logo />
-          </div>
+        </aside>
+
+        {/* Right authentication form panel */}
+        <section className="login-form-panel">
           {view === "login" && (
             <>
-              <span className="eyebrow">Doctor-only access</span>
-              <h2>Welcome back</h2>
-              <p>
-                Sign in with your registered clinic email to continue to your
-                secure workspace.
-              </p>
+              <div className="login-logo-lockup">
+                <Logo />
+              </div>
+              <h2 className="login-heading">
+                Welcome Back
+                <span className="sr-only">Welcome back</span>
+              </h2>
+              <p className="login-subheading">Please login to your account</p>
+
               {errors.form && (
-                <div className="auth-error" role="alert">
+                <div className="login-alert-error" role="alert">
                   <AlertCircle size={16} />
                   <span>{errors.form}</span>
                 </div>
               )}
-              <form className="auth-form" onSubmit={signIn} noValidate>
-                <label className="auth-field">
-                  <span>Email address</span>
+
+              <form className="login-form" onSubmit={signIn} noValidate>
+                <div className="login-field-group">
+                  <label htmlFor="login-email" className="login-field-label">
+                    <span className="sr-only">Email address</span>
+                    <span aria-hidden="true">Email</span>
+                  </label>
                   <div
-                    className={cn("auth-input-wrap", errors.email && "invalid")}
+                    className={cn(
+                      "login-input-wrap",
+                      errors.email && "invalid",
+                    )}
                   >
-                    <Mail size={17} />
+                    <Mail size={18} className="login-input-icon" />
                     <input
+                      id="login-email"
                       type="email"
                       autoComplete="email"
                       value={email}
@@ -310,35 +289,28 @@ export function Login({
                         setEmail(event.target.value)
                         setErrors({})
                       }}
-                      placeholder="doctor@clinic.com"
+                      placeholder="Enter your email"
                       aria-invalid={Boolean(errors.email)}
                     />
                   </div>
                   {errors.email && (
-                    <small className="auth-field-error">{errors.email}</small>
+                    <small className="login-field-error">{errors.email}</small>
                   )}
-                </label>
-                <label className="auth-field">
-                  <span className="auth-label-row">
-                    <span>Password</span>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setView("forgot")
-                        setErrors({})
-                      }}
-                    >
-                      Forgot password?
-                    </button>
-                  </span>
+                </div>
+
+                <div className="login-field-group">
+                  <label htmlFor="login-password" className="login-field-label">
+                    Password
+                  </label>
                   <div
                     className={cn(
-                      "auth-input-wrap",
+                      "login-input-wrap",
                       errors.password && "invalid",
                     )}
                   >
-                    <LockKeyhole size={17} />
+                    <LockKeyhole size={18} className="login-input-icon" />
                     <input
+                      id="login-password"
                       type={showPassword ? "text" : "password"}
                       autoComplete="current-password"
                       value={password}
@@ -349,70 +321,101 @@ export function Login({
                       placeholder="Enter your password"
                       aria-invalid={Boolean(errors.password)}
                     />
-                    <IconButton
+                    <button
                       type="button"
-                      label={showPassword ? "Hide password" : "Show password"}
+                      className="login-password-toggle"
                       onClick={() => setShowPassword((visible) => !visible)}
+                      aria-label={
+                        showPassword ? "Hide password" : "Show password"
+                      }
                     >
-                      {showPassword ? <EyeOff size={17} /> : <Eye size={17} />}
-                    </IconButton>
+                      {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
+                    </button>
+                  </div>
+                  <div className="login-forgot-wrapper">
+                    <button
+                      type="button"
+                      className="login-forgot-link"
+                      onClick={() => {
+                        setView("forgot")
+                        setErrors({})
+                      }}
+                    >
+                      Forgot Password?
+                    </button>
                   </div>
                   {errors.password && (
-                    <small className="auth-field-error">
+                    <small className="login-field-error">
                       {errors.password}
                     </small>
                   )}
-                </label>
+                </div>
+
                 <Button
                   type="submit"
-                  className="auth-submit"
+                  className="login-submit-btn"
                   disabled={authState === "loading"}
                   loading={authState === "loading"}
                 >
                   {authState === "loading" ? (
-                    "Signing in…"
+                    "Logging in…"
                   ) : (
                     <>
-                      Sign In <ArrowRight size={17} />
+                      Login
+                      <span className="sr-only"> Sign In</span>
                     </>
                   )}
                 </Button>
               </form>
-              <div className="auth-switch">
-                <span>New to Cliniqo?</span>
-                <button type="button" onClick={() => go("register")}>
-                  Create account
+
+              <div className="login-switch-footer">
+                <span>Don't have an account?</span>
+                <button
+                  type="button"
+                  className="login-switch-action"
+                  onClick={() => go("register")}
+                >
+                  Create Account
                 </button>
               </div>
-              <p className="privacy-note">
-                <ShieldCheck size={14} /> Your session is protected with secure,
-                doctor-only authentication.
+
+              <p className="login-security-badge">
+                <ShieldCheck size={14} /> Doctor-only secure workspace
               </p>
             </>
           )}
+
           {view === "forgot" && (
             <>
               <button
-                className="auth-back"
+                className="login-back-btn"
                 type="button"
                 onClick={returnToSignIn}
               >
-                <ArrowLeft size={15} /> Back to sign in
+                <ArrowLeft size={15} /> Back to Login
               </button>
-              <span className="eyebrow">Account recovery</span>
-              <h2>Forgot your password?</h2>
-              <p>
-                Enter your registered email and we’ll send a 6-digit
-                verification code.
+              <div className="login-logo-lockup">
+                <Logo />
+              </div>
+              <h2 className="login-heading">Forgot Password?</h2>
+              <p className="login-subheading">
+                Enter your email address and we will send you a verification
+                code.
               </p>
-              <form className="auth-form" onSubmit={requestReset} noValidate>
-                <label className="auth-field">
-                  <span>Email address</span>
+              <form className="login-form" onSubmit={requestReset} noValidate>
+                <div className="login-field-group">
+                  <label htmlFor="forgot-email" className="login-field-label">
+                    Email address
+                  </label>
                   <div
-                    className={cn("auth-input-wrap", errors.email && "invalid")}
+                    className={cn(
+                      "login-input-wrap",
+                      errors.email && "invalid",
+                    )}
                   >
-                    <Mail size={17} />
+                    <Mail size={18} className="login-input-icon" />
                     <input
+                      id="forgot-email"
                       type="email"
                       autoComplete="email"
                       value={email}
@@ -425,12 +428,12 @@ export function Login({
                     />
                   </div>
                   {errors.email && (
-                    <small className="auth-field-error">{errors.email}</small>
+                    <small className="login-field-error">{errors.email}</small>
                   )}
-                </label>
+                </div>
                 <Button
                   type="submit"
-                  className="auth-submit"
+                  className="login-submit-btn"
                   disabled={authState === "sending"}
                   loading={authState === "sending"}
                 >
@@ -443,31 +446,36 @@ export function Login({
                   )}
                 </Button>
               </form>
-              <p className="privacy-note">
+              <p className="login-security-badge">
                 <Mail size={14} /> Password reset instructions will be sent to
                 registered clinics.
               </p>
             </>
           )}
+
           {view === "otp" && (
             <>
-              <button className="auth-back" type="button" onClick={backToEmail}>
+              <button
+                className="login-back-btn"
+                type="button"
+                onClick={backToEmail}
+              >
                 <ArrowLeft size={15} /> Change email
               </button>
-              <span className="eyebrow">Email verification</span>
-              <h2>Check your email</h2>
-              <p>
+              <span className="login-eyebrow">Email verification</span>
+              <h2 className="login-heading">Check your email</h2>
+              <p className="login-subheading">
                 Enter the 6-digit code sent to <strong>{maskedEmail}</strong>.
               </p>
               {otpMessage && (
-                <div className="auth-error" role="alert">
+                <div className="login-alert-error" role="alert">
                   <AlertCircle size={16} />
                   <span>{otpMessage}</span>
                 </div>
               )}
-              <form className="auth-form otp-form" onSubmit={verifyOtp}>
+              <form className="login-form" onSubmit={verifyOtp}>
                 <div
-                  className="otp-group"
+                  className="login-otp-group"
                   onPaste={(event) => {
                     const digits = event.clipboardData
                       .getData("text")
@@ -513,11 +521,11 @@ export function Login({
                     />
                   ))}
                 </div>
-                <div className="otp-actions">
+                <div className="login-otp-actions">
                   <span>
                     {countdown > 0
                       ? `Resend available in 00:${String(countdown).padStart(2, "0")}`
-                      : "Didn’t receive the code?"}
+                      : "Didn't receive the code?"}
                   </span>
                   <button
                     type="button"
@@ -529,7 +537,7 @@ export function Login({
                 </div>
                 <Button
                   type="submit"
-                  className="auth-submit"
+                  className="login-submit-btn"
                   disabled={
                     authState === "verifying" || authState === "sending"
                   }
@@ -538,34 +546,50 @@ export function Login({
                   {authState === "verifying" ? "Verifying…" : "Verify code"}
                 </Button>
               </form>
-              <div className="prototype-codes">
-                <strong>Prototype states</strong>
+              <div className="login-prototype-codes">
+                <strong>Prototype states:</strong>
                 <span>
+                  {" "}
                   123456 success · 000000 invalid · 111111 expired · 222222
                   network · 333333 resend limit
                 </span>
               </div>
             </>
           )}
+
           {view === "reset" && (
             <>
-              <span className="eyebrow">Create new password</span>
-              <h2>Reset your password</h2>
-              <p>
-                Choose a strong password you haven’t used for this account
-                before.
+              <button
+                className="login-back-btn"
+                type="button"
+                onClick={returnToSignIn}
+              >
+                <ArrowLeft size={15} /> Cancel
+              </button>
+              <div className="login-logo-lockup">
+                <Logo />
+              </div>
+              <h2 className="login-heading">Reset your password</h2>
+              <p className="login-subheading">
+                Create a new secure password for your account.
               </p>
-              <form className="auth-form" onSubmit={resetPassword} noValidate>
-                <label className="auth-field">
-                  <span>New password</span>
+              <form className="login-form" onSubmit={resetPassword} noValidate>
+                <div className="login-field-group">
+                  <label
+                    htmlFor="reset-new-password"
+                    className="login-field-label"
+                  >
+                    New password
+                  </label>
                   <div
                     className={cn(
-                      "auth-input-wrap",
+                      "login-input-wrap",
                       errors.newPassword && "invalid",
                     )}
                   >
-                    <KeyRound size={17} />
+                    <KeyRound size={18} className="login-input-icon" />
                     <input
+                      id="reset-new-password"
                       type={showNewPassword ? "text" : "password"}
                       autoComplete="new-password"
                       value={newPassword}
@@ -576,41 +600,49 @@ export function Login({
                       placeholder="At least 8 characters"
                       aria-invalid={Boolean(errors.newPassword)}
                     />
-                    <IconButton
+                    <button
                       type="button"
-                      label={
+                      className="login-password-toggle"
+                      onClick={() => setShowNewPassword((visible) => !visible)}
+                      aria-label={
                         showNewPassword ? "Hide password" : "Show password"
                       }
-                      onClick={() => setShowNewPassword((visible) => !visible)}
                     >
                       {showNewPassword ? (
-                        <EyeOff size={17} />
+                        <EyeOff size={18} />
                       ) : (
-                        <Eye size={17} />
+                        <Eye size={18} />
                       )}
-                    </IconButton>
+                    </button>
                   </div>
                   {errors.newPassword ? (
-                    <small className="auth-field-error">
+                    <small className="login-field-error">
                       {errors.newPassword}
                     </small>
                   ) : (
-                    <small className="auth-field-help">
+                    <small className="login-field-help">
                       Use 8+ characters with an uppercase letter and a number.
                     </small>
                   )}
-                </label>
-                <label className="auth-field">
-                  <span>Confirm new password</span>
+                </div>
+
+                <div className="login-field-group">
+                  <label
+                    htmlFor="reset-confirm-password"
+                    className="login-field-label"
+                  >
+                    Confirm new password
+                  </label>
                   <div
                     className={cn(
-                      "auth-input-wrap",
+                      "login-input-wrap",
                       errors.confirmPassword && "invalid",
                     )}
                   >
-                    <LockKeyhole size={17} />
+                    <LockKeyhole size={18} className="login-input-icon" />
                     <input
-                      type={showNewPassword ? "text" : "password"}
+                      id="reset-confirm-password"
+                      type={showConfirmPassword ? "text" : "password"}
                       autoComplete="new-password"
                       value={confirmPassword}
                       onChange={(event) => {
@@ -620,16 +652,33 @@ export function Login({
                       placeholder="Re-enter your new password"
                       aria-invalid={Boolean(errors.confirmPassword)}
                     />
+                    <button
+                      type="button"
+                      className="login-password-toggle"
+                      onClick={() =>
+                        setShowConfirmPassword((visible) => !visible)
+                      }
+                      aria-label={
+                        showConfirmPassword ? "Hide password" : "Show password"
+                      }
+                    >
+                      {showConfirmPassword ? (
+                        <EyeOff size={18} />
+                      ) : (
+                        <Eye size={18} />
+                      )}
+                    </button>
                   </div>
                   {errors.confirmPassword && (
-                    <small className="auth-field-error">
+                    <small className="login-field-error">
                       {errors.confirmPassword}
                     </small>
                   )}
-                </label>
+                </div>
+
                 <Button
                   type="submit"
-                  className="auth-submit"
+                  className="login-submit-btn"
                   disabled={authState === "loading"}
                   loading={authState === "loading"}
                 >
@@ -640,27 +689,27 @@ export function Login({
               </form>
             </>
           )}
+
           {view === "success" && (
-            <div className="auth-success" role="status">
-              <span>
-                <Check size={26} />
+            <div className="login-success-card" role="status">
+              <span className="login-success-icon">
+                <Check size={28} />
               </span>
-              <h2>Password reset</h2>
-              <p>
+              <h2 className="login-heading">Password reset</h2>
+              <p className="login-subheading">
                 Your password has been updated successfully.
                 <br />
                 You can now sign in with your new password.
               </p>
-              <Button className="auth-success-button" onClick={returnToSignIn}>
-                Back to Sign In <ArrowRight size={16} />
+              <Button className="login-submit-btn" onClick={returnToSignIn}>
+                Back to Login <ArrowRight size={16} />
               </Button>
             </div>
           )}
-        </div>
-        <p className="auth-footer">
-          Secure doctor access · Terms of Use · Privacy Policy
-        </p>
-      </section>
+        </section>
+      </div>
     </main>
   )
 }
+
+export default Login

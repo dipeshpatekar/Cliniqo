@@ -23,17 +23,22 @@ import type {
   BillData,
   BillItem,
   BillLayoutPreferences,
+  PatientFormFieldPreferences,
 } from "./types"
 import {
   createEmptyConsultationData,
   loadClinicalLibrary,
+  loadPatientFormFieldPreferences,
   mapLocalRecordToPatient,
   initialPatients,
 } from "./types"
 import { cn } from "./utils/cn"
 
 // Components
-import { IconButton } from "./components/common"
+import {
+  IconButton,
+  ShortcutGuideModal,
+} from "./components/common"
 import { Sidebar, Logo } from "./components/layout"
 import { Login, Register, Setup } from "./components/auth"
 import { Dashboard } from "./components/dashboard"
@@ -46,6 +51,7 @@ import { Consultation, PrescriptionPreview } from "./components/consultation"
 import { BillForm, BillPreview } from "./components/billing"
 import { SettingsPage } from "./components/settings"
 import { ConflictResolutionModal } from "./components/ConflictResolutionModal"
+import { dispatchShortcutEvent } from "./utils/keyboardShortcuts"
 
 // Native Desktop Bridge
 import {
@@ -88,6 +94,8 @@ export default function App() {
     accessToken: string
     refreshToken?: string
   } | null>(null)
+  const isStartingConsultationRef = useRef(false)
+  const isSavingPatientRef = useRef(false)
   const [isRestoringSession, setIsRestoringSession] =
     useState<boolean>(isTauriDesktop)
   const [sidebarOpen, setSidebarOpen] = useState(false)
@@ -165,6 +173,46 @@ export default function App() {
     taxRatePercent: 0,
     items: [{ id: 1, description: "Consultation fee", quantity: 1, rate: 800 }],
   })
+  const [patientFormFieldPreferences, setPatientFormFieldPreferences] =
+    useState<PatientFormFieldPreferences>(loadPatientFormFieldPreferences)
+  const updatePatientFormFieldPreferences = (
+    prefs: PatientFormFieldPreferences,
+  ) => {
+    setPatientFormFieldPreferences(prefs)
+    try {
+      window.localStorage.setItem(
+        "cliniqo-patient-form-preferences",
+        JSON.stringify(prefs),
+      )
+    } catch {}
+  }
+
+  const updatePatientMedicalInfo = (
+    allergies: string[],
+    conditions: string[],
+  ) => {
+    setSelectedPatient((prev) => ({ ...prev, allergies, conditions }))
+    setPatientRecords((prev) =>
+      prev.map((p) =>
+        p.id === selectedPatient.id ? { ...p, allergies, conditions } : p,
+      ),
+    )
+    if (isTauriDesktop() && desktopSession?.clinic_id) {
+      saveLocalPatient({
+        id: selectedPatient.id,
+        clinic_id: desktopSession.clinic_id,
+        patient_code: selectedPatient.displayId || selectedPatient.id,
+        name: selectedPatient.name,
+        phone: selectedPatient.phone,
+        gender: selectedPatient.gender,
+        date_of_birth: selectedPatient.dateOfBirth || null,
+        age: selectedPatient.age,
+        allergies,
+        conditions,
+      }).catch(console.error)
+    }
+  }
+
   const extractPatientSequence = (patient: Patient): number => {
     const raw =
       patient.displayId ||
@@ -180,12 +228,10 @@ export default function App() {
   }
 
   const nextPatientId = `PC-${
-    Math.max(
-      ...patientRecords.map(extractPatientSequence),
-      1048,
-    ) + 1
+    Math.max(...patientRecords.map(extractPatientSequence), 1048) + 1
   }`
   const [showConflictModal, setShowConflictModal] = useState(false)
+  const [showShortcutsModal, setShowShortcutsModal] = useState(false)
   const [targetConflictId, setTargetConflictId] = useState<string | null>(null)
   const [conflictsCount, setConflictsCount] = useState(0)
 
@@ -553,19 +599,31 @@ export default function App() {
   }
 
   const startConsultation = (patient: Patient) => {
-    setSelectedPatient(patient)
-    setPatientSaveFeedback(null)
-    setConsultationData(createEmptyConsultationData())
-    setVitals({
-      systolic: "",
-      diastolic: "",
-      heartRate: "",
-      spo2: "",
-      temperature: "",
-      height: "",
-      weight: "",
-    })
-    go("consultation")
+    if (isStartingConsultationRef.current) return
+    if (!patient || !patient.id || patient.id === "PT-INIT") {
+      alert("No valid patient selected for consultation.")
+      return
+    }
+    isStartingConsultationRef.current = true
+    try {
+      setSelectedPatient(patient)
+      setPatientSaveFeedback(null)
+      setConsultationData(createEmptyConsultationData())
+      setVitals({
+        systolic: "",
+        diastolic: "",
+        heartRate: "",
+        spo2: "",
+        temperature: "",
+        height: "",
+        weight: "",
+      })
+      go("consultation")
+    } finally {
+      setTimeout(() => {
+        isStartingConsultationRef.current = false
+      }, 500)
+    }
   }
 
   const editPatient = (patient: Patient) => {
@@ -672,78 +730,109 @@ export default function App() {
   }
 
   const savePatient = async (patient: Patient, startConsultation = false) => {
-    const wasEditing = Boolean(editingPatient)
-    let effectivePatient = patient
+    if (isSavingPatientRef.current) return
+    isSavingPatientRef.current = true
+    try {
+      const wasEditing = Boolean(editingPatient)
+      let effectivePatient = patient
 
-    if (isTauriDesktop() && desktopSession?.clinic_id) {
-      try {
-        const publicCode =
-          patient.displayId ||
-          patient.patientCode ||
-          (patient.id.startsWith("PC-") ? patient.id : nextPatientId)
+      if (isTauriDesktop() && desktopSession?.clinic_id) {
+        try {
+          const publicCode =
+            patient.displayId ||
+            patient.patientCode ||
+            (patient.id.startsWith("PC-") ? patient.id : nextPatientId)
 
-        const savedId = await saveLocalPatient({
-          id: wasEditing ? editingPatient?.id : null,
-          clinic_id: desktopSession.clinic_id,
-          patient_code: publicCode,
-          name: patient.name,
-          phone: patient.phone,
-          gender: patient.gender,
-          date_of_birth: patient.dateOfBirth || null,
-          age: patient.age,
-          allergies: patient.allergies,
-          conditions: patient.conditions,
-        })
-        if (savedId) {
-          effectivePatient = {
-            ...patient,
-            id: wasEditing ? patient.id : savedId,
-            displayId: publicCode,
-            patientCode: publicCode,
+          const notesObj = {
+            registeredAt: patient.registeredAt,
+            alternatePhone: patient.alternatePhone,
+            address: patient.address,
           }
-          try {
-            const freshPatients = await getLocalPatients(desktopSession.clinic_id)
-            if (freshPatients && freshPatients.length > 0) {
-              const mapped = freshPatients.map(mapLocalRecordToPatient)
-              setPatientRecords(mapped)
-              const matched = mapped.find((p) => p.id === savedId)
-              if (matched) effectivePatient = matched
-            }
-          } catch {}
-        }
-      } catch (err) {
-        console.error(
-          "[Cliniqo Desktop] Failed to save patient to SQLite:",
-          err,
-        )
-      }
-    }
 
-    setPatientRecords((records) => [
-      effectivePatient,
-      ...records.filter(
-        (record) =>
-          record.id !== patient.id && record.id !== effectivePatient.id,
-      ),
-    ])
-    setSelectedPatient(effectivePatient)
-    setPatientSaveFeedback(
-      startConsultation ? null : wasEditing ? "updated" : "added",
-    )
-    setEditingPatient(null)
-    if (startConsultation) {
-      setConsultationData(createEmptyConsultationData())
-      setVitals({
-        systolic: "",
-        diastolic: "",
-        heartRate: "",
-        spo2: "",
-        temperature: "",
-        height: "",
-        weight: "",
-      })
+          const savedId = await saveLocalPatient({
+            id: wasEditing ? editingPatient?.id : null,
+            clinic_id: desktopSession.clinic_id,
+            patient_code: publicCode,
+            name: patient.name,
+            phone: patient.phone,
+            gender: patient.gender,
+            date_of_birth: patient.dateOfBirth || null,
+            age: patient.age,
+            allergies: patient.allergies,
+            conditions: patient.conditions,
+            sensitive_notes: JSON.stringify(notesObj),
+          })
+          if (savedId) {
+            effectivePatient = {
+              ...patient,
+              id: wasEditing ? patient.id : savedId,
+              displayId: publicCode,
+              patientCode: publicCode,
+            }
+            try {
+              const freshPatients = await getLocalPatients(
+                desktopSession.clinic_id,
+              )
+              if (freshPatients && freshPatients.length > 0) {
+                const mapped = freshPatients.map(mapLocalRecordToPatient)
+                setPatientRecords(mapped)
+                const matched = mapped.find((p) => p.id === savedId)
+                if (matched) effectivePatient = matched
+              }
+            } catch {}
+          } else if (!wasEditing) {
+            alert(
+              "Failed to save patient record. Consultation cannot be started.",
+            )
+            return
+          }
+        } catch (err) {
+          console.error(
+            "[Cliniqo Desktop] Failed to save patient to SQLite:",
+            err,
+          )
+          alert("Failed to save patient. Consultation cannot be started.")
+          return
+        }
+      }
+
+      if (
+        !effectivePatient ||
+        !effectivePatient.id ||
+        effectivePatient.id === "PT-INIT"
+      ) {
+        alert("Invalid patient record. Consultation cannot be started.")
+        return
+      }
+
+      setPatientRecords((records) => [
+        effectivePatient,
+        ...records.filter(
+          (record) =>
+            record.id !== patient.id && record.id !== effectivePatient.id,
+        ),
+      ])
+      setSelectedPatient(effectivePatient)
+      setPatientSaveFeedback(
+        startConsultation ? null : wasEditing ? "updated" : "added",
+      )
+      setEditingPatient(null)
+      if (startConsultation) {
+        setConsultationData(createEmptyConsultationData())
+        setVitals({
+          systolic: "",
+          diastolic: "",
+          heartRate: "",
+          spo2: "",
+          temperature: "",
+          height: "",
+          weight: "",
+        })
+      }
+      go(startConsultation ? "consultation" : "patient-profile")
+    } finally {
+      isSavingPatientRef.current = false
     }
-    go(startConsultation ? "consultation" : "patient-profile")
   }
 
   const deletePatient = async (patientId: string) => {
@@ -880,6 +969,270 @@ export default function App() {
     setVitals((current) => ({ ...current, [key]: value }))
   }
 
+  // Global Keyboard Shortcuts System
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Don't intercept when on unauthenticated screens
+      if (page === "login" || page === "register" || page === "setup") {
+        return
+      }
+
+      const isCmdOrCtrl = e.metaKey || e.ctrlKey
+
+      // Esc — Close modal/dropdown
+      if (e.key === "Escape") {
+        if (showShortcutsModal) {
+          e.preventDefault()
+          setShowShortcutsModal(false)
+          return
+        }
+        if (showConflictModal) {
+          e.preventDefault()
+          setShowConflictModal(false)
+          return
+        }
+        dispatchShortcutEvent("escape")
+        return
+      }
+
+      // Alt + 1-8 — Navigate main sections
+      if (e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
+        let digit: number | null = null
+        if (e.code && e.code.startsWith("Digit")) {
+          digit = parseInt(e.code.replace("Digit", ""), 10)
+        } else if (e.key >= "1" && e.key <= "8") {
+          digit = parseInt(e.key, 10)
+        }
+        if (digit !== null && digit >= 1 && digit <= 8) {
+          e.preventDefault()
+          switch (digit) {
+            case 1:
+              go("dashboard")
+              break
+            case 2:
+              go("patients")
+              break
+            case 3:
+              go("consultation")
+              break
+            case 4:
+              go("bill-form")
+              break
+            case 5:
+              setSettingsInitialTab("Clinical library")
+              go("settings")
+              break
+            case 6:
+              setSettingsInitialTab("Doctor profile")
+              go("settings")
+              break
+            case 7:
+              go("patient-profile")
+              break
+            case 8:
+              setEditingPatient(null)
+              go("patient-form")
+              break
+          }
+          return
+        }
+      }
+
+      if (isCmdOrCtrl) {
+        const key = e.key.toLowerCase()
+
+        // Ctrl + / — Show shortcut reference
+        if (key === "/" || key === "?") {
+          e.preventDefault()
+          setShowShortcutsModal((prev) => !prev)
+          return
+        }
+
+        // Ctrl + K — Global patient search
+        if (key === "k" && !e.shiftKey) {
+          e.preventDefault()
+          dispatchShortcutEvent("global-patient-search")
+          const searchInput = document.getElementById(
+            "global-patient-search",
+          ) as HTMLInputElement | null
+          if (searchInput) {
+            searchInput.focus()
+            searchInput.select()
+          } else {
+            go("dashboard")
+            setTimeout(() => {
+              dispatchShortcutEvent("global-patient-search")
+              const el = document.getElementById(
+                "global-patient-search",
+              ) as HTMLInputElement | null
+              el?.focus()
+              el?.select()
+            }, 60)
+          }
+          return
+        }
+
+        // Ctrl + S — Save current draft
+        if (key === "s" && !e.shiftKey) {
+          e.preventDefault()
+          dispatchShortcutEvent("save-draft")
+          return
+        }
+
+        // Ctrl + P — Print current prescription/bill
+        if (key === "p" && !e.shiftKey) {
+          e.preventDefault()
+          if (page === "consultation") {
+            go("preview")
+          } else if (page === "bill-form") {
+            go("bill-preview")
+          } else {
+            window.print()
+          }
+          return
+        }
+
+        // Ctrl + N — Add patient
+        if (key === "n" && !e.shiftKey) {
+          e.preventDefault()
+          setEditingPatient(null)
+          go("patient-form")
+          return
+        }
+
+        // Ctrl + E — Edit selected patient
+        if (key === "e" && !e.shiftKey) {
+          e.preventDefault()
+          if (selectedPatient && selectedPatient.id !== "PT-INIT") {
+            editPatient(selectedPatient)
+          }
+          return
+        }
+
+        // Ctrl + Shift + C — Save & start consultation (ONLY in patient-form and patient-profile)
+        if (key === "c" && e.shiftKey) {
+          e.preventDefault()
+          if (page === "patient-form") {
+            dispatchShortcutEvent("save-and-start-consultation")
+            return
+          }
+          if (page === "patient-profile") {
+            if (
+              !selectedPatient ||
+              !selectedPatient.id ||
+              selectedPatient.id === "PT-INIT"
+            ) {
+              alert("No valid patient selected for consultation.")
+              return
+            }
+            startConsultation(selectedPatient)
+            return
+          }
+          // Disabled on Dashboard, Settings, Patient List, Consultation, Billing, and all other screens
+          return
+        }
+
+        // Ctrl + Shift + M — Add medicine
+        if (key === "m" && e.shiftKey) {
+          e.preventDefault()
+          if (page === "consultation") {
+            dispatchShortcutEvent("add-medicine")
+          }
+          return
+        }
+
+        // Ctrl + Shift + V — Focus vitals
+        if (key === "v" && e.shiftKey) {
+          e.preventDefault()
+          if (page === "consultation") {
+            dispatchShortcutEvent("focus-vitals")
+          }
+          return
+        }
+
+        // Ctrl + Shift + D — Focus diagnosis
+        if (key === "d" && e.shiftKey) {
+          e.preventDefault()
+          if (page === "consultation") {
+            dispatchShortcutEvent("focus-diagnosis")
+          }
+          return
+        }
+
+        // Ctrl + Shift + A — Focus advice
+        if (key === "a" && e.shiftKey) {
+          e.preventDefault()
+          if (page === "consultation") {
+            dispatchShortcutEvent("focus-advice")
+          }
+          return
+        }
+
+        // Ctrl + F — Finalize prescription (confirmation required)
+        if (key === "f" && !e.shiftKey) {
+          if (page === "consultation") {
+            e.preventDefault()
+            dispatchShortcutEvent("finalize-prescription")
+            return
+          }
+        }
+
+        // Ctrl + ↑ / ↓ — Navigate medicine rows
+        if ((e.key === "ArrowUp" || e.key === "ArrowDown") && !e.shiftKey) {
+          if (page === "consultation") {
+            e.preventDefault()
+            dispatchShortcutEvent("navigate-medicine-rows", {
+              direction: e.key === "ArrowUp" ? "up" : "down",
+            })
+            return
+          }
+        }
+
+        // Ctrl + Shift + B — Open billing
+        if (key === "b" && e.shiftKey) {
+          e.preventDefault()
+          if (selectedPatient && selectedPatient.id !== "PT-INIT") {
+            startBill(selectedPatient)
+          } else {
+            go("bill-form")
+          }
+          return
+        }
+
+        // Ctrl + Shift + I — Add bill item
+        if (key === "i" && e.shiftKey) {
+          e.preventDefault()
+          if (page === "bill-form") {
+            dispatchShortcutEvent("add-bill-item")
+          }
+          return
+        }
+
+        // Ctrl + Shift + L — Open Medicine Library
+        if (key === "l" && e.shiftKey) {
+          e.preventDefault()
+          setSettingsInitialTab("Clinical library")
+          go("settings")
+          return
+        }
+      }
+    }
+
+    window.addEventListener("keydown", handleKeyDown)
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown)
+    }
+  }, [
+    page,
+    selectedPatient,
+    showShortcutsModal,
+    showConflictModal,
+    go,
+    editPatient,
+    startConsultation,
+    startBill,
+  ])
+
   if (isRestoringSession) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-slate-50 dark:bg-slate-900 text-slate-700 dark:text-slate-200">
@@ -985,6 +1338,7 @@ export default function App() {
         patient={editingPatient}
         patients={patientRecords}
         nextPatientId={nextPatientId}
+        fieldPreferences={patientFormFieldPreferences}
       />
     )
   } else if (page === "patient-profile") {
@@ -997,6 +1351,7 @@ export default function App() {
         onOpenConflictResolution={handleOpenConflicts}
         desktopSession={desktopSession}
         onStartBill={startBill}
+        onStartConsultation={startConsultation}
       />
     )
   } else if (page === "consultation") {
@@ -1011,6 +1366,7 @@ export default function App() {
         onDataChange={setConsultationData}
         onAddMedicine={addMedicineDefinition}
         desktopSession={desktopSession}
+        onUpdatePatientMedicalInfo={updatePatientMedicalInfo}
         onFinalized={() => {
           setSelectedPatient((prev) => ({
             ...prev,
@@ -1018,9 +1374,7 @@ export default function App() {
           }))
           setPatientRecords((prev) =>
             prev.map((p) =>
-              p.id === selectedPatient.id
-                ? { ...p, lastVisit: "Today" }
-                : p,
+              p.id === selectedPatient.id ? { ...p, lastVisit: "Today" } : p,
             ),
           )
         }}
@@ -1095,6 +1449,8 @@ export default function App() {
         onShowAllergyWarningChange={setShowAllergyWarning}
         billLayout={billLayout}
         onBillLayoutChange={setBillLayout}
+        patientFormFieldPreferences={patientFormFieldPreferences}
+        onPatientFormFieldPreferencesChange={updatePatientFormFieldPreferences}
         initialTab={settingsInitialTab}
         desktopSession={desktopSession}
         onOpenConflictModal={() => handleOpenConflicts()}
@@ -1154,6 +1510,10 @@ export default function App() {
         activeClinicId={desktopSession?.clinic_id || ""}
         initialConflictId={targetConflictId}
         onConflictResolved={handleConflictResolved}
+      />
+      <ShortcutGuideModal
+        isOpen={showShortcutsModal}
+        onClose={() => setShowShortcutsModal(false)}
       />
     </div>
   )

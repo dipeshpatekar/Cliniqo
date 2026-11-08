@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect, type FormEvent } from "react"
+import { useState, useMemo, useEffect, useRef, type FormEvent } from "react"
 import {
   Button,
   ConfirmDialog,
@@ -6,21 +6,16 @@ import {
   FormSection,
   IconButton,
   SelectInput,
-  StatusPill,
   TextArea,
   TextInput,
 } from "../common"
 import { AppHeader } from "../layout"
-import type { Page, Patient } from "../../types"
+import type { Page, Patient, PatientFormFieldPreferences } from "../../types"
 import {
-  Activity,
-  AlertCircle,
-  ArrowLeft,
-  Cloud,
-  ShieldCheck,
-  Stethoscope,
-  UserRound,
-} from "lucide-react"
+  defaultPatientFormFieldPreferences,
+  getIndiaDateTimeLocalString,
+} from "../../types"
+import { AlertCircle, ArrowLeft, Stethoscope, UserRound } from "lucide-react"
 
 export function PatientForm({
   go,
@@ -29,6 +24,7 @@ export function PatientForm({
   patient,
   patients,
   nextPatientId,
+  fieldPreferences = defaultPatientFormFieldPreferences,
 }: {
   go: (page: Page) => void
   onSave: (patient: Patient, startConsultation?: boolean) => void
@@ -36,6 +32,7 @@ export function PatientForm({
   patient: Patient | null
   patients: Patient[]
   nextPatientId: string
+  fieldPreferences?: PatientFormFieldPreferences
 }) {
   const [submitted, setSubmitted] = useState(false)
   const [isSaving, setIsSaving] = useState(false)
@@ -43,20 +40,26 @@ export function PatientForm({
   const [name, setName] = useState(patient?.name || "")
   const [phone, setPhone] = useState(patient?.phone || "")
   const [dirty, setDirty] = useState(false)
+  const formRef = useRef<HTMLFormElement>(null)
+  const isSavingRef = useRef(false)
 
   const editing = Boolean(patient)
+  const showDob = editing || fieldPreferences.showDob
+  const showPhone = editing || fieldPreferences.showPhone
+  const showAlternatePhone = editing || fieldPreferences.showAlternatePhone
+  const showAddress = editing || fieldPreferences.showAddress
   const normalizedPhone = phone.replace(/\D/g, "").slice(-10)
 
   const duplicatePatient = useMemo(
     () =>
-      normalizedPhone.length === 10
+      phone.trim() && normalizedPhone.length === 10
         ? patients.find(
             (record) =>
               record.id !== patient?.id &&
               record.phone.replace(/\D/g, "").slice(-10) === normalizedPhone,
           )
         : undefined,
-    [normalizedPhone, patient?.id, patients],
+    [normalizedPhone, patient?.id, patients, phone],
   )
 
   useEffect(() => {
@@ -76,29 +79,28 @@ export function PatientForm({
     }
   }
 
-  const submit = async (event: FormEvent) => {
-    event.preventDefault()
-    const form = event.currentTarget as HTMLFormElement
+  const performSave = async (startConsultation: boolean) => {
+    if (isSavingRef.current || isSaving) return
+    const form = formRef.current
+    if (!form) return
     setSubmitted(true)
 
     if (
       !form.checkValidity() ||
       !name.trim() ||
-      normalizedPhone.length !== 10
+      (phone.trim() && normalizedPhone.length !== 10)
     ) {
       return form.reportValidity()
     }
 
     if (!duplicatePatient) {
-      const submitter = (event.nativeEvent as SubmitEvent)
-        .submitter as HTMLButtonElement | null
-      const data = new FormData(form)
-      const submittedName = name.trim()
-      const allergyText = String(data.get("allergies") || "")
-      const conditionText = String(data.get("conditions") || "")
-
+      isSavingRef.current = true
       setIsSaving(true)
       try {
+        const data = new FormData(form)
+        const submittedName = name.trim()
+        const registeredAtVal = String(data.get("registeredAt") || "")
+
         await onSave(
           {
             id: patient?.id || nextPatientId,
@@ -109,41 +111,68 @@ export function PatientForm({
               .map((part) => part[0])
               .join("")
               .toUpperCase(),
-            age: Number(data.get("age")),
-            gender: String(data.get("gender")),
-            phone: String(data.get("phone")),
+            age: data.get("age")
+              ? Number(data.get("age"))
+              : (patient?.age ?? 0),
+            gender: String(data.get("gender") || patient?.gender || "Other"),
+            phone: phone.trim() ? phone.trim() : patient?.phone || "",
             lastVisit: patient?.lastVisit || "No visits yet",
-            allergies: allergyText
-              .split(",")
-              .map((item) => item.trim())
-              .filter(Boolean),
-            conditions: conditionText
-              .split(",")
-              .map((item) => item.trim())
-              .filter(Boolean),
-            dateOfBirth: String(data.get("dateOfBirth") || ""),
-            alternatePhone: String(data.get("alternatePhone") || ""),
-            address: String(data.get("address") || ""),
+            allergies: patient?.allergies || [],
+            conditions: patient?.conditions || [],
+            dateOfBirth: String(
+              data.get("dateOfBirth") || patient?.dateOfBirth || "",
+            ),
+            alternatePhone: String(
+              data.get("alternatePhone") || patient?.alternatePhone || "",
+            ),
+            address: String(data.get("address") || patient?.address || ""),
+            registeredAt:
+              registeredAtVal ||
+              patient?.registeredAt ||
+              new Date().toISOString(),
           },
-          submitter?.value === "consultation",
+          startConsultation,
         )
         setDirty(false)
       } finally {
         setIsSaving(false)
+        isSavingRef.current = false
       }
     }
   }
 
+  const submit = async (event: FormEvent) => {
+    event.preventDefault()
+    const submitter = (event.nativeEvent as SubmitEvent)
+      ?.submitter as HTMLButtonElement | null
+    await performSave(submitter?.value === "consultation")
+  }
+
+  useEffect(() => {
+    const handleShortcut = (e: Event) => {
+      const customEvent = e as CustomEvent<{ action: string }>
+      if (customEvent.detail?.action === "save-and-start-consultation") {
+        performSave(true)
+      }
+    }
+    window.addEventListener("cliniqo-shortcut", handleShortcut)
+    return () => {
+      window.removeEventListener("cliniqo-shortcut", handleShortcut)
+    }
+  }, [
+    name,
+    phone,
+    normalizedPhone,
+    duplicatePatient,
+    patient,
+    nextPatientId,
+    onSave,
+    isSaving,
+  ])
+
   return (
     <>
-      <AppHeader
-        title={editing ? "Edit patient" : "Add new patient"}
-        subtitle={
-          editing
-            ? `Update ${patient?.name} without changing their patient ID or clinical history`
-            : "Create a separate demographic record before starting a consultation"
-        }
-      >
+      <AppHeader title={editing ? "Edit patient" : "Add new patient"}>
         <IconButton
           className="topbar-back"
           label="Back to patients"
@@ -164,6 +193,7 @@ export function PatientForm({
           form="patient-form"
           value="consultation"
           icon={Stethoscope}
+          title="Save & start consultation (Ctrl+Shift+C)"
           disabled={isSaving}
           loading={isSaving}
         >
@@ -172,6 +202,7 @@ export function PatientForm({
       </AppHeader>
 
       <form
+        ref={formRef}
         id="patient-form"
         className="page-content form-page"
         onSubmit={submit}
@@ -199,12 +230,8 @@ export function PatientForm({
             </div>
           )}
 
-          <FormSection
-            icon={UserRound}
-            title="Personal details"
-            description="Core patient demographics"
-          >
-            <div className="form-grid three">
+          <FormSection icon={UserRound} title="Personal details">
+            <div className="form-grid four">
               <Field
                 label="Full name"
                 required
@@ -213,7 +240,6 @@ export function PatientForm({
                     ? "Full name is required"
                     : undefined
                 }
-                className="span-two"
               >
                 <TextInput
                   name="name"
@@ -224,27 +250,14 @@ export function PatientForm({
                   aria-invalid={submitted && !name.trim()}
                 />
               </Field>
-              <Field
-                label="Patient ID"
-                hint={
-                  editing
-                    ? "Patient ID cannot be changed"
-                    : "Generated automatically"
-                }
-              >
+
+              <Field label="Patient ID">
                 <TextInput value={patient?.id || nextPatientId} readOnly />
               </Field>
-              <Field label="Date of birth">
-                <TextInput
-                  name="dateOfBirth"
-                  type="date"
-                  defaultValue={patient?.dateOfBirth || ""}
-                />
-              </Field>
-              <Field label="Age" required>
+
+              <Field label="Age">
                 <TextInput
                   name="age"
-                  required
                   type="number"
                   defaultValue={patient?.age}
                   placeholder="Years"
@@ -252,96 +265,94 @@ export function PatientForm({
                   max="120"
                 />
               </Field>
-              <Field label="Gender" required>
+
+              <Field label="Gender">
                 <SelectInput
                   name="gender"
-                  required
                   defaultValue={patient?.gender || ""}
                   style={{ height: "40px" }}
                 >
-                  <option value="" disabled>
-                    Select gender
-                  </option>
+                  <option value="">Select gender</option>
                   <option>Female</option>
                   <option>Male</option>
                   <option>Non-binary</option>
                   <option>Prefer not to say</option>
                 </SelectInput>
               </Field>
-              <Field
-                label="Mobile number"
-                required
-                error={
-                  submitted && normalizedPhone.length !== 10
-                    ? "Enter a valid 10-digit mobile number"
-                    : undefined
-                }
-                className="span-two"
-              >
-                <TextInput
-                  name="phone"
-                  required
-                  type="tel"
-                  value={phone}
-                  onChange={(e) => setPhone(e.target.value)}
-                  placeholder="+91 00000 00000"
-                  aria-invalid={submitted && normalizedPhone.length !== 10}
-                />
-              </Field>
-              <Field label="Alternate phone" hint="Optional">
-                <TextInput
-                  name="alternatePhone"
-                  type="tel"
-                  defaultValue={patient?.alternatePhone || ""}
-                  placeholder="+91 00000 00000"
-                />
-              </Field>
-              <Field label="Address" hint="Optional" className="full">
-                <TextArea
-                  name="address"
-                  rows={2}
-                  defaultValue={patient?.address || ""}
-                  placeholder="House / street, locality, city, postal code"
-                />
-              </Field>
-            </div>
-          </FormSection>
 
-          <FormSection
-            icon={Activity}
-            title="Clinical background"
-            description="Long-term details that apply across visits"
-          >
-            <div className="form-grid two">
-              <Field label="Known allergies">
-                <TextArea
-                  name="allergies"
-                  rows={3}
-                  defaultValue={patient?.allergies.join(", ") || ""}
-                  placeholder="e.g. Drug, food, or environmental allergies"
+              <Field label="Registration Date & Time">
+                <TextInput
+                  name="registeredAt"
+                  type="datetime-local"
+                  defaultValue={
+                    patient?.registeredAt
+                      ? getIndiaDateTimeLocalString(patient.registeredAt)
+                      : getIndiaDateTimeLocalString()
+                  }
                 />
               </Field>
-              <Field label="Medical conditions">
-                <TextArea
-                  name="conditions"
-                  rows={3}
-                  defaultValue={patient?.conditions.join(", ") || ""}
-                  placeholder="Existing or chronic conditions"
-                />
-              </Field>
+
+              {showDob && (
+                <Field label="Date of birth">
+                  <TextInput
+                    name="dateOfBirth"
+                    type="date"
+                    defaultValue={patient?.dateOfBirth || ""}
+                  />
+                </Field>
+              )}
+
+              {showPhone && (
+                <Field
+                  label="Mobile number"
+                  error={
+                    submitted && phone.trim() && normalizedPhone.length !== 10
+                      ? "Enter a valid 10-digit mobile number"
+                      : undefined
+                  }
+                >
+                  <TextInput
+                    name="phone"
+                    type="tel"
+                    value={phone}
+                    onChange={(e) => setPhone(e.target.value)}
+                    placeholder="+91 00000 00000"
+                    aria-invalid={
+                      submitted &&
+                      Boolean(phone.trim()) &&
+                      normalizedPhone.length !== 10
+                    }
+                  />
+                </Field>
+              )}
+
+              {showAlternatePhone && (
+                <Field label="Alternate phone">
+                  <TextInput
+                    name="alternatePhone"
+                    type="tel"
+                    defaultValue={patient?.alternatePhone || ""}
+                    placeholder="+91 00000 00000"
+                  />
+                </Field>
+              )}
+
+              {showAddress && (
+                <Field label="Address" className="full">
+                  <TextArea
+                    name="address"
+                    rows={2}
+                    defaultValue={patient?.address || ""}
+                    placeholder="House / street, locality, city, postal code"
+                  />
+                </Field>
+              )}
             </div>
           </FormSection>
 
           <div className="patient-form-actions">
             <div>
-              <strong>
-                {editing ? "Ready to save changes?" : "Ready to continue?"}
-              </strong>
-              <p>
-                {editing
-                  ? "The existing record will be updated while visit and prescription history stays preserved."
-                  : "Save the patient record, then choose whether to open their first consultation now."}
-              </p>
+              <strong>{editing ? "Save changes" : "Save patient"}</strong>
             </div>
             <Button
               type="submit"
@@ -356,6 +367,7 @@ export function PatientForm({
               type="submit"
               value="consultation"
               icon={Stethoscope}
+              title="Save & start consultation (Ctrl+Shift+C)"
               disabled={isSaving}
               loading={isSaving}
             >
@@ -363,27 +375,6 @@ export function PatientForm({
             </Button>
           </div>
         </div>
-
-        <aside className="form-aside">
-          <div className="aside-tip">
-            <ShieldCheck size={19} />
-            <h3>Patient record integrity</h3>
-            <p>
-              Demographics are stored with AES-256-GCM zero-plaintext
-              encryption. Finalized visits and prescriptions are preserved as
-              immutable history.
-            </p>
-          </div>
-          <div className="aside-tip">
-            <Cloud size={19} />
-            <h3>Encrypted offline persistence</h3>
-            <p>
-              Records are saved directly to local encrypted SQLite storage and
-              synchronized with the server.
-            </p>
-            <StatusPill tone="success">Encrypted SQLite</StatusPill>
-          </div>
-        </aside>
       </form>
 
       <ConfirmDialog

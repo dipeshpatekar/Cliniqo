@@ -1,7 +1,13 @@
 import { useState, useEffect } from "react"
-import { Button, IconButton, StatusPill } from "../common"
+import { Button, GlobalPatientSearch, IconButton, StatusPill } from "../common"
 import { AppHeader } from "../layout"
-import { getPublicPatientId, type Page, type Patient } from "../../types"
+import {
+  formatDateDDMMYYYY,
+  getPublicPatientId,
+  type Page,
+  type Patient,
+} from "../../types"
+import { hasGenuineAllergies } from "../../utils/allergy"
 import {
   AlertCircle,
   CalendarDays,
@@ -23,13 +29,17 @@ export function Dashboard({
   patients,
   onOpenPatient,
   desktopSession,
+  onOpenSearch,
 }: {
   go: (page: Page) => void
   patients: Patient[]
   onOpenPatient: (patient: Patient) => void
   desktopSession?: DesktopSessionContext | null
+  onOpenSearch?: () => void
 }) {
-  const [consultations, setConsultations] = useState<LocalConsultationRecord[]>([])
+  const [consultations, setConsultations] = useState<LocalConsultationRecord[]>(
+    [],
+  )
 
   useEffect(() => {
     if (desktopSession?.clinic_id) {
@@ -47,11 +57,12 @@ export function Dashboard({
       c.status !== "DRAFT" &&
       (c.consultation_date || c.updated_at || "").startsWith(todayIso),
   )
-  const seenToday = finalizedToday.length > 0
-    ? finalizedToday.length
-    : patients.filter((patient) =>
-        patient.lastVisit.toLowerCase().startsWith("today"),
-      ).length
+  const seenToday =
+    finalizedToday.length > 0
+      ? finalizedToday.length
+      : patients.filter((patient) =>
+          patient.lastVisit.toLowerCase().startsWith("today"),
+        ).length
 
   const finalizedConsultations = consultations
     .filter((c) => c.status !== "DRAFT")
@@ -63,27 +74,30 @@ export function Dashboard({
     .slice(0, 5)
 
   const allergyRecords = patients.filter(
-    (patient) => patient.allergies.length > 0,
+    (patient) => hasGenuineAllergies(patient.allergies),
   ).length
   const recordedConditions = patients.reduce(
     (total, patient) => total + patient.conditions.length,
     0,
   )
 
-  const todayStr = new Date().toLocaleDateString("en-IN", {
+  const weekday = new Intl.DateTimeFormat("en-IN", {
     weekday: "long",
-    day: "2-digit",
-    month: "long",
-    year: "numeric",
-  })
+  }).format(new Date())
+  const todayStr = `${weekday}, ${formatDateDDMMYYYY(new Date())}`
 
   return (
     <>
       <AppHeader title="Doctor workspace" subtitle={todayStr}>
-        <IconButton label="Find patient" onClick={() => go("patients")}>
-          <Search size={18} />
-        </IconButton>
-        <Button icon={UserRoundPlus} onClick={() => go("patient-form")}>
+        <GlobalPatientSearch
+          patients={patients}
+          onSelectPatient={onOpenPatient}
+        />
+        <Button
+          icon={UserRoundPlus}
+          title="Add patient (Ctrl+N)"
+          onClick={() => go("patient-form")}
+        >
           Add patient
         </Button>
       </AppHeader>
@@ -91,38 +105,40 @@ export function Dashboard({
         <section className="stat-grid" aria-label="Clinic statistics">
           {[
             {
+              variant: "teal",
               label: "Patient records",
               value: String(patients.length),
-              note: "Encrypted SQLite records",
               icon: Users,
             },
             {
+              variant: "blue",
               label: "Seen today",
               value: String(seenToday),
-              note: "From recorded visits",
               icon: CalendarDays,
             },
             {
+              variant: "amber",
               label: "Allergy records",
               value: String(allergyRecords),
-              note: "Require clinical review",
               icon: AlertCircle,
             },
             {
+              variant: "purple",
               label: "Recorded conditions",
               value: String(recordedConditions),
-              note: "Across active patients",
               icon: Stethoscope,
             },
           ].map((stat) => (
-            <article className="stat-item" key={stat.label}>
+            <article
+              className={`stat-item stat-${stat.variant}`}
+              key={stat.label}
+            >
               <div className="stat-icon">
-                <stat.icon size={19} />
+                <stat.icon size={20} />
               </div>
               <div>
                 <span>{stat.label}</span>
                 <strong>{stat.value}</strong>
-                <small>{stat.note}</small>
               </div>
             </article>
           ))}
@@ -132,8 +148,11 @@ export function Dashboard({
           <section className="panel">
             <div className="panel-head">
               <div>
-                <h2>{finalizedConsultations.length > 0 ? "Recent consultations" : "Recent patients"}</h2>
-                <p>{finalizedConsultations.length > 0 ? "Today’s patient activity" : "Recently registered clinic patients"}</p>
+                <h2>
+                  {finalizedConsultations.length > 0
+                    ? "Recent consultations"
+                    : "Recent patients"}
+                </h2>
               </div>
               <button className="text-btn" onClick={() => go("patients")}>
                 View all <ChevronRight size={15} />
@@ -161,8 +180,13 @@ export function Dashboard({
                     allergies: [],
                     conditions: [],
                   }
-                  const dateStr = (c.consultation_date || c.updated_at || "").slice(0, 10)
-                  const timeLabel = dateStr === todayIso ? "Today" : dateStr || "Recorded"
+                  const dateStr = (
+                    c.consultation_date ||
+                    c.updated_at ||
+                    ""
+                  ).slice(0, 10)
+                  const timeLabel =
+                    dateStr === todayIso ? "Today" : dateStr || "Recorded"
                   return (
                     <button
                       className="consultation-row"
@@ -173,15 +197,16 @@ export function Dashboard({
                       <span className="patient-cell">
                         <strong>{patient.name}</strong>
                         <small>
-                          {getPublicPatientId(patient)} · {patient.age ? `${patient.age} yrs` : "Patient"}
+                          {getPublicPatientId(patient)} ·{" "}
+                          {patient.age ? `${patient.age} yrs` : "Patient"}
                         </small>
                       </span>
                       <span className="visit-reason">
-                        {c.diagnosis || c.chief_complaint || "Recorded consultation"}
+                        {c.diagnosis ||
+                          c.chief_complaint ||
+                          "Recorded consultation"}
                       </span>
-                      <StatusPill tone="success">
-                        Finalized
-                      </StatusPill>
+                      <StatusPill tone="success">Finalized</StatusPill>
                       <span className="time">{timeLabel}</span>
                       <ChevronRight size={17} />
                     </button>
@@ -203,7 +228,8 @@ export function Dashboard({
                 </div>
               ) : (
                 patients.slice(0, 5).map((patient) => {
-                  const isNew = patient.lastVisit === "No visits yet" || !patient.lastVisit
+                  const isNew =
+                    patient.lastVisit === "No visits yet" || !patient.lastVisit
                   return (
                     <button
                       className="consultation-row"
@@ -214,10 +240,13 @@ export function Dashboard({
                       <span className="patient-cell">
                         <strong>{patient.name}</strong>
                         <small>
-                          {getPublicPatientId(patient)} · {patient.age ? `${patient.age} yrs` : "Patient"}
+                          {getPublicPatientId(patient)} ·{" "}
+                          {patient.age ? `${patient.age} yrs` : "Patient"}
                         </small>
                       </span>
-                      <span className="visit-reason">{isNew ? "Newly registered patient" : "Recorded visit"}</span>
+                      <span className="visit-reason">
+                        {isNew ? "Newly registered patient" : "Recorded visit"}
+                      </span>
                       <StatusPill
                         tone={
                           isNew
@@ -227,9 +256,16 @@ export function Dashboard({
                               : "neutral"
                         }
                       >
-                        {isNew ? "New Patient" : patient.syncStatus || "Local record"}
+                        {isNew
+                          ? "New Patient"
+                          : patient.syncStatus || "Local record"}
                       </StatusPill>
-                      <span className="time">{isNew ? "Recently added" : patient.lastVisit}</span>
+                      <span className="time">
+                        {isNew
+                          ? "Recently added"
+                          : formatDateDDMMYYYY(patient.lastVisit) ||
+                            patient.lastVisit}
+                      </span>
                       <ChevronRight size={17} />
                     </button>
                   )
@@ -242,7 +278,6 @@ export function Dashboard({
               <div className="panel-head">
                 <div>
                   <h2>Quick actions</h2>
-                  <p>Common daily tasks</p>
                 </div>
               </div>
               <button onClick={() => go("patient-form")}>
@@ -251,17 +286,24 @@ export function Dashboard({
                 </span>
                 <div>
                   <strong>Add a new patient</strong>
-                  <small>Create an encrypted patient record</small>
                 </div>
                 <ChevronRight size={17} />
               </button>
-              <button onClick={() => go("patients")}>
+              <button
+                onClick={() => {
+                  const input = document.getElementById("global-patient-search")
+                  if (input) {
+                    input.focus()
+                  } else {
+                    go("patients")
+                  }
+                }}
+              >
                 <span>
                   <Search size={19} />
                 </span>
                 <div>
                   <strong>Find a patient</strong>
-                  <small>Search records and visit history</small>
                 </div>
                 <ChevronRight size={17} />
               </button>
@@ -270,7 +312,6 @@ export function Dashboard({
               <div className="panel-head">
                 <div>
                   <h2>WhatsApp delivery</h2>
-                  <p>Provider messaging status</p>
                 </div>
                 <MessageCircle size={19} />
               </div>

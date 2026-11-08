@@ -37,7 +37,7 @@ describe("Dashboard Patient Creation & Real-Time Visibility", () => {
         go={vi.fn()}
         patients={[initialPatient]}
         onOpenPatient={vi.fn()}
-      />
+      />,
     )
 
     // Patient record stat should be 1
@@ -51,7 +51,7 @@ describe("Dashboard Patient Creation & Real-Time Visibility", () => {
         go={vi.fn()}
         patients={[newlyAddedPatient, initialPatient]}
         onOpenPatient={vi.fn()}
-      />
+      />,
     )
     const html2 = rawHtml2.replace(/<!-- -->/g, "")
 
@@ -60,7 +60,6 @@ describe("Dashboard Patient Creation & Real-Time Visibility", () => {
 
     // Panel title must say "Recent patients" when no consultations exist
     expect(html2).toContain("Recent patients")
-    expect(html2).toContain("Recently registered clinic patients")
 
     // Newly added patient must be displayed
     expect(html2).toContain("Priya Nair")
@@ -72,14 +71,36 @@ describe("Dashboard Patient Creation & Real-Time Visibility", () => {
 
   it("renders empty state only when patient array is completely empty", () => {
     const html = renderToString(
-      <Dashboard
-        go={vi.fn()}
-        patients={[]}
-        onOpenPatient={vi.fn()}
-      />
+      <Dashboard go={vi.fn()} patients={[]} onOpenPatient={vi.fn()} />,
     )
 
     expect(html).toContain("No patients or consultations recorded yet.")
     expect(html).toContain("<strong>0</strong>")
+  })
+
+  it("renders visible global patient search input in top-right header next to Add Patient button", () => {
+    const rawHtml = renderToString(
+      <Dashboard
+        go={vi.fn()}
+        patients={[initialPatient]}
+        onOpenPatient={vi.fn()}
+      />,
+    )
+    const html = rawHtml.replace(/<!-- -->/g, "")
+
+    // Verify search input is present
+    expect(html).toContain('id="global-patient-search"')
+    expect(html).toContain("Search patient")
+    expect(html).toContain("global-patient-search-bar")
+    expect(html).toContain("Add patient")
+
+    // Verify the search input appears immediately before Add patient in header-actions
+    const searchIdx = html.indexOf("global-patient-search-container")
+    const addPatientIdx = html.indexOf("Add patient")
+    expect(searchIdx).toBeGreaterThan(0)
+    expect(addPatientIdx).toBeGreaterThan(searchIdx)
+
+    // Verify the old search icon button is removed
+    expect(html).not.toContain('title="Search patients (Ctrl+K)"')
   })
 })

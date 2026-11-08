@@ -1,34 +1,33 @@
-import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
-import { Document, Types } from 'mongoose';
+import { Prop, Schema, SchemaFactory } from "@nestjs/mongoose"
+import { Document, Types } from "mongoose"
 
-export type CatalogueGenericDocument = CatalogueGeneric &
-  Document<Types.ObjectId>;
+export type CatalogueGenericDocument = CatalogueGeneric & Document<Types.ObjectId>
 
-@Schema({ timestamps: true, collection: 'catalogue_generics' })
+@Schema({ timestamps: true, collection: "catalogue_generics" })
 export class CatalogueGeneric {
   @Prop({ type: String, required: true, unique: true, index: true, trim: true })
-  identifier: string;
+  identifier: string
 
   @Prop({ type: String, required: true, trim: true, index: true })
-  genericName: string;
+  genericName: string
 
   @Prop({ type: [String], default: [] })
-  substanceIdentifiers: string[];
+  substanceIdentifiers: string[]
 
   @Prop({ type: [String], default: [] })
-  substances: string[];
+  substances: string[]
 
   @Prop({ type: [String], default: [] })
-  routeIdentifiers: string[];
+  routeIdentifiers: string[]
 
   @Prop({ type: [String], default: [] })
-  routes: string[];
+  routes: string[]
 
   @Prop({ type: String, default: null })
-  doseFormId?: string | null;
+  doseFormId?: string | null
 
   @Prop({ type: String, default: null, index: true })
-  doseForm?: string | null;
+  doseForm?: string | null
 
   @Prop({
     type: [
@@ -42,43 +41,43 @@ export class CatalogueGeneric {
     default: [],
   })
   strengths: Array<{
-    ingredient?: string;
-    rawStrength: string;
-    value?: number;
-    unit?: string;
-  }>;
+    ingredient?: string
+    rawStrength: string
+    value?: number
+    unit?: string
+  }>
 
   @Prop({ type: Boolean, default: false })
-  isCombination: boolean;
+  isCombination: boolean
 
   @Prop({ type: Boolean, default: true, index: true })
-  isStrengthVerified: boolean;
+  isStrengthVerified: boolean
 
-  @Prop({ type: String, default: '' })
-  rawStrengthSummary: string;
+  @Prop({ type: String, default: "" })
+  rawStrengthSummary: string
 
-  @Prop({ type: String, default: 'IMMEDIATE_RELEASE', index: true })
-  releaseType: string;
-
-  @Prop({ type: String, default: null })
-  indications?: string | null;
+  @Prop({ type: String, default: "IMMEDIATE_RELEASE", index: true })
+  releaseType: string
 
   @Prop({ type: String, default: null })
-  contraindications?: string | null;
+  indications?: string | null
 
   @Prop({ type: String, default: null })
-  therapeuticRole?: string | null;
-
-  @Prop({ type: String, default: 'CDCI_NRCES_INDIA' })
-  sourceProvenance: string;
+  contraindications?: string | null
 
   @Prop({ type: String, default: null })
-  lastUpdatedOn?: string | null;
+  therapeuticRole?: string | null
+
+  @Prop({ type: String, default: "CDCI_NRCES_INDIA" })
+  sourceProvenance: string
+
+  @Prop({ type: String, default: null })
+  lastUpdatedOn?: string | null
 }
 
 export const CatalogueGenericSchema =
-  SchemaFactory.createForClass(CatalogueGeneric);
+  SchemaFactory.createForClass(CatalogueGeneric)
 
 // Compound & text search indexes
-CatalogueGenericSchema.index({ genericName: 'text', substances: 'text' });
-CatalogueGenericSchema.index({ doseForm: 1, genericName: 1 });
+CatalogueGenericSchema.index({ genericName: "text", substances: "text" })
+CatalogueGenericSchema.index({ doseForm: 1, genericName: 1 })

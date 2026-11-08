@@ -17,7 +17,10 @@ export type Patient = {
   dateOfBirth?: string
   alternatePhone?: string
   address?: string
+  registeredAt?: string
   syncStatus?: "PENDING" | "SYNCED" | "CONFLICT"
+  updatedAt?: string
+  createdAt?: string
 }
 
 export type Medicine = {
@@ -81,7 +84,6 @@ export type CatalogueSearchResult = {
   isOfflineCache?: boolean
 }
 
-
 export type Vitals = {
   systolic: string
   diastolic: string
@@ -101,7 +103,35 @@ export type ConsultationData = {
   medicines: Medicine[]
   followUpDate: string
   followUpInstructions: string
+  allergies?: string[]
+  conditions?: string[]
 }
+
+export type PatientFormFieldPreferences = {
+  showDob: boolean
+  showPhone: boolean
+  showAlternatePhone: boolean
+  showAddress: boolean
+}
+
+export const defaultPatientFormFieldPreferences: PatientFormFieldPreferences = {
+  showDob: true,
+  showPhone: true,
+  showAlternatePhone: true,
+  showAddress: true,
+}
+
+export const loadPatientFormFieldPreferences =
+  (): PatientFormFieldPreferences => {
+    try {
+      const saved = JSON.parse(
+        window.localStorage.getItem("cliniqo-patient-form-preferences") || "{}",
+      )
+      return { ...defaultPatientFormFieldPreferences, ...saved }
+    } catch {
+      return defaultPatientFormFieldPreferences
+    }
+  }
 
 export type BillItem = {
   id: number
@@ -168,6 +198,7 @@ export const initialPatients: Patient[] = [
     lastVisit: "Today, 10:30 AM",
     allergies: ["Penicillin"],
     conditions: ["Seasonal allergic rhinitis"],
+    registeredAt: "2026-11-07T10:30",
   },
   {
     id: "PC-1047",
@@ -176,9 +207,10 @@ export const initialPatients: Patient[] = [
     age: 52,
     gender: "Male",
     phone: "+91 98204 11882",
-    lastVisit: "24 Jun 2025",
+    lastVisit: "24/06/2025",
     allergies: [],
     conditions: ["Hypertension"],
+    registeredAt: "2025-06-24T09:15",
   },
   {
     id: "PC-1046",
@@ -187,9 +219,10 @@ export const initialPatients: Patient[] = [
     age: 28,
     gender: "Female",
     phone: "+91 99876 22109",
-    lastVisit: "22 Jun 2025",
+    lastVisit: "22/06/2025",
     allergies: ["Sulfonamides"],
     conditions: [],
+    registeredAt: "2025-06-22T14:00",
   },
   {
     id: "PC-1045",
@@ -198,9 +231,10 @@ export const initialPatients: Patient[] = [
     age: 41,
     gender: "Male",
     phone: "+91 98921 88276",
-    lastVisit: "18 Jun 2025",
+    lastVisit: "18/06/2025",
     allergies: [],
     conditions: ["Type 2 diabetes"],
+    registeredAt: "2025-06-18T11:45",
   },
   {
     id: "PC-1044",
@@ -209,11 +243,123 @@ export const initialPatients: Patient[] = [
     age: 66,
     gender: "Female",
     phone: "+91 97694 33721",
-    lastVisit: "15 Jun 2025",
+    lastVisit: "15/06/2025",
     allergies: [],
     conditions: ["Osteoarthritis"],
+    registeredAt: "2025-06-15T16:20",
   },
 ]
+
+export function getIndiaDateTimeLocalString(
+  input?: Date | string | null,
+): string {
+  if (!input) {
+    const d = new Date()
+    const parts = new Intl.DateTimeFormat("en-GB", {
+      timeZone: "Asia/Kolkata",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    }).formatToParts(d)
+    const map: Record<string, string> = {}
+    for (const p of parts) map[p.type] = p.value
+    let hour = map.hour || "00"
+    if (hour === "24") hour = "00"
+    return `${map.year}-${map.month}-${map.day}T${hour}:${map.minute}`
+  }
+
+  if (typeof input === "string") {
+    if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(input)) {
+      return input.slice(0, 16)
+    }
+  }
+
+  const d = typeof input === "string" ? new Date(input) : input
+  if (isNaN(d.getTime())) return ""
+
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Asia/Kolkata",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).formatToParts(d)
+  const map: Record<string, string> = {}
+  for (const p of parts) map[p.type] = p.value
+  let hour = map.hour || "00"
+  if (hour === "24") hour = "00"
+  return `${map.year}-${map.month}-${map.day}T${hour}:${map.minute}`
+}
+
+export function formatDateDDMMYYYY(input?: string | Date | null): string {
+  if (!input) return ""
+  const str = String(input).trim()
+  if (!str) return ""
+  if (/^\d{2}\/\d{2}\/\d{4}$/.test(str)) return str
+
+  // ISO date like YYYY-MM-DD
+  const isoDateMatch = str.match(/^(\d{4})-(\d{2})-(\d{2})/)
+  if (isoDateMatch) {
+    return `${isoDateMatch[3]}/${isoDateMatch[2]}/${isoDateMatch[1]}`
+  }
+
+  // DD-MM-YYYY
+  const dashMatch = str.match(/^(\d{2})-(\d{2})-(\d{4})/)
+  if (dashMatch) {
+    return `${dashMatch[1]}/${dashMatch[2]}/${dashMatch[3]}`
+  }
+
+  const d = new Date(str)
+  if (isNaN(d.getTime())) return str
+
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Asia/Kolkata",
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+  }).formatToParts(d)
+  const map: Record<string, string> = {}
+  for (const p of parts) map[p.type] = p.value
+  return `${map.day}/${map.month}/${map.year}`
+}
+
+export function formatDateTimeDDMMYYYY(
+  input?: string | Date | null,
+  includeTime = true,
+): string {
+  if (!input) return ""
+  const d = typeof input === "string" ? new Date(input) : input
+  if (!d || isNaN(d.getTime())) {
+    return formatDateDDMMYYYY(input)
+  }
+
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Asia/Kolkata",
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: true,
+  }).formatToParts(d)
+  const map: Record<string, string> = {}
+  for (const p of parts) map[p.type] = p.value
+  const dateStr = `${map.day}/${map.month}/${map.year}`
+  if (!includeTime || !map.hour || !map.minute) {
+    return dateStr
+  }
+  const period = map.dayPeriod ? ` ${map.dayPeriod.toUpperCase()}` : ""
+  return `${dateStr}, ${map.hour}:${map.minute}${period}`
+}
+
+export function formatIndiaDateTime(input?: string | null): string {
+  return formatDateTimeDDMMYYYY(input, true)
+}
 
 export function getPublicPatientId(
   patient?: { displayId?: string; patientCode?: string; id?: string } | null,
@@ -264,6 +410,24 @@ export function mapLocalRecordToPatient(rec: LocalPatientRecord): Patient {
     displayId = `PC-${numPart}`
   }
 
+  let registeredAt: string | undefined = undefined
+  let alternatePhone: string | undefined = undefined
+  let address: string | undefined = undefined
+
+  if (rec.sensitive_notes) {
+    try {
+      const parsed = JSON.parse(rec.sensitive_notes)
+      if (typeof parsed === "object" && parsed !== null) {
+        if (parsed.registeredAt) registeredAt = String(parsed.registeredAt)
+        if (parsed.alternatePhone)
+          alternatePhone = String(parsed.alternatePhone)
+        if (parsed.address) address = String(parsed.address)
+      }
+    } catch {
+      // not json, leave as plain note
+    }
+  }
+
   return {
     id: rec.id,
     displayId,
@@ -277,7 +441,11 @@ export function mapLocalRecordToPatient(rec: LocalPatientRecord): Patient {
     allergies: Array.isArray(rec.allergies) ? rec.allergies : [],
     conditions: Array.isArray(rec.conditions) ? rec.conditions : [],
     dateOfBirth: rec.date_of_birth || undefined,
+    alternatePhone,
+    address,
+    registeredAt,
     syncStatus: rec.sync_status,
+    updatedAt: rec.updated_at,
   }
 }
 
@@ -308,6 +476,8 @@ export const createEmptyConsultationData = (): ConsultationData => ({
   medicines: [],
   followUpDate: "",
   followUpInstructions: "",
+  allergies: [],
+  conditions: [],
 })
 
 export const getDoseConfig = (formulation: string) => {
@@ -318,15 +488,24 @@ export const getDoseConfig = (formulation: string) => {
       return { unit: "capsule(s)", step: "1", placeholder: "0" }
     case "Syrup":
     case "Suspension":
+    case "Mouthwash":
     case "Injection":
       return { unit: "mL", step: "0.5", placeholder: "0" }
     case "Cream":
     case "Ointment":
+    case "Gel":
+    case "Lotion":
       return { unit: "application(s)", step: "1", placeholder: "0" }
     case "Drops":
+    case "Eye Drops":
+    case "Ear Drops":
       return { unit: "drop(s)", step: "1", placeholder: "0" }
     case "Inhaler":
       return { unit: "puff(s)", step: "1", placeholder: "0" }
+    case "Powder":
+      return { unit: "sachet(s)", step: "1", placeholder: "0" }
+    case "Suppository":
+      return { unit: "suppository(ies)", step: "1", placeholder: "0" }
     default:
       return { unit: "unit(s)", step: "0.5", placeholder: "0" }
   }
@@ -344,8 +523,52 @@ export const oralFormulations = new Set([
   "Capsule",
   "Syrup",
   "Suspension",
+  "Powder",
 ])
-export const topicalFormulations = new Set(["Cream", "Ointment"])
+export const topicalFormulations = new Set([
+  "Cream",
+  "Ointment",
+  "Gel",
+  "Lotion",
+])
+
+export const FORMULATION_SHORTCUTS: Record<string, string> = {
+  t: "Tablet",
+  c: "Capsule",
+  s: "Syrup",
+  d: "Drops",
+  i: "Injection",
+  o: "Ointment",
+  r: "Cream",
+  g: "Gel",
+  p: "Powder",
+  l: "Lotion",
+  n: "Suspension",
+  m: "Mouthwash",
+  h: "Inhaler",
+  e: "Eye Drops",
+  u: "Ear Drops",
+  b: "Suppository",
+}
+
+export const FORMULATION_LETTER_MAP: Record<string, string> = {
+  Tablet: "T",
+  Capsule: "C",
+  Syrup: "S",
+  Drops: "D",
+  Injection: "I",
+  Ointment: "O",
+  Cream: "R",
+  Gel: "G",
+  Powder: "P",
+  Lotion: "L",
+  Suspension: "N",
+  Mouthwash: "M",
+  Inhaler: "H",
+  "Eye Drops": "E",
+  "Ear Drops": "U",
+  Suppository: "B",
+}
 
 export const medicineOptions = [
   "Amlodipine",
@@ -394,12 +617,19 @@ export const defaultClinicalLibrary: ClinicalLibrary = {
     "Tablet",
     "Capsule",
     "Syrup",
-    "Suspension",
-    "Injection",
-    "Cream",
-    "Ointment",
     "Drops",
+    "Injection",
+    "Ointment",
+    "Cream",
+    "Gel",
+    "Powder",
+    "Lotion",
+    "Suspension",
+    "Mouthwash",
     "Inhaler",
+    "Eye Drops",
+    "Ear Drops",
+    "Suppository",
   ],
   Strengths: [
     "2.5 mg",
@@ -441,7 +671,15 @@ export const loadClinicalLibrary = (): ClinicalLibrary => {
     const saved = JSON.parse(
       window.localStorage.getItem("cliniqo-clinical-library") || "{}",
     ) as Partial<ClinicalLibrary>
-    return { ...defaultClinicalLibrary, ...saved }
+    const formulations = Array.isArray(saved.Formulations)
+      ? Array.from(
+          new Set([
+            ...defaultClinicalLibrary.Formulations,
+            ...saved.Formulations,
+          ]),
+        )
+      : defaultClinicalLibrary.Formulations
+    return { ...defaultClinicalLibrary, ...saved, Formulations: formulations }
   } catch {
     return defaultClinicalLibrary
   }

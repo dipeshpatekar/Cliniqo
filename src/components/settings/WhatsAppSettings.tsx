@@ -10,9 +10,6 @@ export function WhatsAppSettings() {
       <div className="settings-title with-status">
         <div>
           <h2>WhatsApp configuration</h2>
-          <p>
-            Provider credentials and delivery webhooks are backend-dependent.
-          </p>
         </div>
         <StatusPill tone="warning">Not connected</StatusPill>
       </div>
@@ -22,11 +19,7 @@ export function WhatsAppSettings() {
         </span>
         <div>
           <strong>WhatsApp Business provider</strong>
-          <p>
-            {tested
-              ? "Frontend check complete · No provider request sent"
-              : "No provider is connected in this UI build"}
-          </p>
+          {tested && <p>Frontend check complete · No provider request sent</p>}
         </div>
         <Button size="sm" variant="secondary" onClick={() => setTested(true)}>
           {tested ? "UI checked" : "Check UI state"}

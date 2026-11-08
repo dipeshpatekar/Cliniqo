@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react"
 import { Button, ConfirmDialog, IconButton } from "../common"
 import { AppHeader } from "../layout"
+import { analyzeAllergies } from "../../utils/allergy"
 import { InvoicesTab } from "./InvoicesTab"
 import {
   OverviewTab,
@@ -8,7 +9,13 @@ import {
   ConsultationsTab,
   PrescriptionsTab,
 } from "./tabs"
-import { getPublicPatientId, type Page, type Patient } from "../../types"
+import {
+  formatDateDDMMYYYY,
+  formatIndiaDateTime,
+  getPublicPatientId,
+  type Page,
+  type Patient,
+} from "../../types"
 import {
   isTauriDesktop,
   getLocalConsultations,
@@ -39,6 +46,7 @@ export function PatientProfile({
   onOpenConflictResolution,
   desktopSession,
   onStartBill,
+  onStartConsultation,
 }: {
   go: (page: Page) => void
   patient: Patient
@@ -47,23 +55,33 @@ export function PatientProfile({
   onOpenConflictResolution?: (patientId: string) => void
   desktopSession?: DesktopSessionContext | null
   onStartBill?: (patient: Patient, invoice?: LocalInvoiceRecord) => void
+  onStartConsultation?: (patient: Patient) => void
 }) {
   const [tab, setTab] = useState("Overview")
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
   const [isDeleting, setIsDeleting] = useState(false)
-  const [consultations, setConsultations] = useState<LocalConsultationRecord[]>([])
-  const [prescriptions, setPrescriptions] = useState<LocalPrescriptionRecord[]>([])
+  const [consultations, setConsultations] = useState<LocalConsultationRecord[]>(
+    [],
+  )
+  const [prescriptions, setPrescriptions] = useState<LocalPrescriptionRecord[]>(
+    [],
+  )
   const [loadingHistory, setLoadingHistory] = useState(false)
 
-  const allergyLabel = patient.allergies.join(", ")
+  const allergyAnalysis = analyzeAllergies(patient.allergies)
+  const allergyLabel = allergyAnalysis.displayLabel
 
   const loadHistory = useCallback(async () => {
     if (isTauriDesktop() && desktopSession?.clinic_id) {
       setLoadingHistory(true)
       try {
         const [cList, rxList] = await Promise.all([
-          getLocalConsultations(desktopSession.clinic_id, patient.id).catch(() => []),
-          getLocalPrescriptions(desktopSession.clinic_id, patient.id).catch(() => []),
+          getLocalConsultations(desktopSession.clinic_id, patient.id).catch(
+            () => [],
+          ),
+          getLocalPrescriptions(desktopSession.clinic_id, patient.id).catch(
+            () => [],
+          ),
         ])
         const matchedC = (cList || []).filter(
           (c) =>
@@ -85,7 +103,12 @@ export function PatientProfile({
         setLoadingHistory(false)
       }
     }
-  }, [desktopSession?.clinic_id, patient.id, patient.displayId, patient.patientCode])
+  }, [
+    desktopSession?.clinic_id,
+    patient.id,
+    patient.displayId,
+    patient.patientCode,
+  ])
 
   useEffect(() => {
     loadHistory()
@@ -113,7 +136,10 @@ export function PatientProfile({
 
   return (
     <>
-      <AppHeader title="Patient profile" subtitle={`Patient ID ${publicPatientId}`}>
+      <AppHeader
+        title="Patient profile"
+        subtitle={`Patient ID ${publicPatientId}`}
+      >
         <IconButton
           className="topbar-back"
           label="Back to patients"
@@ -124,6 +150,7 @@ export function PatientProfile({
         <Button
           variant="secondary"
           icon={Edit3}
+          title="Edit patient (Ctrl+E)"
           onClick={() => go("patient-form")}
         >
           Edit patient
@@ -131,11 +158,26 @@ export function PatientProfile({
         <Button
           variant="secondary"
           icon={ReceiptIndianRupee}
+          title="Open billing (Ctrl+Shift+B)"
           onClick={() => onStartBill?.(patient)}
         >
           Create bill
         </Button>
-        <Button icon={Stethoscope} onClick={() => go("consultation")}>
+        <Button
+          icon={Stethoscope}
+          title="Start consultation (Ctrl+Shift+C)"
+          onClick={() => {
+            if (!patient || !patient.id || patient.id === "PT-INIT") {
+              alert("No valid patient selected for consultation.")
+              return
+            }
+            if (onStartConsultation) {
+              onStartConsultation(patient)
+            } else {
+              go("consultation")
+            }
+          }}
+        >
           Start consultation
         </Button>
         {onDeletePatient && (
@@ -210,7 +252,7 @@ export function PatientProfile({
                 <CalendarDays size={14} />{" "}
                 {patient.lastVisit === "No visits yet"
                   ? "No consultations yet"
-                  : `Last visit ${patient.lastVisit.toLowerCase()}`}
+                  : `Last visit ${formatDateDDMMYYYY(patient.lastVisit) || patient.lastVisit}`}
               </span>
             </div>
           </div>
@@ -218,17 +260,24 @@ export function PatientProfile({
             <span>
               <Phone size={16} />
               <small>Mobile</small>
-              <strong>{patient.phone}</strong>
+              <strong>{patient.phone || "Not provided"}</strong>
             </span>
             <span>
               <UserRound size={16} />
               <small>Patient ID</small>
               <strong>{publicPatientId}</strong>
             </span>
+            {patient.registeredAt && (
+              <span>
+                <CalendarDays size={16} />
+                <small>Registered</small>
+                <strong>{formatIndiaDateTime(patient.registeredAt)}</strong>
+              </span>
+            )}
           </div>
         </section>
 
-        {patient.allergies.length > 0 && (
+        {allergyAnalysis.hasGenuineAllergies && (
           <div className="allergy-alert" role="alert">
             <AlertCircle size={20} />
             <div>

@@ -250,13 +250,128 @@ export const initialPatients: Patient[] = [
   },
 ]
 
+const INDIA_TIME_ZONE = "Asia/Kolkata"
+
+const SHORT_MONTH_MAP: Record<string, string> = {
+  jan: "01",
+  feb: "02",
+  mar: "03",
+  apr: "04",
+  may: "05",
+  jun: "06",
+  jul: "07",
+  aug: "08",
+  sep: "09",
+  oct: "10",
+  nov: "11",
+  dec: "12",
+  january: "01",
+  february: "02",
+  march: "03",
+  april: "04",
+  june: "06",
+  july: "07",
+  august: "08",
+  september: "09",
+  october: "10",
+  november: "11",
+  december: "12",
+}
+
+function parseTextualDateComponents(
+  str: string,
+): { day: string; month: string; year: string } | null {
+  // "24 Jun 2025" or "24 June 2025"
+  const m1 = str.match(/^(\d{1,2})\s+([A-Za-z]+)\s+(\d{4})$/)
+  if (m1) {
+    const month = SHORT_MONTH_MAP[m1[2].toLowerCase()]
+    if (month) {
+      return { day: m1[1].padStart(2, "0"), month, year: m1[3] }
+    }
+  }
+  // "Jun 24, 2025" or "June 24 2025"
+  const m2 = str.match(/^([A-Za-z]+)\s+(\d{1,2}),?\s+(\d{4})$/)
+  if (m2) {
+    const month = SHORT_MONTH_MAP[m2[1].toLowerCase()]
+    if (month) {
+      return { day: m2[2].padStart(2, "0"), month, year: m2[3] }
+    }
+  }
+  return null
+}
+
+/**
+ * Safely parses a Date, timestamp number, or date string in the context of India clinic time (Asia/Kolkata).
+ *
+ * Key handling:
+ * - Naive local ISO datetime strings without timezone offset (e.g. "2026-11-07T20:45:00" or "2026-11-07 20:45")
+ *   are treated as local India clinic datetimes (UTC+05:30), avoiding host/runner timezone shifts.
+ * - Date-only strings ("2026-11-07") are parsed at midnight in Asia/Kolkata (+05:30).
+ * - Full ISO strings with UTC/offset (e.g. "2026-11-07T15:15:00.000Z" or "+05:30") are parsed as exact instants.
+ * - Textual date strings ("24 Jun 2025") are parsed without host timezone dependency.
+ * - Numeric timestamps (milliseconds or Unix seconds) are converted to Date.
+ */
+export function parseIndiaDateTime(
+  input?: Date | string | number | null,
+): Date | null {
+  if (input === null || input === undefined) return null
+  if (input instanceof Date) {
+    return isNaN(input.getTime()) ? null : input
+  }
+  if (typeof input === "number") {
+    const ms = input < 10000000000 ? input * 1000 : input
+    const d = new Date(ms)
+    return isNaN(d.getTime()) ? null : d
+  }
+  const str = String(input).trim()
+  if (!str) return null
+
+  // Numeric timestamp string (ms or Unix seconds)
+  if (/^\d{10,13}$/.test(str)) {
+    const num = Number(str)
+    const ms = num < 10000000000 ? num * 1000 : num
+    const d = new Date(ms)
+    return isNaN(d.getTime()) ? null : d
+  }
+
+  // Naive local ISO-like datetime without timezone (e.g. YYYY-MM-DDTHH:mm or YYYY-MM-DD HH:mm:ss)
+  // In Cliniqo, dates recorded without offset represent India clinic wall-clock time (Asia/Kolkata, UTC+05:30)
+  if (/^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?$/.test(str)) {
+    return new Date(str.replace(" ", "T") + "+05:30")
+  }
+
+  // Date-only ISO YYYY-MM-DD
+  if (/^\d{4}-\d{2}-\d{2}$/.test(str)) {
+    return new Date(`${str}T00:00:00+05:30`)
+  }
+
+  // Date-only DD/MM/YYYY or DD-MM-YYYY
+  const ddmmyyyy = str.match(/^(\d{2})[\/\-](\d{2})[\/\-](\d{4})$/)
+  if (ddmmyyyy) {
+    return new Date(
+      `${ddmmyyyy[3]}-${ddmmyyyy[2]}-${ddmmyyyy[1]}T00:00:00+05:30`,
+    )
+  }
+
+  // Textual dates like "24 Jun 2025" or "Jun 24, 2025"
+  const textual = parseTextualDateComponents(str)
+  if (textual) {
+    return new Date(
+      `${textual.year}-${textual.month}-${textual.day}T00:00:00+05:30`,
+    )
+  }
+
+  const d = new Date(str)
+  return isNaN(d.getTime()) ? null : d
+}
+
 export function getIndiaDateTimeLocalString(
-  input?: Date | string | null,
+  input?: Date | string | number | null,
 ): string {
   if (!input) {
     const d = new Date()
     const parts = new Intl.DateTimeFormat("en-GB", {
-      timeZone: "Asia/Kolkata",
+      timeZone: INDIA_TIME_ZONE,
       year: "numeric",
       month: "2-digit",
       day: "2-digit",
@@ -272,16 +387,17 @@ export function getIndiaDateTimeLocalString(
   }
 
   if (typeof input === "string") {
-    if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(input)) {
-      return input.slice(0, 16)
+    // If it is already a naive local ISO datetime string (YYYY-MM-DDTHH:mm), preserve as is
+    if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(input.trim())) {
+      return input.trim()
     }
   }
 
-  const d = typeof input === "string" ? new Date(input) : input
-  if (isNaN(d.getTime())) return ""
+  const d = parseIndiaDateTime(input)
+  if (!d || isNaN(d.getTime())) return ""
 
   const parts = new Intl.DateTimeFormat("en-GB", {
-    timeZone: "Asia/Kolkata",
+    timeZone: INDIA_TIME_ZONE,
     year: "numeric",
     month: "2-digit",
     day: "2-digit",
@@ -296,29 +412,41 @@ export function getIndiaDateTimeLocalString(
   return `${map.year}-${map.month}-${map.day}T${hour}:${map.minute}`
 }
 
-export function formatDateDDMMYYYY(input?: string | Date | null): string {
+export function formatDateDDMMYYYY(
+  input?: string | Date | number | null,
+): string {
   if (!input) return ""
-  const str = String(input).trim()
-  if (!str) return ""
-  if (/^\d{2}\/\d{2}\/\d{4}$/.test(str)) return str
+  if (typeof input === "string") {
+    const str = input.trim()
+    if (!str) return ""
+    if (/^\d{2}\/\d{2}\/\d{4}$/.test(str)) return str
 
-  // ISO date like YYYY-MM-DD
-  const isoDateMatch = str.match(/^(\d{4})-(\d{2})-(\d{2})/)
-  if (isoDateMatch) {
-    return `${isoDateMatch[3]}/${isoDateMatch[2]}/${isoDateMatch[1]}`
+    // Date-only ISO like YYYY-MM-DD
+    const isoDateMatch = str.match(/^(\d{4})-(\d{2})-(\d{2})$/)
+    if (isoDateMatch) {
+      return `${isoDateMatch[3]}/${isoDateMatch[2]}/${isoDateMatch[1]}`
+    }
+
+    // Date-only DD-MM-YYYY
+    const dashMatch = str.match(/^(\d{2})-(\d{2})-(\d{4})$/)
+    if (dashMatch) {
+      return `${dashMatch[1]}/${dashMatch[2]}/${dashMatch[3]}`
+    }
+
+    // Textual date like "24 Jun 2025"
+    const textual = parseTextualDateComponents(str)
+    if (textual) {
+      return `${textual.day}/${textual.month}/${textual.year}`
+    }
   }
 
-  // DD-MM-YYYY
-  const dashMatch = str.match(/^(\d{2})-(\d{2})-(\d{4})/)
-  if (dashMatch) {
-    return `${dashMatch[1]}/${dashMatch[2]}/${dashMatch[3]}`
+  const d = parseIndiaDateTime(input)
+  if (!d || isNaN(d.getTime())) {
+    return typeof input === "string" ? input.trim() : ""
   }
-
-  const d = new Date(str)
-  if (isNaN(d.getTime())) return str
 
   const parts = new Intl.DateTimeFormat("en-GB", {
-    timeZone: "Asia/Kolkata",
+    timeZone: INDIA_TIME_ZONE,
     day: "2-digit",
     month: "2-digit",
     year: "numeric",
@@ -329,17 +457,33 @@ export function formatDateDDMMYYYY(input?: string | Date | null): string {
 }
 
 export function formatDateTimeDDMMYYYY(
-  input?: string | Date | null,
+  input?: string | Date | number | null,
   includeTime = true,
 ): string {
   if (!input) return ""
-  const d = typeof input === "string" ? new Date(input) : input
+
+  // If input is a pure date-only string (e.g. YYYY-MM-DD or DD/MM/YYYY or DD-MM-YYYY or "24 Jun 2025"),
+  // format without fictitious time
+  if (typeof input === "string") {
+    const trimmed = input.trim()
+    if (!trimmed) return ""
+    if (
+      /^\d{4}-\d{2}-\d{2}$/.test(trimmed) ||
+      /^\d{2}\/\d{2}\/\d{4}$/.test(trimmed) ||
+      /^\d{2}-\d{2}-\d{4}$/.test(trimmed) ||
+      parseTextualDateComponents(trimmed) !== null
+    ) {
+      return formatDateDDMMYYYY(trimmed)
+    }
+  }
+
+  const d = parseIndiaDateTime(input)
   if (!d || isNaN(d.getTime())) {
     return formatDateDDMMYYYY(input)
   }
 
   const parts = new Intl.DateTimeFormat("en-GB", {
-    timeZone: "Asia/Kolkata",
+    timeZone: INDIA_TIME_ZONE,
     day: "2-digit",
     month: "2-digit",
     year: "numeric",
@@ -357,7 +501,9 @@ export function formatDateTimeDDMMYYYY(
   return `${dateStr}, ${map.hour}:${map.minute}${period}`
 }
 
-export function formatIndiaDateTime(input?: string | null): string {
+export function formatIndiaDateTime(
+  input?: string | Date | number | null,
+): string {
   return formatDateTimeDDMMYYYY(input, true)
 }
 

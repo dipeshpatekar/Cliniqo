@@ -12,6 +12,7 @@ import {
   formatIndiaDateTime,
   formatDateDDMMYYYY,
   formatDateTimeDDMMYYYY,
+  parseIndiaDateTime,
 } from "../../types"
 
 describe("Patient Components & UX", () => {
@@ -276,6 +277,68 @@ describe("Patient Components & UX", () => {
       // Current date generates valid YYYY-MM-DDTHH:mm
       const current = getIndiaDateTimeLocalString()
       expect(current).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/)
+    })
+
+    it("handles ISO datetime strings, date-only strings, and UTC/IST conversion deterministically", () => {
+      // 1. Naive local ISO string (clinic wall-clock time)
+      expect(formatDateTimeDDMMYYYY("2026-11-07T20:45:00")).toBe(
+        "07/11/2026, 08:45 PM",
+      )
+      expect(formatDateTimeDDMMYYYY("2026-11-07T20:45")).toBe(
+        "07/11/2026, 08:45 PM",
+      )
+      expect(formatDateDDMMYYYY("2026-11-07T20:45:00")).toBe("07/11/2026")
+
+      // 2. Explicit timezone offset (+05:30)
+      expect(formatDateTimeDDMMYYYY("2026-11-07T20:45:00+05:30")).toBe(
+        "07/11/2026, 08:45 PM",
+      )
+
+      // 3. UTC ISO string converted to IST (+05:30)
+      // 15:15:00 UTC on 07/11/2026 -> 20:45:00 IST on 07/11/2026
+      expect(formatDateTimeDDMMYYYY("2026-11-07T15:15:00.000Z")).toBe(
+        "07/11/2026, 08:45 PM",
+      )
+      expect(formatDateDDMMYYYY("2026-11-07T15:15:00.000Z")).toBe("07/11/2026")
+
+      // 4. UTC ISO string across calendar day boundary
+      // 19:00:00 UTC on 07/11/2026 + 5:30 -> 00:30:00 IST on 08/11/2026
+      expect(formatDateTimeDDMMYYYY("2026-11-07T19:00:00.000Z")).toBe(
+        "08/11/2026, 12:30 AM",
+      )
+      expect(formatDateDDMMYYYY("2026-11-07T19:00:00.000Z")).toBe("08/11/2026")
+
+      // 5. Date-only strings
+      expect(formatDateTimeDDMMYYYY("2026-11-07")).toBe("07/11/2026")
+      expect(formatDateTimeDDMMYYYY("2026-11-07", false)).toBe("07/11/2026")
+      expect(formatDateDDMMYYYY("2026-11-07")).toBe("07/11/2026")
+      expect(formatDateDDMMYYYY("07/11/2026")).toBe("07/11/2026")
+      expect(formatDateDDMMYYYY("07-11-2026")).toBe("07/11/2026")
+
+      // 6. getIndiaDateTimeLocalString with UTC ISO string, Date object and naive local string
+      expect(
+        getIndiaDateTimeLocalString("2026-11-07T15:15:00.000Z"),
+      ).toBe("2026-11-07T20:45")
+      expect(
+        getIndiaDateTimeLocalString(new Date("2026-11-07T15:15:00.000Z")),
+      ).toBe("2026-11-07T20:45")
+      expect(
+        getIndiaDateTimeLocalString("2026-11-07T20:45"),
+      ).toBe("2026-11-07T20:45")
+
+      // 7. Numeric timestamp (milliseconds and seconds)
+      const epochMs = new Date("2026-11-07T15:15:00.000Z").getTime()
+      expect(formatDateTimeDDMMYYYY(epochMs)).toBe("07/11/2026, 08:45 PM")
+      expect(formatDateTimeDDMMYYYY(Math.floor(epochMs / 1000))).toBe(
+        "07/11/2026, 08:45 PM",
+      )
+
+      // 8. Safe fallback on null / undefined / invalid
+      expect(formatDateTimeDDMMYYYY(null)).toBe("")
+      expect(formatDateTimeDDMMYYYY(undefined)).toBe("")
+      expect(formatDateTimeDDMMYYYY("invalid-date")).toBe("invalid-date")
+      expect(parseIndiaDateTime(null)).toBeNull()
+      expect(parseIndiaDateTime("invalid-date")).toBeNull()
     })
   })
 

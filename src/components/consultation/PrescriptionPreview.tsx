@@ -15,6 +15,8 @@ import {
 import {
   formatDateDDMMYYYY,
   formatMedicineDose,
+  formatPatientAgeGender,
+  formatPrescriptionDateWithTime,
   getPublicPatientId,
   type Page,
   type Patient,
@@ -288,7 +290,7 @@ export function PrescriptionPreview({
               <span>Patient</span>
               <strong>{patient.name}</strong>
               <small>
-                {patient.age} years · {patient.gender}
+                {formatPatientAgeGender(patient.age, patient.gender, "years")}
               </small>
             </div>
             <div>
@@ -297,7 +299,9 @@ export function PrescriptionPreview({
             </div>
             <div>
               <span>Date</span>
-              <strong>{formatDateDDMMYYYY(data.date) || "—"}</strong>
+              <strong>
+                {formatPrescriptionDateWithTime(data.date, data.time)}
+              </strong>
             </div>
           </section>
 

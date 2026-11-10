@@ -13,6 +13,12 @@ import {
   formatDateDDMMYYYY,
   formatDateTimeDDMMYYYY,
   parseIndiaDateTime,
+  formatPatientAge,
+  formatPatientGender,
+  formatPatientAgeGender,
+  formatPrescriptionDateWithTime,
+  isMissingAge,
+  isMissingGender,
 } from "../../types"
 
 describe("Patient Components & UX", () => {
@@ -471,6 +477,102 @@ describe("Patient Components & UX", () => {
       expect(isShortcutAllowed("bill-form")).toBe(false)
       expect(isShortcutAllowed("bill-preview")).toBe(false)
       expect(isShortcutAllowed("preview")).toBe(false)
+    })
+
+    it("displays '— · —' when both patient age and gender are missing", () => {
+      const patientMissingBoth: Patient = {
+        id: "PC-9901",
+        name: "Abhijit Dipke",
+        initials: "AD",
+        age: 0,
+        gender: "Other",
+        phone: "",
+        lastVisit: "No visits yet",
+        allergies: [],
+        conditions: [],
+      }
+
+      const rawHtml = renderToString(
+        <PatientsPage
+          go={() => {}}
+          patients={[patientMissingBoth]}
+          onOpenPatient={() => {}}
+          onStartConsultation={() => {}}
+          onCreateBill={() => {}}
+          onEditPatient={() => {}}
+        />,
+      )
+      const html = rawHtml.replace(/<!-- -->/g, "")
+      expect(html).toContain("—")
+      expect(html).not.toContain("0 yrs")
+      expect(html).not.toContain("Other")
+      expect(formatPatientAgeGender(patientMissingBoth.age, patientMissingBoth.gender)).toBe("— · —")
+    })
+
+    it("displays '—' for missing age and '—' for missing gender individually", () => {
+      expect(formatPatientAge(0)).toBe("—")
+      expect(formatPatientAge(undefined)).toBe("—")
+      expect(formatPatientAge(45, "yrs")).toBe("45 yrs")
+      expect(formatPatientAge(45, "years")).toBe("45 years")
+
+      expect(formatPatientGender("Other")).toBe("—")
+      expect(formatPatientGender("")).toBe("—")
+      expect(formatPatientGender(undefined)).toBe("—")
+      expect(formatPatientGender("Female")).toBe("Female")
+      expect(formatPatientGender("Male")).toBe("Male")
+
+      expect(formatPatientAgeGender(0, "Female")).toBe("— · Female")
+      expect(formatPatientAgeGender(45, "Other", "yrs")).toBe("45 yrs · —")
+      expect(formatPatientAgeGender(45, "Male", "yrs")).toBe("45 yrs · Male")
+    })
+
+    it("displays finalized consultation date and time in Patients table and preserves 'No visits yet'", () => {
+      const patientWithVisit: Patient = {
+        id: "PC-9902",
+        name: "Cocakola",
+        initials: "C",
+        age: 65,
+        gender: "Male",
+        phone: "",
+        lastVisit: "2026-11-10T17:17:00.000Z",
+        allergies: [],
+        conditions: [],
+      }
+      const patientNoVisit: Patient = {
+        id: "PC-9903",
+        name: "Waste Gona",
+        initials: "WG",
+        age: 67,
+        gender: "Male",
+        phone: "",
+        lastVisit: "No visits yet",
+        allergies: [],
+        conditions: [],
+      }
+
+      const rawHtml = renderToString(
+        <PatientsPage
+          go={() => {}}
+          patients={[patientWithVisit, patientNoVisit]}
+          onOpenPatient={() => {}}
+          onStartConsultation={() => {}}
+          onCreateBill={() => {}}
+          onEditPatient={() => {}}
+        />,
+      )
+      const html = rawHtml.replace(/<!-- -->/g, "")
+      // Patient with finalized visit displays formatted date and time
+      expect(html).toContain("10/11/2026")
+      // Patient without visit continues to display "No visits yet"
+      expect(html).toContain("No visits yet")
+    })
+
+    it("formats prescription date with finalized time accurately", () => {
+      expect(formatPrescriptionDateWithTime("2026-11-10", "10:30 AM")).toBe("10/11/2026, 10:30 AM")
+      expect(formatPrescriptionDateWithTime("2026-11-10", "14:30")).toBe("10/11/2026, 02:30 PM")
+      expect(formatPrescriptionDateWithTime("2026-11-10", "09:05")).toBe("10/11/2026, 09:05 AM")
+      expect(formatPrescriptionDateWithTime("2026-11-10", "")).toBe("10/11/2026")
+      expect(formatPrescriptionDateWithTime("", "")).toBe("—")
     })
   })
 })

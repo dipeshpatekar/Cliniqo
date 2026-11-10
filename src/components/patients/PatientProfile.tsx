@@ -11,7 +11,9 @@ import {
 } from "./tabs"
 import {
   formatDateDDMMYYYY,
+  formatDateTimeDDMMYYYY,
   formatIndiaDateTime,
+  formatPatientAgeGender,
   getPublicPatientId,
   type Page,
   type Patient,
@@ -246,13 +248,14 @@ export function PatientProfile({
             <div>
               <h2>{patient.name}</h2>
               <p>
-                {patient.age} years · {patient.gender} · {publicPatientId}
+                {formatPatientAgeGender(patient.age, patient.gender, "years")} ·{" "}
+                {publicPatientId}
               </p>
               <span className="last-seen">
                 <CalendarDays size={14} />{" "}
                 {patient.lastVisit === "No visits yet"
                   ? "No consultations yet"
-                  : `Last visit ${formatDateDDMMYYYY(patient.lastVisit) || patient.lastVisit}`}
+                  : `Last visit ${formatDateTimeDDMMYYYY(patient.lastVisit, true) || patient.lastVisit}`}
               </span>
             </div>
           </div>

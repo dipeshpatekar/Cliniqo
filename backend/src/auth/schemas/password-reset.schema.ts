@@ -20,9 +20,47 @@ export class PasswordResetToken {
   doctorId: Types.ObjectId
 
   @Prop({
+    type: String,
+    lowercase: true,
+    trim: true,
+    required: false,
+  })
+  email?: string
+
+  @Prop({
+    type: String,
+    required: false,
+  })
+  otpHash?: string
+
+  @Prop({
     required: true,
   })
   tokenHash: string
+
+  @Prop({
+    type: Number,
+    default: 0,
+  })
+  attempts: number
+
+  @Prop({
+    type: Number,
+    default: 5,
+  })
+  maxAttempts: number
+
+  @Prop({
+    type: Date,
+    default: null,
+  })
+  resendCooldownUntil?: Date | null
+
+  @Prop({
+    type: Date,
+    default: null,
+  })
+  verifiedAt?: Date | null
 
   @Prop({
     type: Date,
@@ -50,6 +88,7 @@ export const PasswordResetTokenSchema =
   SchemaFactory.createForClass(PasswordResetToken)
 
 // Explicit database indexes
-PasswordResetTokenSchema.index({ tokenHash: 1 }, { unique: true })
+PasswordResetTokenSchema.index({ tokenHash: 1 }, { unique: false })
 PasswordResetTokenSchema.index({ doctorId: 1, used: 1 })
+PasswordResetTokenSchema.index({ email: 1, used: 1 })
 PasswordResetTokenSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 })

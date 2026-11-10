@@ -4,6 +4,8 @@ import { analyzeAllergies } from "../../utils/allergy"
 import {
   formatDateDDMMYYYY,
   formatIndiaDateTime,
+  formatPatientAge,
+  formatPatientGender,
   getPublicPatientId,
   type Page,
   type Patient,
@@ -48,11 +50,11 @@ export function OverviewTab({
         <dl className="details-list">
           <div>
             <dt>Age</dt>
-            <dd>{patient.age} years</dd>
+            <dd>{formatPatientAge(patient.age, "years")}</dd>
           </div>
           <div>
             <dt>Gender</dt>
-            <dd>{patient.gender}</dd>
+            <dd>{formatPatientGender(patient.gender)}</dd>
           </div>
           <div>
             <dt>Phone</dt>

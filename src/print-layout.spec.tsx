@@ -316,6 +316,14 @@ describe("Prescription & Bill A4 Print Layout Verification", { timeout: 20000 },
     expect(html).toContain("rx-banner-slot")
     expect(html).toContain("rx-empty")
     expect(html).toContain("Doctor’s signature")
+    expect(html).toContain("09/11/2026, 10:00 AM")
+    expect(html).toContain("rx-section-label")
+    expect(html).toContain("Blood pressure")
+    expect(html).toContain("Heart rate")
+    expect(html).toContain("SpO₂")
+    expect(html).toContain("Temperature")
+    expect(html).toContain("Height")
+    expect(html).toContain("Weight")
 
     const res = generatePdf(html, "scenario_1_short_prescription_no_meds")
     if (!res) return

@@ -13,6 +13,7 @@ import {
 } from "lucide-react"
 import {
   formatDateDDMMYYYY,
+  formatPatientAgeGender,
   getPublicPatientId,
   type Page,
   type Patient,
@@ -305,7 +306,8 @@ export function BillPreview({
               <span>Billed to</span>
               <strong>{patient.name}</strong>
               <small>
-                {patient.age} years · {patient.gender} · {patient.phone}
+                {formatPatientAgeGender(patient.age, patient.gender, "years")}{" "}
+                · {patient.phone || "—"}
               </small>
             </div>
             <div>

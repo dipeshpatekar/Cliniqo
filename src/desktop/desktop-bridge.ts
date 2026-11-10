@@ -93,6 +93,7 @@ export interface LocalPatientRecord {
   server_version: number
   local_version: number
   updated_at: string
+  last_visit?: string | null
 }
 
 export interface LocalConsultationArgs {
@@ -497,6 +498,91 @@ export async function refreshAuthTokens(
     throw err
   }
 
+  return data
+}
+
+export interface ForgotPasswordResult {
+  message: string
+}
+
+export interface VerifyOtpResult {
+  message: string
+  resetToken: string
+}
+
+export interface ResetPasswordResult {
+  message: string
+}
+
+export async function requestPasswordResetOtp(
+  email: string,
+): Promise<ForgotPasswordResult> {
+  const baseUrl = getApiBaseUrl()
+  const res = await fetch(`${baseUrl}/auth/forgot-password`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email: email.trim().toLowerCase() }),
+  })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    const errorMsg =
+      data?.message || data?.error || "Failed to send verification code."
+    const err = new Error(
+      Array.isArray(errorMsg) ? errorMsg.join(" ") : errorMsg,
+    )
+    ;(err as any).status = res.status
+    throw err
+  }
+  return data
+}
+
+export async function verifyPasswordResetOtp(
+  email: string,
+  otp: string,
+): Promise<VerifyOtpResult> {
+  const baseUrl = getApiBaseUrl()
+  const res = await fetch(`${baseUrl}/auth/verify-otp`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      email: email.trim().toLowerCase(),
+      otp: otp.trim(),
+    }),
+  })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    const errorMsg =
+      data?.message ||
+      data?.error ||
+      "That code is not valid. Check all six digits and try again."
+    const err = new Error(
+      Array.isArray(errorMsg) ? errorMsg.join(" ") : errorMsg,
+    )
+    ;(err as any).status = res.status
+    throw err
+  }
+  return data
+}
+
+export async function resetPasswordWithToken(
+  token: string,
+  newPassword: string,
+): Promise<ResetPasswordResult> {
+  const baseUrl = getApiBaseUrl()
+  const res = await fetch(`${baseUrl}/auth/reset-password`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ token, newPassword }),
+  })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    const errorMsg = data?.message || data?.error || "Failed to reset password."
+    const err = new Error(
+      Array.isArray(errorMsg) ? errorMsg.join(" ") : errorMsg,
+    )
+    ;(err as any).status = res.status
+    throw err
+  }
   return data
 }
 

@@ -183,12 +183,14 @@ describe("ConfigService", () => {
   describe("validateAuthConfig", () => {
     const validAccessSecret = "a".repeat(32)
     const validRefreshSecret = "b".repeat(32)
+    const validOtpHmacSecret = "c".repeat(32)
 
     it("should validate and return auth configuration when valid secrets are provided", () => {
       const service = new ConfigService({
         NODE_ENV: "production",
         JWT_ACCESS_SECRET: validAccessSecret,
         JWT_REFRESH_SECRET: validRefreshSecret,
+        OTP_HMAC_SECRET: validOtpHmacSecret,
         JWT_ACCESS_EXPIRES_IN: "15m",
         JWT_REFRESH_EXPIRES_IN: "7d",
         JWT_PRIVATE_KEY:
@@ -203,6 +205,7 @@ describe("ConfigService", () => {
       const authConfig = service.validateAuthConfig()
       expect(authConfig.jwtAccessSecret).toBe(validAccessSecret)
       expect(authConfig.jwtRefreshSecret).toBe(validRefreshSecret)
+      expect(authConfig.otpHmacSecret).toBe(validOtpHmacSecret)
       expect(authConfig.jwtAccessExpiresIn).toBe("15m")
       expect(authConfig.jwtRefreshExpiresIn).toBe("7d")
       expect(authConfig.jwtIssuer).toBe("cliniqo-backend")
@@ -217,6 +220,7 @@ describe("ConfigService", () => {
         NODE_ENV: "production",
         JWT_ACCESS_SECRET: validAccessSecret,
         JWT_REFRESH_SECRET: validRefreshSecret,
+        OTP_HMAC_SECRET: validOtpHmacSecret,
       })
 
       expect(() => service.validateAuthConfig()).toThrow(
@@ -345,6 +349,100 @@ describe("ConfigService", () => {
       expect(() => invalidRefreshExpiryService.validateAuthConfig()).toThrow(
         "Authentication configuration error: JWT_REFRESH_EXPIRES_IN must be a valid time span",
       )
+    })
+
+    describe("OTP_HMAC_SECRET security validation", () => {
+      it("should throw when otpHmacSecret getter is accessed without environment configuration", () => {
+        const service = new ConfigService({})
+        expect(() => service.otpHmacSecret).toThrow(
+          "Authentication configuration error: OTP_HMAC_SECRET is required from environment configuration.",
+        )
+      })
+
+      it("should throw when otpHmacSecret is whitespace", () => {
+        const service = new ConfigService({
+          OTP_HMAC_SECRET: "   ",
+        })
+        expect(() => service.otpHmacSecret).toThrow(
+          "Authentication configuration error: OTP_HMAC_SECRET is required from environment configuration.",
+        )
+      })
+
+      it("should return trimmed otpHmacSecret when configured", () => {
+        const service = new ConfigService({
+          OTP_HMAC_SECRET: "  super-secure-otp-hmac-secret-32-chars-minimum!  ",
+        })
+        expect(service.otpHmacSecret).toBe(
+          "super-secure-otp-hmac-secret-32-chars-minimum!",
+        )
+      })
+
+      it("should require OTP_HMAC_SECRET in production mode and reject if missing", () => {
+        const service = new ConfigService({
+          NODE_ENV: "production",
+          JWT_ACCESS_SECRET: validAccessSecret,
+          JWT_REFRESH_SECRET: validRefreshSecret,
+          JWT_PRIVATE_KEY: "-----BEGIN PRIVATE KEY-----\ntest\n-----END PRIVATE KEY-----",
+          JWT_PUBLIC_KEY: "-----BEGIN PUBLIC KEY-----\ntest\n-----END PUBLIC KEY-----",
+        })
+        expect(() => service.validateAuthConfig()).toThrow(
+          "Authentication configuration error: OTP_HMAC_SECRET is required and must be at least 32 characters in production.",
+        )
+      })
+
+      it("should reject OTP_HMAC_SECRET in production if shorter than 32 characters", () => {
+        const service = new ConfigService({
+          NODE_ENV: "production",
+          JWT_ACCESS_SECRET: validAccessSecret,
+          JWT_REFRESH_SECRET: validRefreshSecret,
+          OTP_HMAC_SECRET: "short-secret-under-32",
+          JWT_PRIVATE_KEY: "-----BEGIN PRIVATE KEY-----\ntest\n-----END PRIVATE KEY-----",
+          JWT_PUBLIC_KEY: "-----BEGIN PUBLIC KEY-----\ntest\n-----END PUBLIC KEY-----",
+        })
+        expect(() => service.validateAuthConfig()).toThrow(
+          "Authentication configuration error: OTP_HMAC_SECRET is required and must be at least 32 characters in production.",
+        )
+      })
+
+      it("should reject known weak or placeholder secrets for OTP_HMAC_SECRET", () => {
+        const service = new ConfigService({
+          NODE_ENV: "development",
+          JWT_ACCESS_SECRET: validAccessSecret,
+          JWT_REFRESH_SECRET: validRefreshSecret,
+          OTP_HMAC_SECRET: "changeme",
+        })
+        expect(() => service.validateAuthConfig()).toThrow(
+          "Authentication configuration error: OTP_HMAC_SECRET cannot use an insecure or placeholder value.",
+        )
+      })
+
+      it("should reject OTP_HMAC_SECRET if it reuses JWT_ACCESS_SECRET", () => {
+        const service = new ConfigService({
+          NODE_ENV: "production",
+          JWT_ACCESS_SECRET: validAccessSecret,
+          JWT_REFRESH_SECRET: validRefreshSecret,
+          OTP_HMAC_SECRET: validAccessSecret,
+          JWT_PRIVATE_KEY: "-----BEGIN PRIVATE KEY-----\ntest\n-----END PRIVATE KEY-----",
+          JWT_PUBLIC_KEY: "-----BEGIN PUBLIC KEY-----\ntest\n-----END PUBLIC KEY-----",
+        })
+        expect(() => service.validateAuthConfig()).toThrow(
+          "Authentication configuration error: OTP_HMAC_SECRET must be distinct from JWT secrets.",
+        )
+      })
+
+      it("should reject OTP_HMAC_SECRET if it reuses JWT_REFRESH_SECRET", () => {
+        const service = new ConfigService({
+          NODE_ENV: "production",
+          JWT_ACCESS_SECRET: validAccessSecret,
+          JWT_REFRESH_SECRET: validRefreshSecret,
+          OTP_HMAC_SECRET: validRefreshSecret,
+          JWT_PRIVATE_KEY: "-----BEGIN PRIVATE KEY-----\ntest\n-----END PRIVATE KEY-----",
+          JWT_PUBLIC_KEY: "-----BEGIN PUBLIC KEY-----\ntest\n-----END PUBLIC KEY-----",
+        })
+        expect(() => service.validateAuthConfig()).toThrow(
+          "Authentication configuration error: OTP_HMAC_SECRET must be distinct from JWT secrets.",
+        )
+      })
     })
   })
 

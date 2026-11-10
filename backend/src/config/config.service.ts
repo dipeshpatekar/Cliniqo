@@ -27,6 +27,7 @@ export interface AppConfig {
   rateLimitRecoveryWindowSec?: number
   outboxEncryptionKey?: string
   adminDiagnosticKey?: string
+  otpHmacSecret?: string
 }
 
 export interface AuthConfig {
@@ -39,6 +40,7 @@ export interface AuthConfig {
   argon2MemoryCost: number
   argon2TimeCost: number
   argon2Parallelism: number
+  otpHmacSecret?: string
 }
 
 export interface SmtpConfig {
@@ -116,8 +118,12 @@ export class ConfigService {
       smtpPort: env.SMTP_PORT ? parseInt(env.SMTP_PORT, 10) : 587,
       smtpUser: env.SMTP_USER,
       smtpPass: env.SMTP_PASS,
-      smtpFrom: env.SMTP_FROM || "noreply@cliniqo.app",
-      smtpSecure: env.SMTP_SECURE === "true",
+      smtpFrom:
+        env.SMTP_FROM ||
+        (env.SMTP_USER ? env.SMTP_USER : "noreply@cliniqo.app"),
+      smtpSecure:
+        env.SMTP_SECURE === "true" ||
+        (env.SMTP_PORT === "465" && env.SMTP_SECURE !== "false"),
       rateLimitLoginMax: env.RATE_LIMIT_LOGIN_MAX
         ? parseInt(env.RATE_LIMIT_LOGIN_MAX, 10)
         : 5,
@@ -132,6 +138,7 @@ export class ConfigService {
         : 300,
       outboxEncryptionKey: env.OUTBOX_ENCRYPTION_KEY,
       adminDiagnosticKey: env.ADMIN_DIAGNOSTIC_KEY,
+      otpHmacSecret: env.OTP_HMAC_SECRET,
     }
   }
 
@@ -229,6 +236,16 @@ export class ConfigService {
 
   get argon2Parallelism(): number {
     return this.config.argon2Parallelism ?? 4
+  }
+
+  get otpHmacSecret(): string {
+    const secret = this.config.otpHmacSecret
+    if (!secret || typeof secret !== "string" || secret.trim() === "") {
+      throw new Error(
+        "Authentication configuration error: OTP_HMAC_SECRET is required from environment configuration.",
+      )
+    }
+    return secret.trim()
   }
 
   get smtpConfig(): SmtpConfig {
@@ -411,10 +428,47 @@ export class ConfigService {
       )
     }
 
+    const otpHmacSecret = this.config.otpHmacSecret
     if (this.isProduction) {
+      if (
+        !otpHmacSecret ||
+        typeof otpHmacSecret !== "string" ||
+        otpHmacSecret.trim().length < 32
+      ) {
+        throw new Error(
+          "Authentication configuration error: OTP_HMAC_SECRET is required and must be at least 32 characters in production.",
+        )
+      }
+      if (WEAK_SECRETS.has(otpHmacSecret.trim().toLowerCase())) {
+        throw new Error(
+          "Authentication configuration error: OTP_HMAC_SECRET cannot use an insecure or placeholder value.",
+        )
+      }
+      if (
+        otpHmacSecret === accessSecret ||
+        otpHmacSecret === refreshSecret
+      ) {
+        throw new Error(
+          "Authentication configuration error: OTP_HMAC_SECRET must be distinct from JWT secrets.",
+        )
+      }
       if (!this.config.jwtPrivateKey || !this.config.jwtPublicKey) {
         throw new Error(
           "Authentication configuration error: JWT_PRIVATE_KEY and JWT_PUBLIC_KEY are required in production for RS256 desktop verification.",
+        )
+      }
+    } else if (otpHmacSecret && typeof otpHmacSecret === "string") {
+      if (WEAK_SECRETS.has(otpHmacSecret.trim().toLowerCase())) {
+        throw new Error(
+          "Authentication configuration error: OTP_HMAC_SECRET cannot use an insecure or placeholder value.",
+        )
+      }
+      if (
+        otpHmacSecret === accessSecret ||
+        otpHmacSecret === refreshSecret
+      ) {
+        throw new Error(
+          "Authentication configuration error: OTP_HMAC_SECRET must be distinct from JWT secrets.",
         )
       }
     }
@@ -429,6 +483,7 @@ export class ConfigService {
       argon2MemoryCost: memoryCost,
       argon2TimeCost: timeCost,
       argon2Parallelism: parallelism,
+      otpHmacSecret: otpHmacSecret ? otpHmacSecret.trim() : undefined,
     }
   }
 

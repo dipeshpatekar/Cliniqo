@@ -5,6 +5,8 @@ import {
   NotFoundException,
   ConflictException,
   ServiceUnavailableException,
+  HttpException,
+  HttpStatus,
   Logger,
 } from "@nestjs/common"
 import { InjectModel } from "@nestjs/mongoose"
@@ -27,6 +29,8 @@ import {
   UpdateDoctorProfileDto,
   RefreshTokenDto,
   ForgotPasswordDto,
+  VerifyOtpDto,
+  ResendOtpDto,
   ResetPasswordDto,
 } from "./dto/auth.dto.js"
 import { validatePasswordPolicy } from "./dto/doctor.dto.js"
@@ -34,6 +38,39 @@ import { validatePasswordPolicy } from "./dto/doctor.dto.js"
 // Constant dummy hash used to mitigate timing attacks when email does not exist
 const DUMMY_ARGON2_HASH =
   "$argon2id$v=19$m=65536,t=3,p=4$dummySalt1234567890$dummyHash123456789012345678901234567890"
+
+/**
+ * Generates a cryptographically secure 6-digit numeric OTP (100000 - 999999).
+ */
+export function generateSecureOtp(): string {
+  return crypto.randomInt(100000, 1000000).toString()
+}
+
+/**
+ * Computes a keyed HMAC-SHA256 hash of a 6-digit OTP combined with the normalized email
+ * using a dedicated server secret.
+ * Keyed HMAC prevents offline brute-forcing and rainbow-table precomputation across the 1,000,000 space
+ * even if the database is leaked.
+ */
+export function hashOtp(
+  email: string,
+  otp: string,
+  serverSecret: string,
+): string {
+  if (
+    !serverSecret ||
+    typeof serverSecret !== "string" ||
+    serverSecret.trim() === ""
+  ) {
+    throw new Error(
+      "OTP hashing error: serverSecret is required and cannot be empty.",
+    )
+  }
+  return crypto
+    .createHmac("sha256", serverSecret.trim())
+    .update(`${email.trim().toLowerCase()}:${otp.trim()}`)
+    .digest("hex")
+}
 
 @Injectable()
 export class AuthService {
@@ -356,9 +393,13 @@ export class AuthService {
     return { message: "Successfully logged out." }
   }
 
+  private computeOtpHmac(email: string, otp: string): string {
+    return hashOtp(email, otp, this.configService.otpHmacSecret)
+  }
+
   /**
-   * Initiates password recovery.
-   * Returns a generic response to prevent account enumeration regardless of whether the account exists.
+   * Initiates password recovery via 6-digit OTP email delivery.
+   * Enforces rate limiting, resend cooldown, single-use invalidation, and generic responses.
    */
   async forgotPassword(dto: ForgotPasswordDto, meta?: { ipAddress?: string }) {
     const rateLimitConfig = this.configService.rateLimitConfig
@@ -371,44 +412,280 @@ export class AuthService {
       rateLimitConfig.recoveryWindowSec,
     )
 
+    const normalizedEmail = dto.email.trim().toLowerCase()
+    await this.rateLimiter.assertRateLimit(
+      `recovery:email:${normalizedEmail}`,
+      rateLimitConfig.recoveryMax,
+      rateLimitConfig.recoveryWindowSec,
+    )
+
     const genericResponse = {
       message:
         "If an account exists with this email address, password reset instructions have been sent.",
     }
 
-    const email = dto.email.trim().toLowerCase()
-    const doctor = await this.doctorModel.findOne({ email })
+    const doctor = await this.doctorModel.findOne({ email: normalizedEmail })
 
     if (!doctor || doctor.status === DoctorStatus.DISABLED) {
+      // Timing attack mitigation: do equivalent hashing work before returning generic response
+      this.computeOtpHmac(normalizedEmail, "000000")
       return genericResponse
     }
 
-    // Invalidate any previously issued unused reset tokens for this doctor
+    // Enforce race-safe 30-second resend cooldown per doctor account using atomic distributed rate limiter
+    const cooldownResult = await this.rateLimiter.checkRateLimit(
+      `recovery:cooldown:${doctor._id}`,
+      1,
+      30,
+    )
+    if (!cooldownResult.allowed) {
+      const retryAfterSeconds = Math.max(1, cooldownResult.retryAfterSeconds)
+      throw new HttpException(
+        {
+          statusCode: HttpStatus.TOO_MANY_REQUESTS,
+          error: "Too Many Requests",
+          message: `Please wait ${retryAfterSeconds} seconds before requesting another verification code.`,
+          retryAfter: retryAfterSeconds,
+        },
+        HttpStatus.TOO_MANY_REQUESTS,
+      )
+    }
+
+    // Enforce 30-second resend cooldown if an active OTP was recently issued
+    const activeRecord = await this.resetModel.findOne({
+      doctorId: doctor._id,
+      used: false,
+      expiresAt: { $gt: new Date() },
+    })
+
+    if (
+      activeRecord &&
+      activeRecord.resendCooldownUntil &&
+      activeRecord.resendCooldownUntil.getTime() > Date.now()
+    ) {
+      const retryAfterSeconds = Math.max(
+        1,
+        Math.ceil(
+          (activeRecord.resendCooldownUntil.getTime() - Date.now()) / 1000,
+        ),
+      )
+      throw new HttpException(
+        {
+          statusCode: HttpStatus.TOO_MANY_REQUESTS,
+          error: "Too Many Requests",
+          message: `Please wait ${retryAfterSeconds} seconds before requesting another verification code.`,
+          retryAfter: retryAfterSeconds,
+        },
+        HttpStatus.TOO_MANY_REQUESTS,
+      )
+    }
+
+    // Single-use: Invalidate any previously issued unused reset tokens for this doctor
     await this.resetModel.updateMany({ doctorId: doctor._id, used: false }, {
       $set: { used: true, usedAt: new Date() },
     })
 
-    // Generate single-use, 256-bit cryptographically secure reset token
-    const rawResetToken = crypto.randomBytes(32).toString("hex")
-    const tokenHash = hashOpaqueToken(rawResetToken)
-    const expiresAt = new Date(Date.now() + 15 * 60 * 1000) // 15 minutes TTL
+    // Generate cryptographically secure 6-digit OTP
+    const rawOtp = generateSecureOtp()
+    const otpHash = this.computeOtpHmac(doctor.email, rawOtp)
+
+    // Generate preliminary single-use token hash
+    const preliminaryToken = crypto.randomBytes(32).toString("hex")
+    const tokenHash = hashOpaqueToken(preliminaryToken)
+
+    // Expiry: strictly 5 minutes for OTP verification
+    const expiresAt = new Date(Date.now() + 5 * 60 * 1000)
+    // Cooldown: 30 seconds before another OTP can be requested
+    const resendCooldownUntil = new Date(Date.now() + 30 * 1000)
 
     await this.resetModel.create({
       doctorId: doctor._id,
+      email: doctor.email,
+      otpHash,
       tokenHash,
       expiresAt,
+      resendCooldownUntil,
+      attempts: 0,
+      maxAttempts: 5,
       used: false,
     })
 
-    // Send email delivery safely
-    await this.mailService.sendPasswordResetEmail(doctor.email, rawResetToken)
+    // Send email delivery safely (both OTP and generic methods supported)
+    try {
+      let sent = false
+      if (typeof this.mailService.sendPasswordResetOtpEmail === "function") {
+        sent = await this.mailService.sendPasswordResetOtpEmail(
+          doctor.email,
+          rawOtp,
+        )
+      } else {
+        sent = await this.mailService.sendPasswordResetEmail(
+          doctor.email,
+          rawOtp,
+        )
+      }
+      if (!sent) {
+        this.logger.warn(
+          `Password recovery email delivery could not be completed for account: ${doctor._id}`,
+        )
+      }
+    } catch (err) {
+      this.logger.error(
+        `Unexpected error during password recovery email dispatch: ${(err as Error)?.message}`,
+      )
+    }
 
     return genericResponse
   }
 
   /**
-   * Completes password reset, marks token used, updates Argon2id password hash,
+   * Verifies a 6-digit OTP server-side atomically using conditional MongoDB updates.
+   * Enforces rate limiting, 5-minute expiry, single-use, and max attempt limits (5 attempts).
+   * Upon successful verification, issues a single-use 64-character reset token.
+   * Prevents race conditions and duplicate token issuance under concurrent requests.
+   */
+  async verifyOtp(dto: VerifyOtpDto, meta?: { ipAddress?: string }) {
+    const clientIp = meta?.ipAddress || "unknown-client"
+    const normalizedEmail = dto.email.trim().toLowerCase()
+
+    await this.rateLimiter.assertRateLimit(
+      `verify_otp:ip:${clientIp}`,
+      10,
+      300,
+    )
+    await this.rateLimiter.assertRateLimit(
+      `verify_otp:email:${normalizedEmail}`,
+      5,
+      300,
+    )
+
+    const doctor = await this.doctorModel.findOne({ email: normalizedEmail })
+    if (!doctor || doctor.status === DoctorStatus.DISABLED) {
+      throw new BadRequestException(
+        "That code is not valid. Check all six digits and try again.",
+      )
+    }
+
+    const now = new Date()
+    const inputHash = this.computeOtpHmac(doctor.email, dto.otp)
+    const rawResetToken = crypto.randomBytes(32).toString("hex")
+    const resetTokenHash = hashOpaqueToken(rawResetToken)
+
+    // Atomic conditional update: only succeeds if OTP matches, unused, unverified, unexpired, and under attempt limit
+    const verifiedRecord = await this.resetModel.findOneAndUpdate(
+      {
+        doctorId: doctor._id,
+        used: false,
+        verifiedAt: null,
+        expiresAt: { $gt: now },
+        attempts: { $lt: 5 },
+        otpHash: inputHash,
+      },
+      {
+        $set: {
+          verifiedAt: now,
+          tokenHash: resetTokenHash,
+          // Give 15 minutes to submit the new password after OTP verification
+          expiresAt: new Date(now.getTime() + 15 * 60 * 1000),
+        },
+      },
+      {
+        new: true,
+        sort: { createdAt: -1 },
+      },
+    )
+
+    if (verifiedRecord) {
+      return {
+        message: "Verification code confirmed successfully.",
+        resetToken: rawResetToken,
+      }
+    }
+
+    // Atomic match failed. Inspect current state to provide precise, secure error response and atomically record attempts
+    const currentRecord = await this.resetModel
+      .findOne({ doctorId: doctor._id })
+      .sort({ createdAt: -1 })
+
+    if (!currentRecord) {
+      throw new BadRequestException(
+        "That code is not valid. Check all six digits and try again.",
+      )
+    }
+
+    // Check if code was already verified/used (e.g. concurrent winner or replay)
+    if (currentRecord.used || currentRecord.verifiedAt) {
+      throw new BadRequestException(
+        "This code has already been used. Please request a new code.",
+      )
+    }
+
+    // Check if OTP expired (5-minute TTL elapsed)
+    if (currentRecord.expiresAt.getTime() <= now.getTime()) {
+      await this.resetModel.updateOne(
+        { _id: currentRecord._id, used: false },
+        { $set: { used: true, usedAt: now } },
+      )
+      throw new BadRequestException(
+        "This code has expired. Request a new code to continue.",
+      )
+    }
+
+    // Check if max attempts already reached
+    if ((currentRecord.attempts ?? 0) >= (currentRecord.maxAttempts ?? 5)) {
+      await this.resetModel.updateOne(
+        { _id: currentRecord._id, used: false },
+        { $set: { used: true, usedAt: now } },
+      )
+      throw new BadRequestException(
+        "Resend limit reached. Please wait before requesting another code.",
+      )
+    }
+
+    // Atomically increment failed attempts
+    const incResult = await this.resetModel.findOneAndUpdate(
+      {
+        _id: currentRecord._id,
+        used: false,
+        verifiedAt: null,
+        expiresAt: { $gt: now },
+        attempts: { $lt: 5 },
+      },
+      {
+        $inc: { attempts: 1 },
+      },
+      {
+        new: true,
+      },
+    )
+
+    if (incResult && incResult.attempts >= (currentRecord.maxAttempts ?? 5)) {
+      await this.resetModel.updateOne(
+        { _id: currentRecord._id, used: false },
+        { $set: { used: true, usedAt: now } },
+      )
+      throw new BadRequestException(
+        "Resend limit reached. Please wait before requesting another code.",
+      )
+    }
+
+    throw new BadRequestException(
+      "That code is not valid. Check all six digits and try again.",
+    )
+  }
+
+  /**
+   * Resends OTP with cooldown verification.
+   */
+  async resendOtp(dto: ResendOtpDto, meta?: { ipAddress?: string }) {
+    return this.forgotPassword(dto, meta)
+  }
+
+  /**
+   * Completes password reset atomically using conditional MongoDB update.
+   * Atomically consumes the reset token, updates Argon2id password hash,
    * unlocks account if locked, and invalidates all existing refresh sessions.
+   * Guarantees concurrent requests cannot reuse the same reset token.
    */
   async resetPassword(dto: ResetPasswordDto, meta?: { ipAddress?: string }) {
     const rateLimitConfig = this.configService.rateLimitConfig
@@ -421,14 +698,34 @@ export class AuthService {
       rateLimitConfig.recoveryWindowSec,
     )
 
-    const tokenHash = hashOpaqueToken(dto.token)
-    const resetRecord = await this.resetModel.findOne({ tokenHash })
+    // Validate new password against policy before state mutations
+    const policyResult = validatePasswordPolicy(dto.newPassword)
+    if (!policyResult.isValid) {
+      throw new BadRequestException(policyResult.errors)
+    }
 
-    if (
-      !resetRecord ||
-      resetRecord.used ||
-      resetRecord.expiresAt.getTime() <= Date.now()
-    ) {
+    const tokenHash = hashOpaqueToken(dto.token)
+    const now = new Date()
+
+    // Atomically consume reset token: conditional update guarantees single-use
+    const resetRecord = await this.resetModel.findOneAndUpdate(
+      {
+        tokenHash,
+        used: false,
+        expiresAt: { $gt: now },
+      },
+      {
+        $set: {
+          used: true,
+          usedAt: now,
+        },
+      },
+      {
+        new: true,
+      },
+    )
+
+    if (!resetRecord) {
       throw new BadRequestException("Invalid or expired password reset token.")
     }
 
@@ -437,22 +734,11 @@ export class AuthService {
       throw new BadRequestException("Invalid or expired password reset token.")
     }
 
-    // Validate new password against policy
-    const policyResult = validatePasswordPolicy(dto.newPassword)
-    if (!policyResult.isValid) {
-      throw new BadRequestException(policyResult.errors)
-    }
-
-    // Mark reset token used immediately
-    resetRecord.used = true
-    resetRecord.usedAt = new Date()
-    await resetRecord.save()
-
     // Hash new password using Argon2id
     doctor.passwordHash = await this.passwordService.hashPassword(
       dto.newPassword,
     )
-    doctor.passwordChangedAt = new Date()
+    doctor.passwordChangedAt = now
     doctor.failedLoginAttempts = 0
     doctor.lockUntil = null
 

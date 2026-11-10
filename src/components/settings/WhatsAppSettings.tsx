@@ -1,10 +1,7 @@
-import { useState } from "react"
 import { MessageCircle } from "lucide-react"
-import { Button, StatusPill } from "../common"
+import { StatusPill } from "../common"
 
 export function WhatsAppSettings() {
-  const [tested, setTested] = useState(false)
-
   return (
     <section className="settings-section">
       <div className="settings-title with-status">
@@ -19,11 +16,13 @@ export function WhatsAppSettings() {
         </span>
         <div>
           <strong>WhatsApp Business provider</strong>
-          {tested && <p>Frontend check complete · No provider request sent</p>}
         </div>
-        <Button size="sm" variant="secondary" onClick={() => setTested(true)}>
-          {tested ? "UI checked" : "Check UI state"}
-        </Button>
+        <span
+          className="btn btn-sm btn-secondary cursor-default select-none pointer-events-none opacity-85"
+          aria-disabled="true"
+        >
+          UI checked
+        </span>
       </div>
       <h3 className="subsection-title">Delivery history</h3>
       <div className="empty-state compact">

@@ -321,15 +321,6 @@ export function SyncSettings({ onOpenConflictModal }: SyncSettingsProps) {
             </p>
           </div>
         )}
-
-        <div className="info-callout">
-          <Cloud size={17} />
-          <p>
-            <strong>Zero-Plaintext SQLite Storage:</strong> All patient demographics,
-            consultations, and prescriptions are encrypted with AES-256-GCM before
-            local disk storage. Mutations push with backend idempotency keys.
-          </p>
-        </div>
       </section>
 
       {/* SECTION 2: Encrypted Backup & Restore */}
@@ -341,15 +332,6 @@ export function SyncSettings({ onOpenConflictModal }: SyncSettingsProps) {
           <StatusPill tone="success">AES-256-GCM ENCRYPTED</StatusPill>
         </div>
 
-        <div className="info-callout mb-4">
-          <HardDrive size={18} />
-          <p>
-            <strong>Air-Gapped Disaster Recovery:</strong> Generate a one-click encrypted
-            backup of all local SQLite clinical records, consultations, invoices, and sync state.
-            Patient data is strictly encrypted and never exported in plaintext.
-          </p>
-        </div>
-
         <div className="space-y-4">
           <div className="p-4 rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900/40">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
@@ -357,9 +339,6 @@ export function SyncSettings({ onOpenConflictModal }: SyncSettingsProps) {
                 <strong className="block text-sm font-semibold text-slate-800 dark:text-slate-100">
                   Export Encrypted Backup (.clxbk)
                 </strong>
-                <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
-                  Point-in-time cryptographic snapshot protected by your clinic key.
-                </p>
               </div>
 
               <Button
@@ -432,9 +411,6 @@ export function SyncSettings({ onOpenConflictModal }: SyncSettingsProps) {
                 <strong className="block text-sm font-semibold text-slate-800 dark:text-slate-100">
                   Restore Encrypted Backup
                 </strong>
-                <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
-                  Validates cryptographic AEAD integrity and SHA-256 checksum before restoring.
-                </p>
               </div>
 
               <div>
@@ -496,9 +472,6 @@ export function SyncSettings({ onOpenConflictModal }: SyncSettingsProps) {
               <strong className="block text-sm font-semibold text-slate-800 dark:text-slate-100">
                 Cliniqo Desktop Version 1.0.0
               </strong>
-              <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
-                Updates are cryptographically signed and delivered exclusively over HTTPS.
-              </p>
             </div>
 
             <Button

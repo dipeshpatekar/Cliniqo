@@ -506,6 +506,8 @@ pub struct PatientRecord {
     pub server_version: i32,
     pub local_version: i32,
     pub updated_at: String,
+    #[serde(default)]
+    pub last_visit: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

@@ -21,9 +21,6 @@ export function AppearanceSettings({
         </span>
         <div>
           <strong>Dark mode</strong>
-          <p>
-            Use a darker interface to reduce glare in low-light environments.
-          </p>
         </div>
         <button
           className={cn("theme-switch", darkMode && "active")}

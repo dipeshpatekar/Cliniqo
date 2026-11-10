@@ -37,6 +37,8 @@ describe("Auth Endpoints (e2e)", () => {
       "test-jwt-access-secret-32-chars-long-minimum!"
     process.env.JWT_REFRESH_SECRET =
       "test-jwt-refresh-secret-32-chars-long-minimum!"
+    process.env.OTP_HMAC_SECRET =
+      "test-otp-hmac-secret-32-chars-long-minimum!"
     process.env.JWT_ISSUER = "cliniqo-api-test"
     process.env.JWT_AUDIENCE = "cliniqo-client-test"
   })
@@ -77,6 +79,9 @@ describe("Auth Endpoints (e2e)", () => {
     create: vi.fn(),
     findOne: vi.fn(),
     updateMany: vi.fn(),
+    findOneAndUpdate: vi.fn(),
+    updateOne: vi.fn(),
+    findById: vi.fn(),
   }
 
   const mockRateLimitModel = {

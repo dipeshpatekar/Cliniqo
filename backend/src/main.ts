@@ -22,6 +22,9 @@ async function bootstrap() {
   app.enableShutdownHooks()
 
   const configService = app.get(ConfigService)
+  // Fail startup if database or auth configuration is invalid fail-closed
+  configService.validateDatabaseConfig()
+  configService.validateAuthConfig()
 
   // Centralized safe exception handling
   app.useGlobalFilters(new HttpExceptionFilter())

@@ -13,6 +13,9 @@ import {
 } from "lucide-react"
 import {
   formatDateDDMMYYYY,
+  formatDateTimeDDMMYYYY,
+  formatPatientAge,
+  formatPatientGender,
   getPublicPatientId,
   type Page,
   type Patient,
@@ -448,13 +451,17 @@ export function PatientsPage({
                         </span>
                       </td>
                       <td>
-                        {patient.age} yrs{" "}
-                        <span className="muted">· {patient.gender}</span>
+                        {formatPatientAge(patient.age, "yrs")}{" "}
+                        <span className="muted">
+                          · {formatPatientGender(patient.gender)}
+                        </span>
                       </td>
-                      <td>{patient.phone}</td>
+                      <td>{patient.phone || "—"}</td>
                       <td>
-                        {formatDateDDMMYYYY(patient.lastVisit) ||
-                          patient.lastVisit}
+                        {patient.lastVisit &&
+                        patient.lastVisit !== "No visits yet"
+                          ? formatDateTimeDDMMYYYY(patient.lastVisit, true)
+                          : "No visits yet"}
                       </td>
                       <td>
                         <div className="row-actions">

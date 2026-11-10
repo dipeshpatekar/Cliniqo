@@ -86,4 +86,91 @@ describe("MailService", () => {
     )
     loggerWarnSpy.mockRestore()
   })
+
+  describe("sendPasswordResetOtpEmail", () => {
+    it("should format and deliver 6-digit OTP email with 5-minute expiry via Gmail SMTP", async () => {
+      const config = new ConfigService({
+        SMTP_HOST: "smtp.gmail.com",
+        SMTP_PORT: "587",
+        SMTP_USER: "notifications@cliniqo.app",
+        SMTP_PASS: "abcd efgh ijkl mnop",
+        SMTP_FROM: "Cliniqo Security <noreply@cliniqo.app>",
+      })
+
+      mailService = new MailService(config)
+      mailService.setTransporter(mockTransporter)
+      mockTransporter.sendMail.mockResolvedValue({ messageId: "gmail-otp-123" })
+
+      const sent = await mailService.sendPasswordResetOtpEmail(
+        "doctor@clinic.com",
+        "491823",
+      )
+
+      expect(sent).toBe(true)
+      expect(mockTransporter.sendMail).toHaveBeenCalledWith(
+        expect.objectContaining({
+          from: "Cliniqo Security <noreply@cliniqo.app>",
+          to: "doctor@clinic.com",
+          subject: "Cliniqo Verification Code: 491823",
+          text: expect.stringContaining("491823"),
+          html: expect.stringContaining("491823"),
+        }),
+      )
+
+      // Validate that HTML and text explicitly emphasize 5-minute expiry and single-use
+      const mailCall = mockTransporter.sendMail.mock.calls[0][0]
+      expect(mailCall.text).toContain("expire in 5 minutes")
+      expect(mailCall.html).toContain("5 minutes")
+      expect(mailCall.text).toContain("can only be used once")
+    })
+
+    it("should safely handle Gmail SMTP authentication or connection errors without throwing", async () => {
+      const config = new ConfigService({
+        SMTP_HOST: "smtp.gmail.com",
+        SMTP_PORT: "587",
+        SMTP_USER: "user@gmail.com",
+        SMTP_PASS: "wrong-pass",
+      })
+
+      mailService = new MailService(config)
+      mailService.setTransporter(mockTransporter)
+      mockTransporter.sendMail.mockRejectedValue(
+        new Error("Invalid login: 535-5.7.8 Username and Password not accepted"),
+      )
+
+      const loggerSpy = vi
+        .spyOn((mailService as any).logger, "error")
+        .mockImplementation(() => {})
+
+      const sent = await mailService.sendPasswordResetOtpEmail(
+        "doctor@clinic.com",
+        "123456",
+      )
+
+      expect(sent).toBe(false)
+      expect(loggerSpy).toHaveBeenCalledWith(
+        expect.stringContaining("Failed to send password reset OTP email"),
+      )
+      loggerSpy.mockRestore()
+    })
+
+    it("should safely return false when SMTP is not configured", async () => {
+      const config = new ConfigService({})
+      mailService = new MailService(config)
+      const loggerWarnSpy = vi
+        .spyOn((mailService as any).logger, "warn")
+        .mockImplementation(() => {})
+
+      const sent = await mailService.sendPasswordResetOtpEmail(
+        "doctor@clinic.com",
+        "654321",
+      )
+
+      expect(sent).toBe(false)
+      expect(loggerWarnSpy).toHaveBeenCalledWith(
+        expect.stringContaining("SMTP is not configured"),
+      )
+      loggerWarnSpy.mockRestore()
+    })
+  })
 })

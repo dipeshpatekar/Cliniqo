@@ -114,7 +114,7 @@ export function PatientForm({
             age: data.get("age")
               ? Number(data.get("age"))
               : (patient?.age ?? 0),
-            gender: String(data.get("gender") || patient?.gender || "Other"),
+            gender: String(data.get("gender") || patient?.gender || "").trim(),
             phone: phone.trim() ? phone.trim() : patient?.phone || "",
             lastVisit: patient?.lastVisit || "No visits yet",
             allergies: patient?.allergies || [],

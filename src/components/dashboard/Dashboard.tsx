@@ -3,6 +3,7 @@ import { Button, GlobalPatientSearch, IconButton, StatusPill } from "../common"
 import { AppHeader } from "../layout"
 import {
   formatDateDDMMYYYY,
+  formatPatientAge,
   getPublicPatientId,
   type Page,
   type Patient,
@@ -201,7 +202,7 @@ export function Dashboard({
                         <strong>{patient.name}</strong>
                         <small>
                           {getPublicPatientId(patient)} ·{" "}
-                          {patient.age ? `${patient.age} yrs` : "Patient"}
+                          {formatPatientAge(patient.age, "yrs")}
                         </small>
                       </span>
                       <span className="visit-reason">
@@ -244,7 +245,7 @@ export function Dashboard({
                         <strong>{patient.name}</strong>
                         <small>
                           {getPublicPatientId(patient)} ·{" "}
-                          {patient.age ? `${patient.age} yrs` : "Patient"}
+                          {formatPatientAge(patient.age, "yrs")}
                         </small>
                       </span>
                       <span className="visit-reason">

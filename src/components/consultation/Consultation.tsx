@@ -33,6 +33,7 @@ import {
   complaintOptions,
   symptomDurationOptions,
   diagnosisOptions,
+  formatPatientAgeGender,
   getPublicPatientId,
   FORMULATION_SHORTCUTS,
   FORMULATION_LETTER_MAP,
@@ -78,7 +79,10 @@ export interface ConsultationProps {
   onDataChange: (data: ConsultationData) => void
   onAddMedicine?: (medicine: ClinicalMedicineDefinition) => void
   desktopSession?: DesktopSessionContext | null
-  onFinalized?: (consultationId?: string | null) => void
+  onFinalized?: (
+    consultationId?: string | null,
+    finalizedTimestamp?: string,
+  ) => void
   onUpdatePatientMedicalInfo?: (
     allergies: string[],
     conditions: string[],
@@ -529,13 +533,29 @@ export function Consultation({
 
   const handleFinalize = async () => {
     setFinalizeError(null)
+    const finalizedDate = new Date()
+    const finalizedDateStr = finalizedDate.toISOString().slice(0, 10)
+    const finalizedTimeStr = finalizedDate.toLocaleTimeString([], {
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: true,
+    })
+    const finalizedTimestamp = finalizedDate.toISOString()
+
+    const updatedData: ConsultationData = {
+      ...data,
+      date: data.date || finalizedDateStr,
+      time: data.time || finalizedTimeStr,
+    }
+    onDataChange(updatedData)
+
     if (isTauriDesktop() && desktopSession?.clinic_id) {
       setIsFinalizing(true)
       try {
         const consultationId = await saveLocalConsultation({
           clinic_id: desktopSession.clinic_id,
           patient_id: patient.id,
-          consultation_date: data.date,
+          consultation_date: updatedData.date,
           chief_complaint: data.chiefComplaint,
           diagnosis: data.diagnosis,
           clinical_snapshot_json: JSON.stringify({
@@ -548,7 +568,7 @@ export function Consultation({
           }),
         })
 
-        if (consultationId && data.medicines.length > 0) {
+        if (consultationId) {
           const rxNumber = `RX-${Date.now().toString().slice(-6)}`
           await saveLocalPrescription({
             clinic_id: desktopSession.clinic_id,
@@ -612,7 +632,7 @@ export function Consultation({
               .catch(() => {})
           }
         }
-        onFinalized?.(consultationId)
+        onFinalized?.(consultationId, finalizedTimestamp)
         go("preview")
       } catch (err: unknown) {
         console.error(
@@ -628,7 +648,7 @@ export function Consultation({
         setIsFinalizing(false)
       }
     } else {
-      onFinalized?.()
+      onFinalized?.(null, finalizedTimestamp)
       go("preview")
     }
   }
@@ -804,8 +824,7 @@ export function Consultation({
               <strong className="patient-strip-name">{patient.name}</strong>
               <span className="patient-strip-details">
                 · {[
-                  patient.age ? `${patient.age} years` : "",
-                  patient.gender,
+                  formatPatientAgeGender(patient.age, patient.gender, "years"),
                   getPublicPatientId(patient),
                 ]
                   .filter(Boolean)

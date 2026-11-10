@@ -5,6 +5,8 @@ import {
   LoginDto,
   RefreshTokenDto,
   ForgotPasswordDto,
+  VerifyOtpDto,
+  ResendOtpDto,
   ResetPasswordDto,
 } from "./auth.dto.js"
 
@@ -71,6 +73,76 @@ describe("Auth DTOs Runtime Validation", () => {
     it("should reject missing or invalid email", async () => {
       const dto = plainToInstance(ForgotPasswordDto, {
         email: "invalid-email",
+      })
+      const errors = await validate(dto)
+      expect(errors.length).toBeGreaterThan(0)
+      expect(errors[0].constraints?.isEmail).toBeDefined()
+    })
+  })
+
+  describe("VerifyOtpDto", () => {
+    it("should validate compliant 6-digit numeric OTP and email", async () => {
+      const dto = plainToInstance(VerifyOtpDto, {
+        email: "doctor@example.com",
+        otp: "123456",
+      })
+      const errors = await validate(dto)
+      expect(errors).toHaveLength(0)
+    })
+
+    it("should reject OTP with letters or special characters", async () => {
+      const dto = plainToInstance(VerifyOtpDto, {
+        email: "doctor@example.com",
+        otp: "12A45!",
+      })
+      const errors = await validate(dto)
+      expect(errors.length).toBeGreaterThan(0)
+      expect(errors[0].constraints?.matches).toBeDefined()
+    })
+
+    it("should reject OTP shorter than 6 digits", async () => {
+      const dto = plainToInstance(VerifyOtpDto, {
+        email: "doctor@example.com",
+        otp: "12345",
+      })
+      const errors = await validate(dto)
+      expect(errors.length).toBeGreaterThan(0)
+      expect(errors[0].constraints?.isLength).toBeDefined()
+    })
+
+    it("should reject OTP longer than 6 digits", async () => {
+      const dto = plainToInstance(VerifyOtpDto, {
+        email: "doctor@example.com",
+        otp: "1234567",
+      })
+      const errors = await validate(dto)
+      expect(errors.length).toBeGreaterThan(0)
+      expect(errors[0].constraints?.isLength).toBeDefined()
+    })
+
+    it("should reject invalid email", async () => {
+      const dto = plainToInstance(VerifyOtpDto, {
+        email: "not-an-email",
+        otp: "123456",
+      })
+      const errors = await validate(dto)
+      expect(errors.length).toBeGreaterThan(0)
+      expect(errors[0].constraints?.isEmail).toBeDefined()
+    })
+  })
+
+  describe("ResendOtpDto", () => {
+    it("should validate valid email address", async () => {
+      const dto = plainToInstance(ResendOtpDto, {
+        email: "doctor@example.com",
+      })
+      const errors = await validate(dto)
+      expect(errors).toHaveLength(0)
+    })
+
+    it("should reject invalid email address", async () => {
+      const dto = plainToInstance(ResendOtpDto, {
+        email: "not-an-email",
       })
       const errors = await validate(dto)
       expect(errors.length).toBeGreaterThan(0)

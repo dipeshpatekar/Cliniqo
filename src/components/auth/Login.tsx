@@ -4,6 +4,9 @@ import { Button, Logo } from "../common"
 import {
   isTauriDesktop,
   loginDesktop,
+  requestPasswordResetOtp,
+  verifyPasswordResetOtp,
+  resetPasswordWithToken,
   type DesktopSessionContext,
 } from "../../desktop/desktop-bridge"
 import type { Page } from "../../types"
@@ -56,6 +59,7 @@ export function Login({
   const [password, setPassword] = useState("")
   const [newPassword, setNewPassword] = useState("")
   const [confirmPassword, setConfirmPassword] = useState("")
+  const [resetToken, setResetToken] = useState("")
   const [showPassword, setShowPassword] = useState(false)
   const [showNewPassword, setShowNewPassword] = useState(false)
   const [showConfirmPassword, setShowConfirmPassword] = useState(false)
@@ -137,7 +141,7 @@ export function Login({
     window.setTimeout(() => go("dashboard"), 850)
   }
 
-  const requestReset = (event: FormEvent) => {
+  const requestReset = async (event: FormEvent) => {
     event.preventDefault()
     if (!emailPattern.test(email)) {
       setErrors({ email: "Enter the email address linked to your account" })
@@ -145,12 +149,30 @@ export function Login({
     }
     setErrors({})
     setAuthState("sending")
-    window.setTimeout(() => {
+
+    try {
+      await requestPasswordResetOtp(email)
       setView("otp")
       setAuthState("idle")
       setCountdown(30)
       window.setTimeout(() => otpRefs.current[0]?.focus(), 80)
-    }, 800)
+    } catch (err: any) {
+      setAuthState("idle")
+      if (err?.status === 429) {
+        setErrors({
+          email:
+            err?.message ||
+            "Resend limit reached. Please wait before requesting another code.",
+        })
+      } else {
+        setErrors({
+          email: sanitizeAuthErrorMessage(
+            err?.message ||
+              "Unable to connect to the authentication server. Please check your internet connection.",
+          ),
+        })
+      }
+    }
   }
 
   const updateOtpDigit = (index: number, value: string) => {
@@ -162,37 +184,51 @@ export function Login({
     if (digit && index < 5) otpRefs.current[index + 1]?.focus()
   }
 
-  const verifyOtp = (event: FormEvent) => {
+  const verifyOtp = async (event: FormEvent) => {
     event.preventDefault()
     const code = otp.join("")
     if (code.length !== 6) {
       setAuthState("invalid")
       return
     }
-    if (countdown === 0 || code === "111111") {
+    if (countdown === 0) {
       setAuthState("expired")
       return
     }
-    if (code === "222222") {
-      setAuthState("network")
-      return
-    }
-    if (code === "333333") {
-      setAuthState("limit")
-      return
-    }
-    if (code !== "123456") {
-      setAuthState("invalid")
-      return
-    }
+
     setAuthState("verifying")
-    window.setTimeout(() => {
+    try {
+      const res = await verifyPasswordResetOtp(email, code)
+      if (!res?.resetToken) {
+        throw new Error(
+          "Invalid verification response from authentication server.",
+        )
+      }
+      setResetToken(res.resetToken)
       setView("reset")
       setAuthState("idle")
-    }, 700)
+    } catch (err: any) {
+      const msg = String(err?.message || "").toLowerCase()
+      if (msg.includes("expired")) {
+        setAuthState("expired")
+      } else if (msg.includes("limit") || err?.status === 429) {
+        setAuthState("limit")
+      } else if (
+        err?.isNetworkError ||
+        err?.name === "TypeError" ||
+        msg.includes("failed to fetch") ||
+        msg.includes("network") ||
+        msg.includes("connect") ||
+        msg.includes("unable to connect")
+      ) {
+        setAuthState("network")
+      } else {
+        setAuthState("invalid")
+      }
+    }
   }
 
-  const resendOtp = () => {
+  const resendOtp = async () => {
     if (countdown > 0 || authState === "sending") return
     if (resendCount >= 2) {
       setAuthState("limit")
@@ -200,12 +236,20 @@ export function Login({
     }
     setAuthState("sending")
     setOtp(["", "", "", "", "", ""])
-    window.setTimeout(() => {
+
+    try {
+      await requestPasswordResetOtp(email)
       setResendCount((count) => count + 1)
       setCountdown(30)
       setAuthState("idle")
       otpRefs.current[0]?.focus()
-    }, 700)
+    } catch (err: any) {
+      if (err?.status === 429) {
+        setAuthState("limit")
+      } else {
+        setAuthState("network")
+      }
+    }
   }
 
   const backToEmail = () => {
@@ -215,7 +259,7 @@ export function Login({
     setCountdown(30)
   }
 
-  const resetPassword = (event: FormEvent) => {
+  const resetPassword = async (event: FormEvent) => {
     event.preventDefault()
     const nextErrors: Record<string, string> = {}
     if (newPassword.length < 8)
@@ -232,10 +276,28 @@ export function Login({
     }
     setErrors({})
     setAuthState("loading")
-    window.setTimeout(() => {
+
+    if (!resetToken) {
+      setAuthState("idle")
+      setErrors({
+        confirmPassword:
+          "No verified password reset session found. Please request a new verification code.",
+      })
+      return
+    }
+
+    try {
+      await resetPasswordWithToken(resetToken, newPassword)
       setView("success")
       setAuthState("idle")
-    }, 850)
+    } catch (err: any) {
+      setAuthState("idle")
+      setErrors({
+        confirmPassword: sanitizeAuthErrorMessage(
+          err?.message || "Failed to reset password.",
+        ),
+      })
+    }
   }
 
   const returnToSignIn = () => {
@@ -243,6 +305,7 @@ export function Login({
     setPassword("")
     setNewPassword("")
     setConfirmPassword("")
+    setResetToken("")
     setErrors({})
     setAuthState("idle")
   }

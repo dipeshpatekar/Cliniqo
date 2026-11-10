@@ -507,6 +507,101 @@ export function formatIndiaDateTime(
   return formatDateTimeDDMMYYYY(input, true)
 }
 
+export function formatPrescriptionDateWithTime(
+  date?: string | null,
+  time?: string | null,
+): string {
+  if (!date && !time) return "—"
+
+  if (date && (date.includes("T") || (date.includes(":") && date.length > 10))) {
+    return formatDateTimeDDMMYYYY(date, true) || "—"
+  }
+
+  const datePart = formatDateDDMMYYYY(date) || (date ? date.trim() : "")
+
+  if (!time || !time.trim()) {
+    return datePart || "—"
+  }
+
+  const trimmedTime = time.trim()
+
+  const ampmMatch = trimmedTime.match(/^(\d{1,2}):(\d{2})(?::\d{2})?\s*(AM|PM)$/i)
+  if (ampmMatch) {
+    const hh = ampmMatch[1].padStart(2, "0")
+    const mm = ampmMatch[2]
+    const period = ampmMatch[3].toUpperCase()
+    const formattedTime = `${hh}:${mm} ${period}`
+    return datePart ? `${datePart}, ${formattedTime}` : formattedTime
+  }
+
+  const time24Match = trimmedTime.match(/^(\d{1,2}):(\d{2})(?::\d{2})?$/)
+  if (time24Match) {
+    let hours = parseInt(time24Match[1], 10)
+    const minutes = time24Match[2]
+    const period = hours >= 12 ? "PM" : "AM"
+    hours = hours % 12
+    if (hours === 0) hours = 12
+    const hh = String(hours).padStart(2, "0")
+    const formattedTime = `${hh}:${minutes} ${period}`
+    return datePart ? `${datePart}, ${formattedTime}` : formattedTime
+  }
+
+  return datePart ? `${datePart}, ${trimmedTime}` : trimmedTime
+}
+
+export function isMissingAge(age?: number | null): boolean {
+  return (
+    age === undefined ||
+    age === null ||
+    isNaN(Number(age)) ||
+    Number(age) <= 0
+  )
+}
+
+export function isMissingGender(gender?: string | null): boolean {
+  if (!gender) return true
+  const trimmed = gender.trim()
+  return (
+    !trimmed ||
+    trimmed === "—" ||
+    trimmed === "-" ||
+    trimmed.toLowerCase() === "other"
+  )
+}
+
+export function formatPatientAge(
+  age?: number | null,
+  unit: "yrs" | "years" = "yrs",
+): string {
+  if (isMissingAge(age)) return "—"
+  return `${Number(age)} ${unit}`
+}
+
+export function formatPatientGender(gender?: string | null): string {
+  if (isMissingGender(gender)) return "—"
+  return (gender as string).trim()
+}
+
+export function formatPatientAgeGender(
+  age?: number | null,
+  gender?: string | null,
+  ageUnit: "yrs" | "years" = "yrs",
+): string {
+  const missingAge = isMissingAge(age)
+  const missingGender = isMissingGender(gender)
+
+  if (missingAge && missingGender) {
+    return "— · —"
+  }
+  if (missingAge) {
+    return `— · ${formatPatientGender(gender)}`
+  }
+  if (missingGender) {
+    return `${formatPatientAge(age, ageUnit)} · —`
+  }
+  return `${formatPatientAge(age, ageUnit)} · ${formatPatientGender(gender)}`
+}
+
 export function formatSequentialPatientId(seq: number): string {
   const safeSeq = Math.max(1, Math.floor(seq || 1))
   const zeroIndex = safeSeq - 1
@@ -653,9 +748,9 @@ export function mapLocalRecordToPatient(rec: LocalPatientRecord): Patient {
     name,
     initials,
     age: rec.age ?? 0,
-    gender: rec.gender || "Other",
+    gender: rec.gender && rec.gender.trim() ? rec.gender.trim() : "",
     phone: rec.phone || "",
-    lastVisit: "No visits yet",
+    lastVisit: rec.last_visit || "No visits yet",
     allergies: Array.isArray(rec.allergies) ? rec.allergies : [],
     conditions: Array.isArray(rec.conditions) ? rec.conditions : [],
     dateOfBirth: rec.date_of_birth || undefined,

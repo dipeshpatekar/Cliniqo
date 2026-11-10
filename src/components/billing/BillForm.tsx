@@ -11,6 +11,7 @@ import {
   AlertCircle,
 } from "lucide-react"
 import {
+  formatPatientAgeGender,
   getPublicPatientId,
   type Page,
   type Patient,
@@ -331,7 +332,8 @@ export function BillForm({
           <div>
             <strong>{patient.name}</strong>
             <small>
-              {patient.age} years · {patient.gender} · {patient.phone}
+              {formatPatientAgeGender(patient.age, patient.gender, "years")} ·{" "}
+              {patient.phone || "—"}
             </small>
           </div>
           <StatusPill tone={isFinalized ? "success" : "warning"}>

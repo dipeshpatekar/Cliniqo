@@ -397,11 +397,26 @@ impl DbOperations {
     ) -> Result<Vec<PatientRecord>, DatabaseOpError> {
         let mut stmt = conn.prepare(
             r#"
-            SELECT id, server_id, clinic_id, patient_code, encrypted_demographics, nonce,
-                   sync_status, server_version, local_version, updated_at
-            FROM local_patients
-            WHERE clinic_id = ?1
-            ORDER BY updated_at DESC
+            SELECT p.id, p.server_id, p.clinic_id, p.patient_code, p.encrypted_demographics, p.nonce,
+                   p.sync_status, p.server_version, p.local_version, p.updated_at,
+                   (
+                       SELECT COALESCE(c.created_at, c.consultation_date)
+                       FROM local_consultations c
+                       LEFT JOIN local_prescriptions rx
+                         ON (rx.consultation_id = c.id OR (c.server_id IS NOT NULL AND rx.consultation_id = c.server_id))
+                        AND rx.clinic_id = c.clinic_id
+                       WHERE (c.patient_id = p.id OR (p.server_id IS NOT NULL AND c.patient_id = p.server_id))
+                         AND c.clinic_id = p.clinic_id
+                         AND (
+                             rx.status = 'ACTIVE'
+                             OR (c.status IN ('FINALIZED', 'COMPLETED') AND rx.status IS NULL)
+                         )
+                       ORDER BY c.created_at DESC, c.consultation_date DESC
+                       LIMIT 1
+                   ) AS last_visit
+            FROM local_patients p
+            WHERE p.clinic_id = ?1
+            ORDER BY p.updated_at DESC
             "#,
         )?;
 
@@ -416,6 +431,7 @@ impl DbOperations {
             let server_version: i32 = row.get(7)?;
             let local_version: i32 = row.get(8)?;
             let updated_at: String = row.get(9)?;
+            let last_visit: Option<String> = row.get(10)?;
 
             Ok((
                 id,
@@ -428,6 +444,7 @@ impl DbOperations {
                 server_version,
                 local_version,
                 updated_at,
+                last_visit,
             ))
         })?;
 
@@ -444,6 +461,7 @@ impl DbOperations {
                 server_version,
                 local_version,
                 updated_at,
+                last_visit,
             ) = r?;
 
             let decrypted_bytes = decrypt_payload(&dek.key, &enc_bytes, &nonce)
@@ -468,6 +486,7 @@ impl DbOperations {
                 server_version,
                 local_version,
                 updated_at,
+                last_visit,
             });
         }
 
@@ -695,6 +714,16 @@ impl DbOperations {
         let (encrypted_outbox, outbox_nonce) = encrypt_payload(&dek.key, outbox_payload.as_bytes())?;
 
         let tx = conn.transaction()?;
+
+        tx.execute(
+            r#"
+            UPDATE local_consultations
+            SET status = 'FINALIZED',
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?1 AND clinic_id = ?2
+            "#,
+            params![consultation_id, clinic_id],
+        )?;
 
         tx.execute(
             r#"
@@ -7035,5 +7064,202 @@ mod tests {
         assert!(patients.iter().any(|p| p.id == pat1_id && p.patient_code == "AAA-0001"));
         assert!(patients.iter().any(|p| p.id == pat3_id && p.patient_code == "AAA-0003"));
         assert!(!patients.iter().any(|p| p.patient_code == "AAA-0002"));
+    }
+
+    #[test]
+    fn test_patient_last_visit_tracking_with_finalized_prescriptions() {
+        let (mut conn, dek) = setup_test_db();
+        let clinic_id = "clinic_visit_test";
+        let doctor_id = "doc_001";
+
+        // 1. Create a patient
+        let pat_id = DbOperations::insert_patient(
+            &mut conn,
+            &dek,
+            clinic_id,
+            "",
+            "Visit Test Patient",
+            "9876543210",
+            "Female",
+            None,
+            28,
+            &[],
+            &[],
+            None,
+        )
+        .unwrap();
+
+        // Initially: No visits yet
+        let patients = DbOperations::get_patients(&conn, &dek, clinic_id).unwrap();
+        assert_eq!(patients.len(), 1);
+        assert_eq!(patients[0].last_visit, None);
+
+        // 2. Insert draft consultation without prescription -> still No visits yet
+        let c1_id = DbOperations::insert_consultation(
+            &mut conn,
+            &dek,
+            clinic_id,
+            &pat_id,
+            doctor_id,
+            "2026-11-01",
+            "Headache",
+            "Tension Headache",
+            None,
+        )
+        .unwrap();
+
+        let patients_after_draft = DbOperations::get_patients(&conn, &dek, clinic_id).unwrap();
+        assert_eq!(patients_after_draft[0].last_visit, None);
+
+        // 3. Finalize prescription for consultation c1 -> last_visit is now populated
+        let rx1_id = DbOperations::insert_prescription(
+            &mut conn,
+            &dek,
+            clinic_id,
+            &c1_id,
+            &pat_id,
+            doctor_id,
+            "RX-100001",
+            r#"[{"id":1,"name":"Paracetamol","formulation":"Tablet","dose":"500mg"}]"#,
+        )
+        .unwrap();
+        assert!(!rx1_id.is_empty());
+
+        let patients_after_rx1 = DbOperations::get_patients(&conn, &dek, clinic_id).unwrap();
+        assert!(patients_after_rx1[0].last_visit.is_some());
+
+        // 4. Create second finalized consultation c2 with a later date
+        let c2_id = DbOperations::insert_consultation(
+            &mut conn,
+            &dek,
+            clinic_id,
+            &pat_id,
+            doctor_id,
+            "2026-11-10",
+            "Follow-up",
+            "Recovered",
+            None,
+        )
+        .unwrap();
+
+        DbOperations::insert_prescription(
+            &mut conn,
+            &dek,
+            clinic_id,
+            &c2_id,
+            &pat_id,
+            doctor_id,
+            "RX-100002",
+            r#"[{"id":2,"name":"Vitamin C","formulation":"Tablet","dose":"500mg"}]"#,
+        )
+        .unwrap();
+
+        let patients_after_rx2 = DbOperations::get_patients(&conn, &dek, clinic_id).unwrap();
+        assert_eq!(patients_after_rx2.len(), 1);
+        assert!(patients_after_rx2[0].last_visit.is_some());
+
+        // 5. Verify multiple prescriptions for the same consultation do not create duplicate visits
+        let rx2_revision = "RX-100002-REV2";
+        conn.execute(
+            r#"
+            INSERT INTO local_prescriptions (
+                id, clinic_id, consultation_id, patient_id, doctor_id,
+                prescription_number, revision_number, status, encrypted_items, nonce, sync_status, local_version
+            ) VALUES ('rx_rev_2', ?1, ?2, ?3, ?4, ?5, 2, 'ACTIVE', X'00', X'00', 'PENDING', 2)
+            "#,
+            params![clinic_id, c2_id, pat_id, doctor_id, rx2_revision],
+        ).unwrap();
+
+        let patients_multi_rx = DbOperations::get_patients(&conn, &dek, clinic_id).unwrap();
+        assert_eq!(patients_multi_rx.len(), 1, "Multiple prescriptions must never duplicate patient records");
+        assert!(patients_multi_rx[0].last_visit.is_some());
+
+        // 6. Verify cancelled prescriptions are excluded
+        let pat_cancel_id = DbOperations::insert_patient(
+            &mut conn,
+            &dek,
+            clinic_id,
+            "",
+            "Cancelled Patient",
+            "9876543299",
+            "Male",
+            None,
+            40,
+            &[],
+            &[],
+            None,
+        ).unwrap();
+
+        let c_cancel_id = DbOperations::insert_consultation(
+            &mut conn,
+            &dek,
+            clinic_id,
+            &pat_cancel_id,
+            doctor_id,
+            "2026-11-05",
+            "Cancelled Complaint",
+            "Cancelled Diagnosis",
+            None,
+        ).unwrap();
+
+        conn.execute(
+            r#"
+            INSERT INTO local_prescriptions (
+                id, clinic_id, consultation_id, patient_id, doctor_id,
+                prescription_number, revision_number, status, encrypted_items, nonce, sync_status, local_version
+            ) VALUES ('rx_cancel_1', ?1, ?2, ?3, ?4, 'RX-CANCEL', 1, 'CANCELLED', X'00', X'00', 'SYNCED', 1)
+            "#,
+            params![clinic_id, c_cancel_id, pat_cancel_id, doctor_id],
+        ).unwrap();
+
+        let patients_with_cancelled = DbOperations::get_patients(&conn, &dek, clinic_id).unwrap();
+        let cancel_patient = patients_with_cancelled.iter().find(|p| p.id == pat_cancel_id).unwrap();
+        assert_eq!(cancel_patient.last_visit, None, "Cancelled prescriptions must be excluded from last visit");
+
+        // 7. Verify cloud-synced consultations matching via server_id are recognized
+        let pat_sync_id = DbOperations::insert_patient(
+            &mut conn,
+            &dek,
+            clinic_id,
+            "",
+            "Cloud Synced Patient",
+            "9876543288",
+            "Female",
+            None,
+            33,
+            &[],
+            &[],
+            None,
+        ).unwrap();
+
+        conn.execute(
+            "UPDATE local_patients SET server_id = 'srv_pat_88' WHERE id = ?1",
+            params![pat_sync_id],
+        ).unwrap();
+
+        // Synced consultation and prescription referencing server_ids
+        conn.execute(
+            r#"
+            INSERT INTO local_consultations (
+                id, server_id, clinic_id, patient_id, doctor_id, consultation_date,
+                status, encrypted_clinical_data, nonce, sync_status, server_version, local_version
+            ) VALUES ('local_c_sync', 'srv_c_88', ?1, 'srv_pat_88', ?2, '2026-11-08', 'FINALIZED', X'00', X'00', 'SYNCED', 1, 1)
+            "#,
+            params![clinic_id, doctor_id],
+        ).unwrap();
+
+        conn.execute(
+            r#"
+            INSERT INTO local_prescriptions (
+                id, server_id, clinic_id, consultation_id, patient_id, doctor_id,
+                prescription_number, revision_number, status, encrypted_items, nonce, sync_status, server_version, local_version
+            ) VALUES ('local_rx_sync', 'srv_rx_88', ?1, 'srv_c_88', 'srv_pat_88', ?2, 'RX-SYNC-88', 1, 'ACTIVE', X'00', X'00', 'SYNCED', 1, 1)
+            "#,
+            params![clinic_id, doctor_id],
+        ).unwrap();
+
+        let patients_with_cloud = DbOperations::get_patients(&conn, &dek, clinic_id).unwrap();
+        let cloud_patient = patients_with_cloud.iter().find(|p| p.id == pat_sync_id).unwrap();
+        assert!(cloud_patient.last_visit.is_some(), "Cloud synced consultation matching via server_id must populate last_visit");
     }
 }

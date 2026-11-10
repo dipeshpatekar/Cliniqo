@@ -1549,14 +1549,17 @@ export default function App() {
         onAddMedicine={addMedicineDefinition}
         desktopSession={desktopSession}
         onUpdatePatientMedicalInfo={updatePatientMedicalInfo}
-        onFinalized={() => {
+        onFinalized={(_consultationId, finalizedTimestamp) => {
+          const visitTimestamp = finalizedTimestamp || new Date().toISOString()
           setSelectedPatient((prev) => ({
             ...prev,
-            lastVisit: "Today",
+            lastVisit: visitTimestamp,
           }))
           setPatientRecords((prev) =>
             prev.map((p) =>
-              p.id === selectedPatient.id ? { ...p, lastVisit: "Today" } : p,
+              p.id === selectedPatient.id
+                ? { ...p, lastVisit: visitTimestamp }
+                : p,
             ),
           )
         }}

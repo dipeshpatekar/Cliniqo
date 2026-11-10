@@ -1,22 +1,37 @@
-import { describe, it, expect, beforeAll } from "vitest"
+import { describe, it, expect, beforeAll, afterAll } from "vitest"
 import React from "react"
 import { renderToString } from "react-dom/server"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
+import { pathToFileURL } from "node:url"
 import { execFileSync, execSync } from "node:child_process"
 import { PrescriptionPreview } from "./components/consultation/PrescriptionPreview"
 import { BillPreview } from "./components/billing/BillPreview"
 import type { Patient, ConsultationData, Medicine, BillData } from "./types"
 import type { DesktopSessionContext } from "./desktop/desktop-bridge"
 
+function isChromeUsable(executable: string): boolean {
+  try {
+    execFileSync(executable, ["--version"], { stdio: "ignore", timeout: 3000 })
+    return true
+  } catch {
+    return false
+  }
+}
+
 function findChromeExecutable(): string | null {
-  if (process.env.CHROME_BIN && fs.existsSync(process.env.CHROME_BIN)) {
+  if (
+    process.env.CHROME_BIN &&
+    fs.existsSync(process.env.CHROME_BIN) &&
+    isChromeUsable(process.env.CHROME_BIN)
+  ) {
     return process.env.CHROME_BIN
   }
   if (
     process.env.PUPPETEER_EXECUTABLE_PATH &&
-    fs.existsSync(process.env.PUPPETEER_EXECUTABLE_PATH)
+    fs.existsSync(process.env.PUPPETEER_EXECUTABLE_PATH) &&
+    isChromeUsable(process.env.PUPPETEER_EXECUTABLE_PATH)
   ) {
     return process.env.PUPPETEER_EXECUTABLE_PATH
   }
@@ -71,7 +86,7 @@ function findChromeExecutable(): string | null {
 
   for (const c of candidates) {
     try {
-      if (fs.existsSync(c)) {
+      if (fs.existsSync(c) && isChromeUsable(c)) {
         return c
       }
     } catch {}
@@ -85,9 +100,10 @@ function findChromeExecutable(): string | null {
     const res = execSync(lookupCmd, {
       stdio: ["ignore", "pipe", "ignore"],
       encoding: "utf8",
+      timeout: 2000,
     }).trim()
     const firstLine = res.split(/\r?\n/)[0]
-    if (firstLine && fs.existsSync(firstLine)) {
+    if (firstLine && fs.existsSync(firstLine) && isChromeUsable(firstLine)) {
       return firstLine
     }
   } catch {}
@@ -95,7 +111,7 @@ function findChromeExecutable(): string | null {
   return null
 }
 
-describe("Prescription & Bill A4 Print Layout Verification", () => {
+describe("Prescription & Bill A4 Print Layout Verification", { timeout: 20000 }, () => {
   const scratchDir = path.join(os.tmpdir(), "cliniqo-print-tests")
   const chromeExecutable = findChromeExecutable()
 
@@ -116,6 +132,14 @@ describe("Prescription & Bill A4 Print Layout Verification", () => {
     if (!cssContent) {
       cssContent = fs.readFileSync(path.resolve("src/index.css"), "utf8")
     }
+  })
+
+  afterAll(() => {
+    try {
+      if (fs.existsSync(scratchDir)) {
+        fs.rmSync(scratchDir, { recursive: true, force: true })
+      }
+    } catch {}
   })
 
   function generatePdf(
@@ -148,22 +172,41 @@ describe("Prescription & Bill A4 Print Layout Verification", () => {
     const pdfFile = path.join(scratchDir, `${filename}.pdf`)
     fs.writeFileSync(htmlFile, fullHtml, "utf8")
 
-    const tmpUserData = path.join(
-      os.tmpdir(),
-      `chrome-print-${filename}-${Date.now()}`,
-    )
+    // Pre-clean previous output PDF if exists
+    if (fs.existsSync(pdfFile)) {
+      try {
+        fs.unlinkSync(pdfFile)
+      } catch {}
+    }
+
+    // Reuse a persistent temporary profile in scratchDir to eliminate cold-start profile creation overhead on Windows NTFS
+    const tmpUserData = path.join(scratchDir, "chrome-profile")
+    const fileUrl = pathToFileURL(path.resolve(htmlFile)).href
+
     const args = [
-      "--headless",
+      "--headless=new",
       "--no-sandbox",
       "--disable-gpu",
+      "--disable-software-rasterizer",
+      "--disable-dev-shm-usage",
+      "--disable-background-networking",
+      "--disable-default-apps",
+      "--disable-extensions",
+      "--disable-sync",
+      "--disable-translate",
+      "--no-first-run",
+      "--no-default-browser-check",
+      "--hide-scrollbars",
+      "--mute-audio",
+      "--run-all-compositor-stages-before-draw",
       `--user-data-dir=${tmpUserData}`,
       "--no-pdf-header-footer",
       `--print-to-pdf=${pdfFile}`,
-      htmlFile,
+      fileUrl,
     ]
 
     try {
-      execFileSync(chromeExecutable, args, { stdio: "ignore" })
+      execFileSync(chromeExecutable, args, { stdio: "ignore", timeout: 8000 })
     } catch (err) {
       console.warn(
         `[print-layout] Warning: Chrome headless print failed for ${filename}:`,
@@ -172,7 +215,7 @@ describe("Prescription & Bill A4 Print Layout Verification", () => {
       return null
     }
 
-    if (!fs.existsSync(pdfFile)) {
+    if (!fs.existsSync(pdfFile) || fs.statSync(pdfFile).size === 0) {
       return null
     }
 

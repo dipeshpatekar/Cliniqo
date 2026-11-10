@@ -3,7 +3,6 @@ import {
   ArrowLeft,
   Check,
   CheckCircle2,
-  LockKeyhole,
   ExternalLink,
   CalendarDays,
   Activity,
@@ -49,7 +48,6 @@ import {
   SelectInput,
   SearchableOptionSelect,
   type SearchOptionItem,
-  Modal,
   FormSection,
   TextArea,
 } from "../common"
@@ -102,7 +100,6 @@ export function Consultation({
 }: ConsultationProps) {
   const [saved, setSaved] = useState(false)
   const [hasAttemptedSubmit, setHasAttemptedSubmit] = useState(false)
-  const [showFinalize, setShowFinalize] = useState(false)
   const [isFinalizing, setIsFinalizing] = useState(false)
   const [finalizeError, setFinalizeError] = useState<string | null>(null)
   const [localFormulary, setLocalFormulary] =
@@ -616,7 +613,6 @@ export function Consultation({
           }
         }
         onFinalized?.(consultationId)
-        setShowFinalize(false)
         go("preview")
       } catch (err: unknown) {
         console.error(
@@ -633,7 +629,6 @@ export function Consultation({
       }
     } else {
       onFinalized?.()
-      setShowFinalize(false)
       go("preview")
     }
   }
@@ -644,10 +639,10 @@ export function Consultation({
     window.setTimeout(() => setSaved(false), 1800)
   }
 
-  const handleTriggerFinalize = () => {
+  const handleTriggerFinalize = async () => {
     setHasAttemptedSubmit(true)
     if (!consultationComplete) return
-    setShowFinalize(true)
+    await handleFinalize()
   }
 
   useEffect(() => {
@@ -754,12 +749,54 @@ export function Consultation({
           aria-label="Finalize prescription"
           title="Finalize prescription (Ctrl+F)"
           onClick={handleTriggerFinalize}
+          disabled={isFinalizing}
+          loading={isFinalizing}
         >
-          Finalize prescription
+          {isFinalizing ? "Finalizing..." : "Finalize prescription"}
         </Button>
       </AppHeader>
 
       <div className="consultation-shell">
+        {finalizeError && (
+          <div
+            role="alert"
+            className="consultation-error-banner"
+            style={{
+              margin: "16px 24px 0",
+              padding: "12px 16px",
+              backgroundColor: "var(--danger-soft, #fee2e2)",
+              color: "var(--danger, #b91c1c)",
+              border: "1px solid var(--danger-line, #fca5a5)",
+              borderRadius: "8px",
+              fontSize: "13px",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              gap: "12px",
+            }}
+          >
+            <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+              <AlertCircle size={16} />
+              <span>{finalizeError}</span>
+            </div>
+            <button
+              type="button"
+              onClick={() => setFinalizeError(null)}
+              style={{
+                background: "transparent",
+                border: "none",
+                cursor: "pointer",
+                color: "inherit",
+                fontSize: "16px",
+                lineHeight: 1,
+                padding: "2px 4px",
+              }}
+              aria-label="Dismiss error"
+            >
+              ×
+            </button>
+          </div>
+        )}
         <main className="consultation-main">
           <div className="patient-strip">
             <span className="avatar">{patient.initials}</span>
@@ -1446,20 +1483,6 @@ export function Consultation({
                 })}
               </div>
             )}
-
-            {data.medicines.length > 0 && (
-              <div className="medicine-add-footer">
-                <Button
-                  size="sm"
-                  variant="secondary"
-                  icon={Plus}
-                  title="Add medicine (Ctrl+Shift+M)"
-                  onClick={addMedicine}
-                >
-                  Add another medicine
-                </Button>
-              </div>
-            )}
           </section>
 
           <FormSection icon={CalendarDays} title="Adv.">
@@ -1487,73 +1510,6 @@ export function Consultation({
           </FormSection>
         </main>
       </div>
-
-      {showFinalize && (
-        <Modal
-          title="Finalize prescription?"
-          description="Confirm that you have reviewed the diagnosis, medicines, doses, and instructions."
-          onClose={() => {
-            if (!isFinalizing) setShowFinalize(false)
-          }}
-        >
-          <div className="review-checklist">
-            <p>
-              <CheckCircle2 size={18} /> Patient and allergy details reviewed
-            </p>
-            <p>
-              <CheckCircle2 size={18} /> Clinical notes and diagnosis reviewed
-            </p>
-            <p>
-              <CheckCircle2 size={18} /> Medicines and directions reviewed
-            </p>
-          </div>
-          <div className="modal-warning">
-            <LockKeyhole size={17} />
-            <p>
-              {isTauriDesktop() && desktopSession
-                ? "Encrypted local SQLite storage and durable sync outbox are active for this clinic."
-                : "This frontend can preview the finalized layout, but durable finalization and revision history require a backend."}
-            </p>
-          </div>
-          {finalizeError && (
-            <div
-              className="error-box"
-              style={{
-                marginTop: "12px",
-                padding: "10px",
-                backgroundColor: "#fee2e2",
-                color: "#b91c1c",
-                borderRadius: "6px",
-                fontSize: "13px",
-              }}
-            >
-              <AlertCircle
-                size={16}
-                style={{ display: "inline", marginRight: "6px" }}
-              />
-              {finalizeError}
-            </div>
-          )}
-          <div className="modal-actions">
-            <Button
-              variant="ghost"
-              onClick={() => setShowFinalize(false)}
-              disabled={isFinalizing}
-            >
-              Continue editing
-            </Button>
-            <Button
-              onClick={handleFinalize}
-              disabled={isFinalizing}
-              loading={isFinalizing}
-            >
-              {isFinalizing
-                ? "Saving to encrypted storage..."
-                : "Finalize & view prescription"}
-            </Button>
-          </div>
-        </Modal>
-      )}
     </>
   )
 }

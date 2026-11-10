@@ -168,9 +168,12 @@ export function Dashboard({
                       p.patientCode === c.patient_id,
                   ) || {
                     id: c.patient_id,
-                    displayId: c.patient_id.startsWith("PC-")
-                      ? c.patient_id
-                      : `PC-${c.patient_id.replace(/\D/g, "").slice(0, 4) || "1001"}`,
+                    displayId:
+                      /^[A-Z]{3}-\d{4}$/.test(c.patient_id) ||
+                      /^PC-\d+/i.test(c.patient_id) ||
+                      /^P-\d+/i.test(c.patient_id)
+                        ? c.patient_id
+                        : getPublicPatientId({ id: c.patient_id }) || "AAA-0001",
                     name: "Consultation Patient",
                     initials: "PT",
                     age: 0,

@@ -1,3 +1,4 @@
+pub mod backup;
 pub mod catalogue_seed;
 pub mod migrations;
 pub mod operations;
@@ -92,5 +93,38 @@ impl DatabaseManager {
 
     pub fn get_db_path(&self) -> &Path {
         &self.db_path
+    }
+
+    /// Replaces the active SQLite database in-place using SQLite's online backup API,
+    /// re-applies migrations, and runs crash recovery.
+    pub fn replace_database(&self, new_db_path: &Path) -> Result<(), DatabaseError> {
+        let mut guard = self.conn.lock().expect("SQLite mutex poisoned");
+
+        // 1. Truncate checkpoint to flush any pending WAL frames
+        let _ = guard.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");
+
+        // 2. Open source database from temporary restored file
+        let restored_conn = Connection::open(new_db_path)?;
+
+        // 3. Use SQLite online backup API to stream restored database directly into active connection
+        {
+            let backup = rusqlite::backup::Backup::new(&restored_conn, &mut *guard)?;
+            backup.run_to_completion(100, std::time::Duration::from_millis(10), None)?;
+        }
+
+        // 4. Reconfigure database PRAGMAs
+        guard.pragma_update(None, "journal_mode", "WAL")?;
+        guard.pragma_update(None, "synchronous", "NORMAL")?;
+        guard.pragma_update(None, "foreign_keys", "ON")?;
+        guard.pragma_update(None, "busy_timeout", 5000)?;
+
+        // 5. Run migrations (in case backup was from an earlier schema version)
+        MigrationRunner::run_migrations(&mut guard, &self.dek)?;
+
+        // 6. Reset any in-flight jobs
+        DbOperations::recover_in_flight_jobs(&mut guard)?;
+
+        log::info!("Database replaced and re-migrated successfully from backup snapshot.");
+        Ok(())
     }
 }

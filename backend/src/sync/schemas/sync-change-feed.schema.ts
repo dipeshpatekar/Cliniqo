@@ -19,6 +19,7 @@ export enum SyncActionType {
   CANCEL = "CANCEL",
   DISCONTINUE = "DISCONTINUE",
   REVISE = "REVISE",
+  DELETE = "DELETE",
 }
 
 @Schema({

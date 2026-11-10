@@ -507,17 +507,80 @@ export function formatIndiaDateTime(
   return formatDateTimeDDMMYYYY(input, true)
 }
 
+export function formatSequentialPatientId(seq: number): string {
+  const safeSeq = Math.max(1, Math.floor(seq || 1))
+  const zeroIndex = safeSeq - 1
+  const prefixIndex = Math.floor(zeroIndex / 9999)
+  const numPart = (zeroIndex % 9999) + 1
+
+  const c1 = String.fromCharCode(65 + (Math.floor(prefixIndex / (26 * 26)) % 26))
+  const c2 = String.fromCharCode(65 + (Math.floor(prefixIndex / 26) % 26))
+  const c3 = String.fromCharCode(65 + (prefixIndex % 26))
+
+  return `${c1}${c2}${c3}-${numPart.toString().padStart(4, "0")}`
+}
+
+export function parseSequentialPatientId(id: string): number | null {
+  if (!id || typeof id !== "string") return null
+  const trimmed = id.trim().toUpperCase()
+  const match = trimmed.match(/^([A-Z]{3})-(\d{4})$/)
+  if (!match) return null
+
+  const prefix = match[1]
+  const num = parseInt(match[2], 10)
+  if (num < 1 || num > 9999) return null
+
+  const p0 = prefix.charCodeAt(0) - 65
+  const p1 = prefix.charCodeAt(1) - 65
+  const p2 = prefix.charCodeAt(2) - 65
+  if (p0 < 0 || p0 > 25 || p1 < 0 || p1 > 25 || p2 < 0 || p2 > 25) return null
+
+  const prefixIndex = p0 * 676 + p1 * 26 + p2
+  return prefixIndex * 9999 + num
+}
+
+export function isSequentialPatientId(id: string): boolean {
+  return parseSequentialPatientId(id) !== null
+}
+
 export function getPublicPatientId(
   patient?: { displayId?: string; patientCode?: string; id?: string } | null,
 ): string {
   if (!patient) return ""
-  if (patient.displayId && patient.displayId.trim().length > 0) {
-    return patient.displayId.trim()
+  const candidate = (
+    patient.displayId?.trim() ||
+    patient.patientCode?.trim() ||
+    patient.id?.trim() ||
+    ""
+  )
+  if (!candidate) return ""
+
+  // Never expose raw MongoDB ObjectIds (24 hex characters) or UUIDs as patient IDs
+  const isMongoId = /^[0-9a-f]{24}$/i.test(candidate)
+  const isUuid =
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+      candidate,
+    )
+
+  if (isMongoId || isUuid) {
+    if (
+      patient.displayId &&
+      !/^[0-9a-f]{24}$/i.test(patient.displayId) &&
+      !/^[0-9a-f]{8}-[0-9a-f]{4}/i.test(patient.displayId)
+    ) {
+      return patient.displayId.trim()
+    }
+    if (
+      patient.patientCode &&
+      !/^[0-9a-f]{24}$/i.test(patient.patientCode) &&
+      !/^[0-9a-f]{8}-[0-9a-f]{4}/i.test(patient.patientCode)
+    ) {
+      return patient.patientCode.trim()
+    }
+    return "AAA-0001"
   }
-  if (patient.patientCode && patient.patientCode.trim().length > 0) {
-    return patient.patientCode.trim()
-  }
-  return patient.id || ""
+
+  return candidate
 }
 
 export function mapLocalRecordToPatient(rec: LocalPatientRecord): Patient {
@@ -532,28 +595,37 @@ export function mapLocalRecordToPatient(rec: LocalPatientRecord): Patient {
 
   let displayId = ""
   if (rec.patient_code && rec.patient_code.trim().length > 0) {
-    const trimmed = rec.patient_code.trim()
-    if (trimmed.startsWith("PC-")) {
+    const trimmed = rec.patient_code.trim().toUpperCase()
+    if (/^[A-Z]{3}-\d{4}$/.test(trimmed)) {
+      displayId = trimmed
+    } else if (
+      /^PC-\d+/i.test(trimmed) ||
+      /^P-\d+/i.test(trimmed) ||
+      /^PT-\d+/i.test(trimmed)
+    ) {
+      // Historical IDs preserved as-is
       displayId = trimmed
     } else if (
       /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
         trimmed,
-      )
+      ) ||
+      /^[0-9a-f]{24}$/i.test(trimmed)
     ) {
-      const digits = trimmed.replace(/\D/g, "")
-      const numPart =
-        digits.length > 0 ? parseInt(digits.slice(0, 4), 10) || 1049 : 1049
-      displayId = `PC-${numPart}`
-    } else if (trimmed.startsWith("PT-")) {
-      displayId = trimmed.replace(/^PT-/i, "PC-")
+      // Never expose UUID or Mongo ObjectId
+      displayId = ""
     } else {
-      displayId = `PC-${trimmed}`
+      displayId = trimmed
     }
-  } else {
-    const digits = rec.id.replace(/\D/g, "")
-    const numPart =
-      digits.length > 0 ? parseInt(digits.slice(0, 4), 10) || 1049 : 1049
-    displayId = `PC-${numPart}`
+  }
+
+  if (!displayId) {
+    const isIdUuidOrMongo =
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+        rec.id,
+      ) || /^[0-9a-f]{24}$/i.test(rec.id)
+    if (!isIdUuidOrMongo && rec.id) {
+      displayId = rec.id
+    }
   }
 
   let registeredAt: string | undefined = undefined

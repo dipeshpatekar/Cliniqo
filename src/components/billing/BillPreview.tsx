@@ -81,6 +81,27 @@ export function BillPreview({
     }
   }, [desktopSession?.clinic_id, desktopSession?.doctor_id])
 
+  useEffect(() => {
+    if (typeof window === "undefined") return
+    const handleProfileUpdate = (e: Event) => {
+      const customEvent = e as CustomEvent
+      const detail = customEvent.detail
+      if (!detail) return
+      if (detail.type === "doctor") {
+        setDoctorProfile(detail.profile)
+      } else if (detail.type === "clinic") {
+        setClinicProfile(detail.profile)
+      } else if (detail.type === "clinic-logo") {
+        setClinicLogo(detail.logo ?? null)
+      }
+    }
+
+    window.addEventListener("cliniqo:profile-updated", handleProfileUpdate)
+    return () => {
+      window.removeEventListener("cliniqo:profile-updated", handleProfileUpdate)
+    }
+  }, [])
+
   const {
     subtotalRupees,
     discountRupees,
@@ -92,7 +113,15 @@ export function BillPreview({
   const formattedDate = bill.date ? formatDateDDMMYYYY(bill.date) : "—"
 
   const isFinalized = bill.status === "FINALIZED"
-  const doctorName = desktopSession?.doctor_name || "Doctor"
+  const doctorName =
+    doctorProfile?.full_name || desktopSession?.doctor_name || "Doctor"
+
+  const handlePrint = (e?: React.MouseEvent) => {
+    e?.preventDefault()
+    if (typeof window !== "undefined") {
+      window.print()
+    }
+  }
 
   const sendBill = () => {
     setDelivery("sending")
@@ -102,10 +131,14 @@ export function BillPreview({
   return (
     <>
       <AppHeader
-        title="Bill preview"
-        subtitle={`${bill.invoiceNumber} · ${bill.paymentStatus} · ${
-          isFinalized ? "Finalized" : "Draft"
-        }`}
+        title={returnPage === "settings" ? "Bill layout preview" : "Bill preview"}
+        subtitle={
+          returnPage === "settings"
+            ? "Sample preview · Layout changes apply to all future bills"
+            : `${bill.invoiceNumber} · ${bill.paymentStatus} · ${
+                isFinalized ? "Finalized" : "Draft"
+              }`
+        }
       >
         <IconButton
           className="topbar-back"
@@ -117,9 +150,10 @@ export function BillPreview({
           <ArrowLeft size={18} />
         </IconButton>
         <Button
+          type="button"
           variant="secondary"
           icon={Printer}
-          onClick={() => window.print()}
+          onClick={handlePrint}
         >
           Print bill
         </Button>
@@ -231,11 +265,7 @@ export function BillPreview({
                   </div>
                 </div>
                 <div className="rx-doctor">
-                  <strong>
-                    {desktopSession?.doctor_name ||
-                      doctorProfile?.full_name ||
-                      doctorName}
-                  </strong>
+                  <strong>{doctorName}</strong>
                   <span>
                     {doctorProfile?.qualification ||
                       (desktopSession
@@ -311,13 +341,13 @@ export function BillPreview({
                       <td>{item.quantity}</td>
                       <td>
                         ₹
-                        {item.rate.toLocaleString("en-IN", {
+                        {(item.rate ?? 0).toLocaleString("en-IN", {
                           minimumFractionDigits: 2,
                         })}
                       </td>
                       <td>
                         ₹
-                        {(item.quantity * item.rate).toLocaleString("en-IN", {
+                        {((item.quantity ?? 1) * (item.rate ?? 0)).toLocaleString("en-IN", {
                           minimumFractionDigits: 2,
                         })}
                       </td>

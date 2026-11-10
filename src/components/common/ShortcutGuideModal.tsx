@@ -1,10 +1,11 @@
-import { useState, useMemo } from "react"
+import { useState, useMemo, useEffect } from "react"
 import { Search, X, Command } from "lucide-react"
 import {
   SHORTCUT_DEFINITIONS,
   type ShortcutCategory,
   type ShortcutItem,
 } from "../../utils/keyboardShortcuts"
+import { Button } from "./index"
 
 interface ShortcutGuideModalProps {
   isOpen: boolean
@@ -23,6 +24,20 @@ export function ShortcutGuideModal({ isOpen, onClose }: ShortcutGuideModalProps)
     "Consultation & Prescription",
     "Billing & Medicine Library",
   ]
+
+  // Direct Escape listener when modal is open
+  useEffect(() => {
+    if (!isOpen) return
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault()
+        e.stopPropagation()
+        onClose()
+      }
+    }
+    window.addEventListener("keydown", handleKeyDown, true)
+    return () => window.removeEventListener("keydown", handleKeyDown, true)
+  }, [isOpen, onClose])
 
   const filteredShortcuts = useMemo(() => {
     const query = search.trim().toLowerCase()
@@ -56,36 +71,43 @@ export function ShortcutGuideModal({ isOpen, onClose }: ShortcutGuideModalProps)
         className="modal-card shortcut-guide-dialog"
         onClick={(e) => e.stopPropagation()}
         style={{
-          maxWidth: "680px",
-          width: "100%",
+          width: "min(720px, 94vw)",
+          height: "min(620px, 85vh)",
           maxHeight: "85vh",
           display: "flex",
           flexDirection: "column",
           padding: 0,
           overflow: "hidden",
+          borderRadius: "14px",
+          background: "var(--surface, #ffffff)",
+          border: "1px solid var(--line, #e2e8f0)",
+          boxShadow: "0 20px 50px rgba(15, 23, 42, 0.2)",
         }}
       >
+        {/* Header */}
         <div
-          className="modal-header"
+          className="modal-head"
           style={{
             padding: "16px 20px",
-            borderBottom: "1px solid var(--border)",
+            borderBottom: "1px solid var(--line, #e2e8f0)",
             display: "flex",
             alignItems: "center",
             justifyContent: "space-between",
+            flexShrink: 0,
           }}
         >
           <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
             <div
               style={{
-                width: "32px",
-                height: "32px",
+                width: "36px",
+                height: "36px",
                 borderRadius: "8px",
-                backgroundColor: "rgba(6, 141, 148, 0.12)",
-                color: "var(--teal-primary, #068D94)",
+                backgroundColor: "var(--primary-soft, rgba(6, 141, 148, 0.12))",
+                color: "var(--primary, #068D94)",
                 display: "flex",
                 alignItems: "center",
                 justifyContent: "center",
+                flexShrink: 0,
               }}
             >
               <Command size={18} />
@@ -93,14 +115,19 @@ export function ShortcutGuideModal({ isOpen, onClose }: ShortcutGuideModalProps)
             <div>
               <h2
                 id="shortcut-guide-title"
-                style={{ fontSize: "16px", fontWeight: 600, margin: 0 }}
+                style={{
+                  fontSize: "16px",
+                  fontWeight: 600,
+                  margin: 0,
+                  color: "var(--ink, #0f172a)",
+                }}
               >
                 Keyboard Shortcuts
               </h2>
               <p
                 style={{
                   fontSize: "12px",
-                  color: "var(--text-muted)",
+                  color: "var(--muted, #64748b)",
                   margin: "2px 0 0",
                 }}
               >
@@ -110,17 +137,46 @@ export function ShortcutGuideModal({ isOpen, onClose }: ShortcutGuideModalProps)
           </div>
           <button
             type="button"
-            className="icon-button"
             onClick={onClose}
             aria-label="Close shortcut reference"
+            style={{
+              background: "transparent",
+              border: "none",
+              color: "var(--muted, #64748b)",
+              cursor: "pointer",
+              padding: "6px",
+              borderRadius: "6px",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+            }}
           >
             <X size={18} />
           </button>
         </div>
 
-        <div style={{ padding: "14px 20px", borderBottom: "1px solid var(--border)" }}>
-          <div className="search-bar" style={{ width: "100%" }}>
-            <Search size={16} />
+        {/* Filter bar & Search */}
+        <div
+          style={{
+            padding: "14px 20px",
+            borderBottom: "1px solid var(--line, #e2e8f0)",
+            background: "var(--surface-alt, #f8fafc)",
+            flexShrink: 0,
+          }}
+        >
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: "8px",
+              background: "var(--surface, #ffffff)",
+              border: "1px solid var(--line, #e2e8f0)",
+              borderRadius: "8px",
+              padding: "0 12px",
+              height: "38px",
+            }}
+          >
+            <Search size={16} style={{ color: "var(--muted, #64748b)", flexShrink: 0 }} />
             <input
               type="text"
               autoFocus
@@ -128,6 +184,14 @@ export function ShortcutGuideModal({ isOpen, onClose }: ShortcutGuideModalProps)
               onChange={(e) => setSearch(e.target.value)}
               placeholder="Search shortcuts by action or key (e.g. search, vitals, bill)..."
               aria-label="Search keyboard shortcuts"
+              style={{
+                border: "none",
+                outline: "none",
+                background: "transparent",
+                width: "100%",
+                fontSize: "13px",
+                color: "var(--ink, #0f172a)",
+              }}
             />
             {search && (
               <button
@@ -137,7 +201,8 @@ export function ShortcutGuideModal({ isOpen, onClose }: ShortcutGuideModalProps)
                   background: "transparent",
                   border: "none",
                   cursor: "pointer",
-                  color: "var(--text-muted)",
+                  color: "var(--muted, #64748b)",
+                  padding: "2px",
                 }}
                 aria-label="Clear shortcut search"
               >
@@ -150,7 +215,7 @@ export function ShortcutGuideModal({ isOpen, onClose }: ShortcutGuideModalProps)
             style={{
               display: "flex",
               gap: "8px",
-              marginTop: "12px",
+              marginTop: "10px",
               overflowX: "auto",
               paddingBottom: "2px",
             }}
@@ -161,23 +226,23 @@ export function ShortcutGuideModal({ isOpen, onClose }: ShortcutGuideModalProps)
                 type="button"
                 onClick={() => setSelectedCategory(cat)}
                 style={{
-                  padding: "5px 12px",
+                  padding: "4px 12px",
                   borderRadius: "16px",
                   fontSize: "12px",
                   fontWeight: selectedCategory === cat ? 600 : 500,
                   border: "1px solid",
                   borderColor:
                     selectedCategory === cat
-                      ? "var(--teal-primary, #068D94)"
-                      : "var(--border)",
+                      ? "var(--primary, #068D94)"
+                      : "var(--line, #e2e8f0)",
                   backgroundColor:
                     selectedCategory === cat
-                      ? "rgba(6, 141, 148, 0.12)"
-                      : "transparent",
+                      ? "var(--primary-soft, rgba(6, 141, 148, 0.12))"
+                      : "var(--surface, #ffffff)",
                   color:
                     selectedCategory === cat
-                      ? "var(--teal-primary, #068D94)"
-                      : "var(--text)",
+                      ? "var(--primary, #068D94)"
+                      : "var(--ink, #0f172a)",
                   cursor: "pointer",
                   whiteSpace: "nowrap",
                   transition: "all 0.15s ease",
@@ -189,11 +254,13 @@ export function ShortcutGuideModal({ isOpen, onClose }: ShortcutGuideModalProps)
           </div>
         </div>
 
+        {/* Scrollable Shortcut List */}
         <div
           style={{
             flex: 1,
+            minHeight: 0,
             overflowY: "auto",
-            padding: "12px 20px",
+            padding: "14px 20px 24px",
             display: "flex",
             flexDirection: "column",
             gap: "8px",
@@ -204,8 +271,8 @@ export function ShortcutGuideModal({ isOpen, onClose }: ShortcutGuideModalProps)
               style={{
                 padding: "36px 0",
                 textAlign: "center",
-                color: "var(--text-muted)",
-                fontSize: "14px",
+                color: "var(--muted, #64748b)",
+                fontSize: "13px",
               }}
             >
               No keyboard shortcuts found matching &quot;{search}&quot;.
@@ -220,8 +287,8 @@ export function ShortcutGuideModal({ isOpen, onClose }: ShortcutGuideModalProps)
                   justifyContent: "space-between",
                   padding: "10px 14px",
                   borderRadius: "8px",
-                  border: "1px solid var(--border)",
-                  backgroundColor: "var(--surface)",
+                  border: "1px solid var(--line, #e2e8f0)",
+                  backgroundColor: "var(--surface, #ffffff)",
                   gap: "14px",
                 }}
               >
@@ -238,7 +305,7 @@ export function ShortcutGuideModal({ isOpen, onClose }: ShortcutGuideModalProps)
                       style={{
                         fontWeight: 600,
                         fontSize: "13px",
-                        color: "var(--text)",
+                        color: "var(--ink, #0f172a)",
                       }}
                     >
                       {item.label}
@@ -250,7 +317,7 @@ export function ShortcutGuideModal({ isOpen, onClose }: ShortcutGuideModalProps)
                           padding: "2px 6px",
                           borderRadius: "4px",
                           backgroundColor: "rgba(6, 141, 148, 0.08)",
-                          color: "var(--teal-primary, #068D94)",
+                          color: "var(--primary, #068D94)",
                         }}
                       >
                         {item.context}
@@ -261,7 +328,7 @@ export function ShortcutGuideModal({ isOpen, onClose }: ShortcutGuideModalProps)
                     style={{
                       margin: 0,
                       fontSize: "12px",
-                      color: "var(--text-muted)",
+                      color: "var(--muted, #64748b)",
                       lineHeight: "1.4",
                     }}
                   >
@@ -284,16 +351,16 @@ export function ShortcutGuideModal({ isOpen, onClose }: ShortcutGuideModalProps)
                       <kbd
                         style={{
                           display: "inline-block",
-                          padding: "3px 7px",
+                          padding: "3px 8px",
                           fontSize: "12px",
                           fontWeight: 600,
-                          fontFamily: "monospace",
+                          fontFamily: "ui-monospace, monospace",
                           lineHeight: "1",
-                          color: "var(--text)",
-                          backgroundColor: "var(--surface-muted, rgba(0,0,0,0.06))",
-                          border: "1px solid var(--border)",
+                          color: "var(--ink, #0f172a)",
+                          backgroundColor: "#f1f5f9",
+                          border: "1px solid var(--line, #e2e8f0)",
                           borderRadius: "5px",
-                          boxShadow: "0 1px 1px rgba(0,0,0,0.1)",
+                          boxShadow: "0 1px 1px rgba(0,0,0,0.06)",
                         }}
                       >
                         {keyPart}
@@ -303,7 +370,7 @@ export function ShortcutGuideModal({ isOpen, onClose }: ShortcutGuideModalProps)
                           style={{
                             margin: "0 4px",
                             fontSize: "12px",
-                            color: "var(--text-muted)",
+                            color: "var(--muted, #64748b)",
                           }}
                         >
                           +
@@ -317,29 +384,54 @@ export function ShortcutGuideModal({ isOpen, onClose }: ShortcutGuideModalProps)
           )}
         </div>
 
+        {/* Footer */}
         <div
           style={{
             padding: "12px 20px",
-            borderTop: "1px solid var(--border)",
-            backgroundColor: "var(--surface-muted, transparent)",
+            borderTop: "1px solid var(--line, #e2e8f0)",
+            backgroundColor: "var(--surface-alt, #f8fafc)",
             display: "flex",
             alignItems: "center",
             justifyContent: "space-between",
             fontSize: "12px",
-            color: "var(--text-muted)",
+            color: "var(--muted, #64748b)",
+            flexShrink: 0,
           }}
         >
           <span>
-            Tip: In consultation, press <kbd style={{ padding: "1px 5px", fontFamily: "monospace", borderRadius: "3px", border: "1px solid var(--border)" }}>1</kbd>–<kbd style={{ padding: "1px 5px", fontFamily: "monospace", borderRadius: "3px", border: "1px solid var(--border)" }}>5</kbd> in Frequency to pick frequency quickly.
+            Tip: In consultation, press{" "}
+            <kbd
+              style={{
+                padding: "1px 5px",
+                fontFamily: "monospace",
+                borderRadius: "3px",
+                border: "1px solid var(--line, #e2e8f0)",
+                background: "white",
+              }}
+            >
+              1
+            </kbd>
+            –
+            <kbd
+              style={{
+                padding: "1px 5px",
+                fontFamily: "monospace",
+                borderRadius: "3px",
+                border: "1px solid var(--line, #e2e8f0)",
+                background: "white",
+              }}
+            >
+              5
+            </kbd>{" "}
+            in Frequency to pick frequency quickly.
           </span>
-          <button
-            type="button"
-            className="button secondary"
-            style={{ padding: "6px 14px", fontSize: "12px" }}
+          <Button
+            size="sm"
+            variant="secondary"
             onClick={onClose}
           >
             Done
-          </button>
+          </Button>
         </div>
       </div>
     </div>

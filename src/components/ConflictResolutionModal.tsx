@@ -179,14 +179,40 @@ export function ConflictResolutionModal({
     }
   }, [isOpen, activeClinicId, initialConflictId])
 
+  useEffect(() => {
+    if (!isOpen) return
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && !isSubmitting) {
+        e.preventDefault()
+        e.stopPropagation()
+        onClose()
+      }
+    }
+    window.addEventListener("keydown", handleKeyDown, true)
+    return () => window.removeEventListener("keydown", handleKeyDown, true)
+  }, [isOpen, isSubmitting, onClose])
+
   const filteredConflicts = useMemo(() => {
     if (statusFilter === "ALL") return conflicts
     return conflicts.filter((c) => c.status === statusFilter)
   }, [conflicts, statusFilter])
 
   const activeConflict = useMemo(() => {
-    return conflicts.find((c) => c.id === selectedConflictId) || null
-  }, [conflicts, selectedConflictId])
+    return filteredConflicts.find((c) => c.id === selectedConflictId) || null
+  }, [filteredConflicts, selectedConflictId])
+
+  useEffect(() => {
+    if (filteredConflicts.length > 0) {
+      if (
+        !selectedConflictId ||
+        !filteredConflicts.some((c) => c.id === selectedConflictId)
+      ) {
+        setSelectedConflictId(filteredConflicts[0].id)
+      }
+    } else {
+      setSelectedConflictId(null)
+    }
+  }, [filteredConflicts, selectedConflictId])
 
   // Parsed client and server representations
   const clientData = useMemo(() => {
@@ -416,11 +442,16 @@ export function ConflictResolutionModal({
       <section
         className="modal modal-wide"
         style={{
-          width: "min(1060px, 96vw)",
+          width: "min(1100px, 96vw)",
+          height: "min(800px, 92vh)",
           maxHeight: "92vh",
           display: "flex",
           flexDirection: "column",
           overflow: "hidden",
+          borderRadius: "16px",
+          background: "var(--surface, #ffffff)",
+          border: "1px solid var(--line, #e2e8f0)",
+          boxShadow: "0 25px 60px rgba(15, 23, 42, 0.25)",
         }}
         role="dialog"
         aria-modal="true"
@@ -523,11 +554,13 @@ export function ConflictResolutionModal({
           {/* Left Conflict List Column */}
           <aside
             style={{
-              width: "280px",
+              width: "300px",
               borderRight: "1px solid var(--line)",
               background: "#fafbfb",
               display: "flex",
               flexDirection: "column",
+              minHeight: 0,
+              overflow: "hidden",
               flexShrink: 0,
             }}
           >
@@ -1257,13 +1290,47 @@ export function ConflictResolutionModal({
                   margin: "auto",
                   textAlign: "center",
                   color: "var(--muted)",
+                  padding: "40px 20px",
+                  display: "flex",
+                  flexDirection: "column",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  gap: "10px",
                 }}
               >
-                <Layers
-                  size={36}
-                  style={{ margin: "0 auto 12px", opacity: 0.5 }}
+                <CheckCircle2
+                  size={40}
+                  style={{ color: "var(--success, #237653)" }}
                 />
-                <p>Select a conflict from the list to inspect differences.</p>
+                <h3
+                  style={{
+                    fontSize: "15px",
+                    fontWeight: "600",
+                    margin: 0,
+                    color: "var(--ink, #0f172a)",
+                  }}
+                >
+                  {statusFilter === "OPEN"
+                    ? "No Open Conflicts"
+                    : statusFilter === "RESOLVED"
+                      ? "No Resolved Conflicts"
+                      : "No Conflicts Recorded"}
+                </h3>
+                <p
+                  style={{
+                    fontSize: "12px",
+                    margin: 0,
+                    maxWidth: "340px",
+                    color: "var(--muted, #64748b)",
+                    lineHeight: "1.5",
+                  }}
+                >
+                  {statusFilter === "OPEN"
+                    ? "All clinical records are currently in sync with the server."
+                    : statusFilter === "RESOLVED"
+                      ? "Resolved conflicts will appear here for reference."
+                      : "No conflicts found in this category."}
+                </p>
               </div>
             )}
           </main>

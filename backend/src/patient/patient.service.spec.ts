@@ -148,13 +148,13 @@ describe("PatientService & Sequence Isolation (Unit)", () => {
   })
 
   describe("Sequence generation & first registration", () => {
-    it("generates P-00101 on first registration for a clinic", async () => {
+    it("generates AAA-0001 on first registration for a clinic", async () => {
       mockCounterModel.findOneAndUpdate.mockResolvedValueOnce({
-        seq: 101,
+        seq: 1,
       })
 
       const patientId = await service.generatePatientId(clinicId, mockSession)
-      expect(patientId).toBe("P-00101")
+      expect(patientId).toBe("AAA-0001")
       expect(mockCounterModel.findOneAndUpdate).toHaveBeenCalledWith(
         { clinicId, sequenceName: "patient" },
         expect.any(Array),
@@ -162,13 +162,22 @@ describe("PatientService & Sequence Isolation (Unit)", () => {
       )
     })
 
-    it("generates P-00102 for subsequent registration", async () => {
+    it("generates AAA-0002 for subsequent registration", async () => {
       mockCounterModel.findOneAndUpdate.mockResolvedValueOnce({
-        seq: 102,
+        seq: 2,
       })
 
       const patientId = await service.generatePatientId(clinicId, mockSession)
-      expect(patientId).toBe("P-00102")
+      expect(patientId).toBe("AAA-0002")
+    })
+
+    it("rolls over from AAA-9999 to AAB-0001 sequentially", async () => {
+      mockCounterModel.findOneAndUpdate.mockResolvedValueOnce({
+        seq: 10000,
+      })
+
+      const patientId = await service.generatePatientId(clinicId, mockSession)
+      expect(patientId).toBe("AAB-0001")
     })
 
     it("retries standalone counter generation if transient E11000 race occurs", async () => {
@@ -180,10 +189,10 @@ describe("PatientService & Sequence Isolation (Unit)", () => {
 
       mockCounterModel.findOneAndUpdate
         .mockRejectedValueOnce(duplicateKeyErr)
-        .mockResolvedValueOnce({ seq: 102 })
+        .mockResolvedValueOnce({ seq: 2 })
 
       const patientId = await service.generatePatientId(clinicId) // no session
-      expect(patientId).toBe("P-00102")
+      expect(patientId).toBe("AAA-0002")
       expect(mockCounterModel.findOneAndUpdate).toHaveBeenCalledTimes(2)
     })
 
@@ -203,7 +212,7 @@ describe("PatientService & Sequence Isolation (Unit)", () => {
 
   describe("Patient creation (createPatient)", () => {
     it("creates patient with initials, normalized phone, version 1, and records audit log", async () => {
-      mockCounterModel.findOneAndUpdate.mockResolvedValueOnce({ seq: 101 })
+      mockCounterModel.findOneAndUpdate.mockResolvedValueOnce({ seq: 1 })
 
       const dto: any = {
         name: "Sarah Connor",
@@ -216,7 +225,7 @@ describe("PatientService & Sequence Isolation (Unit)", () => {
 
       const result = await service.createPatient(clinicId, dto, doctorId)
 
-      expect(result.patientId).toBe("P-00101")
+      expect(result.patientId).toBe("AAA-0001")
       expect(result.name).toBe("Sarah Connor")
       expect(result.initials).toBe("SC")
       expect(result.normalizedPhone).toBe("9876512345")
@@ -232,7 +241,7 @@ describe("PatientService & Sequence Isolation (Unit)", () => {
             actorDoctorId: doctorId,
             action: ClinicAuditAction.PATIENT_CREATED,
             metadata: expect.objectContaining({
-              patientId: "P-00101",
+              patientId: "AAA-0001",
               name: "Sarah Connor",
               allergiesCount: 2,
               conditionsCount: 1,

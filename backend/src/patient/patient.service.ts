@@ -23,6 +23,7 @@ import {
   ClinicAuditAction,
 } from "../clinic/schemas/clinic-audit-log.schema.js"
 import { executeInTransaction } from "../database/transaction.helper.js"
+import { formatSequentialPatientId } from "./utils/patient-id.util.js"
 import { CreatePatientDto } from "./dto/create-patient.dto.js"
 import { UpdatePatientDto } from "./dto/update-patient.dto.js"
 import {
@@ -105,7 +106,7 @@ export class PatientService {
     const updatePipeline = [
       {
         $set: {
-          seq: { $ifNull: [{ $add: ["$seq", 1] }, 101] },
+          seq: { $ifNull: [{ $add: ["$seq", 1] }, 1] },
           createdAt: { $ifNull: ["$createdAt", "$$NOW"] },
           updatedAt: "$$NOW",
         },
@@ -132,7 +133,7 @@ export class PatientService {
           throw new Error("Failed to generate sequence number for patient")
         }
 
-        return `P-${String(doc.seq).padStart(5, "0")}`
+        return formatSequentialPatientId(doc.seq)
       } catch (err: any) {
         if (
           !session &&

@@ -59,6 +59,112 @@ pub type RawInvoiceRow = (
 pub struct DbOperations;
 
 impl DbOperations {
+    /// Formats a 1-based sequential number into the canonical patient code AAA-0001 ... ZZZ-9999.
+    pub fn format_sequential_patient_id(seq: u32) -> String {
+        let safe_seq = if seq < 1 { 1 } else { seq };
+        let zero_index = safe_seq - 1;
+        let prefix_index = zero_index / 9999;
+        let num_part = (zero_index % 9999) + 1;
+
+        let c1 = ((prefix_index / 676) % 26) as u8 + b'A';
+        let c2 = ((prefix_index / 26) % 26) as u8 + b'A';
+        let c3 = (prefix_index % 26) as u8 + b'A';
+
+        format!("{}{}{}-{:04}", c1 as char, c2 as char, c3 as char, num_part)
+    }
+
+    /// Parses a canonical patient code (e.g. AAA-0001) back into its 1-based sequence number.
+    pub fn parse_sequential_patient_id(id: &str) -> Option<u32> {
+        let trimmed = id.trim();
+        if trimmed.len() != 8 || trimmed.as_bytes().get(3) != Some(&b'-') {
+            return None;
+        }
+        let prefix = &trimmed[..3];
+        let num_str = &trimmed[4..];
+
+        let bytes = prefix.as_bytes();
+        if !bytes[0].is_ascii_uppercase()
+            || !bytes[1].is_ascii_uppercase()
+            || !bytes[2].is_ascii_uppercase()
+        {
+            return None;
+        }
+        let num: u32 = num_str.parse().ok()?;
+        if num < 1 || num > 9999 {
+            return None;
+        }
+
+        let p0 = (bytes[0] - b'A') as u32;
+        let p1 = (bytes[1] - b'A') as u32;
+        let p2 = (bytes[2] - b'A') as u32;
+
+        let prefix_index = p0 * 676 + p1 * 26 + p2;
+        Some(prefix_index * 9999 + num)
+    }
+
+    /// Computes the next sequential patient code for a clinic without modifying counter state.
+    pub fn get_next_patient_code(conn: &mut Connection, clinic_id: &str) -> Result<String, DatabaseOpError> {
+        let counter_seq: u32 = conn
+            .query_row(
+                "SELECT last_seq FROM local_seq_counters WHERE clinic_id = ?1 AND sequence_name = 'patient'",
+                params![clinic_id],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
+
+        let mut max_seq = counter_seq;
+        let mut stmt = conn.prepare("SELECT patient_code FROM local_patients WHERE clinic_id = ?1")?;
+        let rows = stmt.query_map(params![clinic_id], |row| row.get::<_, String>(0))?;
+        for r in rows {
+            if let Ok(code) = r {
+                if let Some(parsed) = Self::parse_sequential_patient_id(&code) {
+                    if parsed > max_seq {
+                        max_seq = parsed;
+                    }
+                }
+            }
+        }
+
+        let next_seq = max_seq + 1;
+        Ok(Self::format_sequential_patient_id(next_seq))
+    }
+
+    fn allocate_next_patient_code_tx(tx: &rusqlite::Transaction, clinic_id: &str) -> Result<String, DatabaseOpError> {
+        let counter_seq: u32 = tx
+            .query_row(
+                "SELECT last_seq FROM local_seq_counters WHERE clinic_id = ?1 AND sequence_name = 'patient'",
+                params![clinic_id],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
+
+        let mut max_seq = counter_seq;
+        let mut stmt = tx.prepare("SELECT patient_code FROM local_patients WHERE clinic_id = ?1")?;
+        let rows = stmt.query_map(params![clinic_id], |row| row.get::<_, String>(0))?;
+        for r in rows {
+            if let Ok(code) = r {
+                if let Some(parsed) = Self::parse_sequential_patient_id(&code) {
+                    if parsed > max_seq {
+                        max_seq = parsed;
+                    }
+                }
+            }
+        }
+
+        let next_seq = max_seq + 1;
+        tx.execute(
+            r#"
+            INSERT INTO local_seq_counters (clinic_id, sequence_name, last_seq)
+            VALUES (?1, 'patient', ?2)
+            ON CONFLICT(clinic_id, sequence_name) DO UPDATE SET
+            last_seq = excluded.last_seq
+            "#,
+            params![clinic_id, next_seq],
+        )?;
+
+        Ok(Self::format_sequential_patient_id(next_seq))
+    }
+
     /// Inserts a patient record locally. All demographics and outbox mutation payloads are
     /// encrypted at rest using AES-256-GCM.
     pub fn insert_patient(
@@ -78,6 +184,28 @@ impl DbOperations {
         let patient_id = Uuid::new_v4().to_string();
         let idempotency_key = format!("local-patient-create-{patient_id}");
 
+        let tx = conn.transaction()?;
+
+        // Resolve canonical patient code: allocate if missing or placeholder
+        let effective_code = if patient_code.trim().is_empty() || patient_code == "PT-INIT" {
+            Self::allocate_next_patient_code_tx(&tx, clinic_id)?
+        } else {
+            patient_code.trim().to_string()
+        };
+
+        // Advance sequential counter so deleted IDs are never reused
+        if let Some(seq) = Self::parse_sequential_patient_id(&effective_code) {
+            tx.execute(
+                r#"
+                INSERT INTO local_seq_counters (clinic_id, sequence_name, last_seq)
+                VALUES (?1, 'patient', ?2)
+                ON CONFLICT(clinic_id, sequence_name) DO UPDATE SET
+                last_seq = MAX(local_seq_counters.last_seq, excluded.last_seq)
+                "#,
+                params![clinic_id, seq],
+            )?;
+        }
+
         // 1. Pack and encrypt all demographic and sensitive fields
         let demographics = PatientDemographics {
             name: name.to_string(),
@@ -95,7 +223,7 @@ impl DbOperations {
 
         // 2. Pack and encrypt sync outbox mutation payload
         let outbox_payload = json!({
-            "patientId": patient_code,
+            "patientId": effective_code,
             "name": name,
             "phone": phone,
             "gender": gender,
@@ -108,8 +236,6 @@ impl DbOperations {
 
         let (encrypted_outbox, outbox_nonce) = encrypt_payload(&dek.key, outbox_payload.as_bytes())?;
 
-        let tx = conn.transaction()?;
-
         tx.execute(
             r#"
             INSERT INTO local_patients (
@@ -119,7 +245,7 @@ impl DbOperations {
             params![
                 patient_id,
                 clinic_id,
-                patient_code,
+                effective_code,
                 encrypted_demographics,
                 demo_nonce,
             ],
@@ -2108,6 +2234,13 @@ impl DbOperations {
             // 2. No conflict: apply remote changes to local database with encryption
             match item.entity_type.as_str() {
                 "PATIENT" => {
+                    if item.action == "DELETE" {
+                        tx.execute(
+                            "DELETE FROM local_patients WHERE clinic_id = ?1 AND (server_id = ?2 OR (?3 != '' AND id = ?3))",
+                            params![clinic_id, item.entity_id, client_ent_id],
+                        )?;
+                        continue;
+                    }
                     let name = item.payload.get("name").and_then(|v| v.as_str()).unwrap_or("Unnamed Patient");
                     let phone = item.payload.get("phone").and_then(|v| v.as_str()).unwrap_or("");
                     let gender = item.payload.get("gender").and_then(|v| v.as_str()).unwrap_or("OTHER");
@@ -6811,5 +6944,96 @@ mod tests {
         // Search by company name "EMRYS"
         let search_company = DbOperations::search_local_catalogue(&conn, "EMRYS", 10, None).unwrap();
         assert!(!search_company.is_empty(), "Search by company name must return matching stock items");
+    }
+
+    #[test]
+    fn test_sequential_patient_id_format_and_non_reuse() {
+        assert_eq!(DbOperations::format_sequential_patient_id(1), "AAA-0001");
+        assert_eq!(DbOperations::format_sequential_patient_id(9999), "AAA-9999");
+        assert_eq!(DbOperations::format_sequential_patient_id(10000), "AAB-0001");
+        assert_eq!(DbOperations::format_sequential_patient_id(19998), "AAB-9999");
+        assert_eq!(DbOperations::format_sequential_patient_id(19999), "AAC-0001");
+
+        assert_eq!(DbOperations::parse_sequential_patient_id("AAA-0001"), Some(1));
+        assert_eq!(DbOperations::parse_sequential_patient_id("AAA-9999"), Some(9999));
+        assert_eq!(DbOperations::parse_sequential_patient_id("AAB-0001"), Some(10000));
+        assert_eq!(DbOperations::parse_sequential_patient_id("AAC-0001"), Some(19999));
+        assert_eq!(DbOperations::parse_sequential_patient_id("PC-1049"), None);
+        assert_eq!(DbOperations::parse_sequential_patient_id("invalid"), None);
+
+        let mut conn = Connection::open_in_memory().unwrap();
+        let dek = DatabaseEncryptionKey { key: [7u8; 32] };
+        crate::db::migrations::MigrationRunner::run_migrations(&mut conn, &dek).unwrap();
+
+        let clinic_id = "clinic_seq_test";
+
+        // Initial next code should be AAA-0001
+        let next_1 = DbOperations::get_next_patient_code(&mut conn, clinic_id).unwrap();
+        assert_eq!(next_1, "AAA-0001");
+
+        // Insert first patient (auto-allocated AAA-0001)
+        let pat1_id = DbOperations::insert_patient(
+            &mut conn,
+            &dek,
+            clinic_id,
+            "",
+            "Patient One",
+            "9999999991",
+            "Female",
+            None,
+            28,
+            &[],
+            &[],
+            None,
+        ).unwrap();
+
+        // Next code should be AAA-0002
+        let next_2 = DbOperations::get_next_patient_code(&mut conn, clinic_id).unwrap();
+        assert_eq!(next_2, "AAA-0002");
+
+        // Insert second patient with explicit AAA-0002
+        let pat2_id = DbOperations::insert_patient(
+            &mut conn,
+            &dek,
+            clinic_id,
+            "AAA-0002",
+            "Patient Two",
+            "9999999992",
+            "Male",
+            None,
+            34,
+            &[],
+            &[],
+            None,
+        ).unwrap();
+
+        // Delete second patient (AAA-0002)
+        DbOperations::delete_patient(&mut conn, &dek, clinic_id, &pat2_id).unwrap();
+
+        // Next code must be AAA-0003, NEVER reusing deleted AAA-0002
+        let next_3 = DbOperations::get_next_patient_code(&mut conn, clinic_id).unwrap();
+        assert_eq!(next_3, "AAA-0003");
+
+        // Insert third patient, verifying allocation uses AAA-0003
+        let pat3_id = DbOperations::insert_patient(
+            &mut conn,
+            &dek,
+            clinic_id,
+            "",
+            "Patient Three",
+            "9999999993",
+            "Other",
+            None,
+            40,
+            &[],
+            &[],
+            None,
+        ).unwrap();
+
+        let patients = DbOperations::get_patients(&conn, &dek, clinic_id).unwrap();
+        assert_eq!(patients.len(), 2);
+        assert!(patients.iter().any(|p| p.id == pat1_id && p.patient_code == "AAA-0001"));
+        assert!(patients.iter().any(|p| p.id == pat3_id && p.patient_code == "AAA-0003"));
+        assert!(!patients.iter().any(|p| p.patient_code == "AAA-0002"));
     }
 }

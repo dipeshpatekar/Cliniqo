@@ -47,6 +47,10 @@ import {
   ClinicSequenceCounterDocument,
 } from "../patient/schemas/clinic-sequence-counter.schema.js"
 import {
+  formatSequentialPatientId,
+  parseSequentialPatientId,
+} from "../patient/utils/patient-id.util.js"
+import {
   Invoice,
   InvoiceDocument,
   InvoiceStatus,
@@ -420,7 +424,17 @@ export class SyncService {
           { $inc: { seq: 1 } },
           { upsert: true, returnDocument: "after", session },
         )
-        canonicalPatientCode = `P-${counter.seq.toString().padStart(5, "0")}`
+        canonicalPatientCode = formatSequentialPatientId(counter.seq)
+      } else {
+        // Monotonically advance cloud counter with offline-allocated sequence
+        const parsedSeq = parseSequentialPatientId(canonicalPatientCode)
+        if (parsedSeq) {
+          await this.seqCounterModel.findOneAndUpdate(
+            { clinicId, sequenceName: "patient" },
+            { $max: { seq: parsedSeq } },
+            { upsert: true, session },
+          )
+        }
       }
 
       // Check unique patient code per clinic
@@ -637,6 +651,58 @@ export class SyncService {
             action: SyncActionType.UPDATE,
             version: patient.version,
             payload: patient.toObject(),
+            committedAt: new Date(),
+            actorDoctorId: doctorId,
+          },
+        ],
+        { session },
+      )
+
+      return {
+        outboxId: mutation.outboxId,
+        status: "APPLIED",
+        entityType: mutation.entityType,
+        entityId: mutation.entityId,
+        serverId: patient._id.toString(),
+        serverVersion: patient.version,
+      }
+    }
+
+    if (mutation.action === SyncActionType.DELETE) {
+      const patient = await this.findPatient(clinicId, mutation, session)
+      if (!patient) {
+        // Idempotency: if patient does not exist or is already removed, mark as APPLIED
+        return {
+          outboxId: mutation.outboxId,
+          status: "APPLIED",
+          entityType: mutation.entityType,
+          entityId: mutation.entityId,
+          serverId: mutation.serverId || mutation.entityId,
+          serverVersion: mutation.clientVersion || 1,
+        }
+      }
+
+      patient.status = PatientStatus.ARCHIVED
+      patient.version += 1
+      patient.updatedBy = doctorId
+      await patient.save({ session })
+
+      const seq = await this.incrementClinicSeq(clinicId, session)
+      await this.changeFeedModel.create(
+        [
+          {
+            clinicId,
+            seq,
+            entityType: SyncEntityType.PATIENT,
+            entityId: patient._id.toString(),
+            clientEntityId: mutation.entityId,
+            action: SyncActionType.DELETE,
+            version: patient.version,
+            payload: {
+              patientId: patient.patientId,
+              status: PatientStatus.ARCHIVED,
+              deletedAt: new Date().toISOString(),
+            },
             committedAt: new Date(),
             actorDoctorId: doctorId,
           },

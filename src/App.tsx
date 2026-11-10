@@ -31,6 +31,8 @@ import {
   loadPatientFormFieldPreferences,
   mapLocalRecordToPatient,
   initialPatients,
+  formatSequentialPatientId,
+  parseSequentialPatientId,
 } from "./types"
 import { cn } from "./utils/cn"
 
@@ -61,6 +63,7 @@ import {
   refreshDesktopSession,
   logoutDesktopSession,
   getLocalPatients,
+  getNextPatientCode,
   saveLocalPatient,
   deleteLocalPatient,
   getLocalFormulary,
@@ -72,6 +75,96 @@ import {
   type LocalInvoiceRecord,
 } from "./desktop/desktop-bridge"
 import stockReportData from "./data/stock-report-18-10-26.json"
+
+const SAMPLE_PREVIEW_PATIENT: Patient = {
+  id: "sample-patient-preview",
+  displayId: "SAMPLE-001",
+  patientCode: "SAMPLE-001",
+  name: "Sample Patient",
+  initials: "SP",
+  age: 35,
+  gender: "Female",
+  phone: "+91 98765 43210",
+  lastVisit: "Today",
+  allergies: ["Penicillin", "Sulfa drugs"],
+  conditions: ["Hypertension (Mild)"],
+  address: "123 Healthcare Boulevard, Medical District",
+  registeredAt: "2026-01-15T09:00:00Z",
+}
+
+const SAMPLE_PREVIEW_VITALS: Vitals = {
+  systolic: "120",
+  diastolic: "80",
+  heartRate: "72",
+  spo2: "99",
+  temperature: "98.4",
+  height: "165",
+  weight: "62",
+}
+
+const SAMPLE_PREVIEW_CONSULTATION: ConsultationData = {
+  date: "09/11/2026",
+  time: "10:30 AM",
+  chiefComplaint: "Mild headache and seasonal throat irritation for 2 days",
+  symptomDuration: "2 days",
+  diagnosis: "Acute Upper Respiratory Tract Irritation / Tension Headache",
+  followUpDate: "In 5 days",
+  followUpInstructions:
+    "Stay hydrated, take plenty of rest, and follow up if symptoms persist.",
+  allergies: ["Penicillin", "Sulfa drugs"],
+  conditions: ["Hypertension (Mild)"],
+  medicines: [
+    {
+      id: 101,
+      name: "Paracetamol 650mg",
+      formulation: "Tablet",
+      strength: "650mg",
+      dose: "1 Tab",
+      route: "Oral",
+      frequency: "1-0-1",
+      duration: "3 Days",
+      food: "After Food",
+      directions: "Take after meals with water",
+    },
+    {
+      id: 102,
+      name: "Cetirizine 10mg",
+      formulation: "Tablet",
+      strength: "10mg",
+      dose: "1 Tab",
+      route: "Oral",
+      frequency: "0-0-1",
+      duration: "5 Days",
+      food: "At Bedtime",
+      directions: "Take at night before sleep",
+    },
+  ],
+}
+
+const SAMPLE_PREVIEW_BILL: BillData = {
+  id: "sample-bill-preview",
+  invoiceNumber: "INV-SAMPLE-001",
+  date: "2026-11-09",
+  status: "FINALIZED",
+  paymentStatus: "Paid",
+  discount: 10,
+  taxRatePercent: 0,
+  notes: "Sample preview invoice. Thank you for your consultation!",
+  items: [
+    {
+      id: 1,
+      description: "General Consultation & Clinical Review",
+      quantity: 1,
+      rate: 500,
+    },
+    {
+      id: 2,
+      description: "Diagnostic Vitals Assessment",
+      quantity: 1,
+      rate: 150,
+    },
+  ],
+}
 
 export default function App() {
   const [page, setPage] = useState<Page>("login")
@@ -175,6 +268,42 @@ export default function App() {
   })
   const [patientFormFieldPreferences, setPatientFormFieldPreferences] =
     useState<PatientFormFieldPreferences>(loadPatientFormFieldPreferences)
+
+  useEffect(() => {
+    if (typeof window === "undefined") return
+    const handleProfileUpdate = (e: Event) => {
+      const customEvent = e as CustomEvent
+      const detail = customEvent.detail
+      if (!detail) return
+      if (detail.type === "doctor" && detail.profile?.full_name) {
+        setDesktopSession((prev) =>
+          prev ? { ...prev, doctor_name: detail.profile.full_name } : prev,
+        )
+        if (desktopSessionRef.current) {
+          desktopSessionRef.current = {
+            ...desktopSessionRef.current,
+            doctor_name: detail.profile.full_name,
+          }
+        }
+      }
+      if (detail.type === "clinic" && detail.profile?.name) {
+        setDesktopSession((prev) =>
+          prev ? { ...prev, clinic_name: detail.profile.name } : prev,
+        )
+        if (desktopSessionRef.current) {
+          desktopSessionRef.current = {
+            ...desktopSessionRef.current,
+            clinic_name: detail.profile.name,
+          }
+        }
+      }
+    }
+
+    window.addEventListener("cliniqo:profile-updated", handleProfileUpdate)
+    return () => {
+      window.removeEventListener("cliniqo:profile-updated", handleProfileUpdate)
+    }
+  }, [])
   const updatePatientFormFieldPreferences = (
     prefs: PatientFormFieldPreferences,
   ) => {
@@ -213,23 +342,57 @@ export default function App() {
     }
   }
 
-  const extractPatientSequence = (patient: Patient): number => {
-    const raw =
-      patient.displayId ||
-      patient.patientCode ||
-      (patient.id.startsWith("PC-") ? patient.id : "")
-    if (!raw) return 0
-    const m = raw.match(/^PC-(\d+)/i)
-    if (m) {
-      const parsed = parseInt(m[1], 10)
-      if (!isNaN(parsed) && parsed < 10000000) return parsed
+  const [maxAllocatedSeq, setMaxAllocatedSeq] = useState<number>(() => {
+    if (typeof window !== "undefined" && window.localStorage) {
+      const stored =
+        window.localStorage.getItem(
+          `cliniqo_last_patient_seq_${desktopSession?.clinic_id || "default"}`,
+        ) || window.localStorage.getItem("cliniqo_last_patient_seq")
+      if (stored) {
+        const parsed = parseInt(stored, 10)
+        if (!isNaN(parsed) && parsed > 0) return parsed
+      }
     }
     return 0
-  }
+  })
 
-  const nextPatientId = `PC-${
-    Math.max(...patientRecords.map(extractPatientSequence), 1048) + 1
-  }`
+  // Determine highest sequential number among existing patient records
+  const highestSeqInRecords = Math.max(
+    0,
+    ...patientRecords.map((p) => {
+      const raw = p.displayId || p.patientCode || p.id || ""
+      return parseSequentialPatientId(raw) || 0
+    }),
+  )
+
+  const effectiveMaxSeq = Math.max(maxAllocatedSeq, highestSeqInRecords)
+
+  useEffect(() => {
+    if (effectiveMaxSeq > maxAllocatedSeq) {
+      setMaxAllocatedSeq(effectiveMaxSeq)
+      if (typeof window !== "undefined" && window.localStorage) {
+        const key = `cliniqo_last_patient_seq_${desktopSession?.clinic_id || "default"}`
+        window.localStorage.setItem(key, String(effectiveMaxSeq))
+        window.localStorage.setItem("cliniqo_last_patient_seq", String(effectiveMaxSeq))
+      }
+    }
+  }, [effectiveMaxSeq, maxAllocatedSeq, desktopSession?.clinic_id])
+
+  const nextPatientId = formatSequentialPatientId(effectiveMaxSeq + 1)
+
+  useEffect(() => {
+    if (!isTauriDesktop() || !desktopSession?.clinic_id) return
+    getNextPatientCode(desktopSession.clinic_id)
+      .then((code) => {
+        if (code) {
+          const seq = parseSequentialPatientId(code)
+          if (seq && seq > 1) {
+            setMaxAllocatedSeq((prev) => Math.max(prev, seq - 1))
+          }
+        }
+      })
+      .catch(() => {})
+  }, [desktopSession?.clinic_id])
   const [showConflictModal, setShowConflictModal] = useState(false)
   const [showShortcutsModal, setShowShortcutsModal] = useState(false)
   const [targetConflictId, setTargetConflictId] = useState<string | null>(null)
@@ -741,7 +904,11 @@ export default function App() {
           const publicCode =
             patient.displayId ||
             patient.patientCode ||
-            (patient.id.startsWith("PC-") ? patient.id : nextPatientId)
+            (wasEditing
+              ? patient.id
+              : (/^[A-Z]{3}-\d{4}$/.test(patient.id)
+                  ? patient.id
+                  : nextPatientId))
 
           const notesObj = {
             registeredAt: patient.registeredAt,
@@ -812,6 +979,21 @@ export default function App() {
             record.id !== patient.id && record.id !== effectivePatient.id,
         ),
       ])
+      if (!wasEditing) {
+        const publicCode =
+          effectivePatient.displayId ||
+          effectivePatient.patientCode ||
+          effectivePatient.id
+        const allocatedSeq = parseSequentialPatientId(publicCode)
+        if (allocatedSeq && allocatedSeq > maxAllocatedSeq) {
+          setMaxAllocatedSeq(allocatedSeq)
+          if (typeof window !== "undefined" && window.localStorage) {
+            const key = `cliniqo_last_patient_seq_${desktopSession?.clinic_id || "default"}`
+            window.localStorage.setItem(key, String(allocatedSeq))
+            window.localStorage.setItem("cliniqo_last_patient_seq", String(allocatedSeq))
+          }
+        }
+      }
       setSelectedPatient(effectivePatient)
       setPatientSaveFeedback(
         startConsultation ? null : wasEditing ? "updated" : "added",
@@ -1381,12 +1563,13 @@ export default function App() {
       />
     )
   } else if (page === "preview") {
+    const isSamplePreview = prescriptionPreviewReturnPage === "settings"
     content = (
       <PrescriptionPreview
         go={go}
-        patient={selectedPatient}
-        vitals={vitals}
-        data={consultationData}
+        patient={isSamplePreview ? SAMPLE_PREVIEW_PATIENT : selectedPatient}
+        vitals={isSamplePreview ? SAMPLE_PREVIEW_VITALS : vitals}
+        data={isSamplePreview ? SAMPLE_PREVIEW_CONSULTATION : consultationData}
         bannerVisible={prescriptionBannerVisible}
         bannerImage={prescriptionBannerImage}
         signatureImage={doctorSignatureImage}
@@ -1412,11 +1595,12 @@ export default function App() {
       />
     )
   } else if (page === "bill-preview") {
+    const isSamplePreview = billPreviewReturnPage === "settings"
     content = (
       <BillPreview
         go={go}
-        patient={selectedPatient}
-        bill={billData}
+        patient={isSamplePreview ? SAMPLE_PREVIEW_PATIENT : selectedPatient}
+        bill={isSamplePreview ? SAMPLE_PREVIEW_BILL : billData}
         bannerImage={prescriptionBannerImage}
         signatureImage={doctorSignatureImage}
         layout={billLayout}

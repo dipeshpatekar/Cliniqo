@@ -182,6 +182,7 @@ export function GlobalPatientSearch({
           placeholder={placeholder}
           aria-label="Global patient search"
           autoComplete="off"
+          className="global-patient-search-input"
           style={{
             flex: 1,
             minWidth: 0,
@@ -189,7 +190,7 @@ export function GlobalPatientSearch({
             outline: "none",
             fontSize: "13px",
             background: "transparent",
-            color: "var(--text, #0f172a)",
+            color: "var(--ink, #0f172a)",
           }}
         />
         {query ? (
@@ -199,11 +200,12 @@ export function GlobalPatientSearch({
               setQuery("")
               inputRef.current?.focus()
             }}
+            className="global-patient-search-clear"
             style={{
               background: "transparent",
               border: "none",
               cursor: "pointer",
-              color: "var(--text-muted, #64748b)",
+              color: "var(--muted, #64748b)",
               display: "flex",
               alignItems: "center",
               padding: 0,
@@ -214,11 +216,12 @@ export function GlobalPatientSearch({
           </button>
         ) : (
           <span
+            className="global-patient-search-shortcut"
             style={{
               fontSize: "10.5px",
-              color: "var(--text-muted, #64748b)",
+              color: "var(--muted, #64748b)",
               backgroundColor: "var(--surface-muted, #f1f5f9)",
-              border: "1px solid var(--border, #e2e8f0)",
+              border: "1px solid var(--line, #e2e8f0)",
               borderRadius: "4px",
               padding: "1px 5px",
               lineHeight: "1.2",
@@ -244,7 +247,7 @@ export function GlobalPatientSearch({
             width: "350px",
             maxWidth: "calc(100vw - 32px)",
             backgroundColor: "var(--surface, #ffffff)",
-            border: "1px solid var(--border, #e2e8f0)",
+            border: "1px solid var(--line, #e2e8f0)",
             borderRadius: "10px",
             boxShadow:
               "0 12px 30px -4px rgba(0, 0, 0, 0.16), 0 4px 12px -2px rgba(0, 0, 0, 0.06)",
@@ -256,6 +259,7 @@ export function GlobalPatientSearch({
         >
           <div
             ref={listRef}
+            className="global-patient-search-list"
             style={{
               maxHeight: "360px",
               overflowY: "auto",
@@ -267,10 +271,11 @@ export function GlobalPatientSearch({
           >
             {filteredPatients.length === 0 ? (
               <div
+                className="global-patient-search-empty"
                 style={{
                   padding: "20px 16px",
                   textAlign: "center",
-                  color: "var(--text-muted, #64748b)",
+                  color: "var(--muted, #64748b)",
                   fontSize: "13px",
                 }}
               >
@@ -286,6 +291,7 @@ export function GlobalPatientSearch({
                     aria-selected={isSelected}
                     onClick={() => handleSelect(p)}
                     onMouseEnter={() => setSelectedIndex(idx)}
+                    className={`global-patient-search-item ${isSelected ? "selected" : ""}`.trim()}
                     style={{
                       display: "flex",
                       alignItems: "center",
@@ -311,11 +317,12 @@ export function GlobalPatientSearch({
                       }}
                     >
                       <div
+                        className="global-patient-search-avatar"
                         style={{
                           width: "28px",
                           height: "28px",
                           borderRadius: "50%",
-                          backgroundColor: "var(--surface-muted, #f1f5f9)",
+                          backgroundColor: "rgba(6, 141, 148, 0.1)",
                           color: "var(--teal-primary, #068D94)",
                           display: "flex",
                           alignItems: "center",
@@ -336,10 +343,11 @@ export function GlobalPatientSearch({
                         }}
                       >
                         <span
+                          className="global-patient-search-name"
                           style={{
                             fontWeight: 600,
                             fontSize: "13px",
-                            color: "var(--text, #0f172a)",
+                            color: "var(--ink, #0f172a)",
                             overflow: "hidden",
                             textOverflow: "ellipsis",
                             whiteSpace: "nowrap",
@@ -348,10 +356,11 @@ export function GlobalPatientSearch({
                           {p.name}
                         </span>
                         <span
+                          className="global-patient-search-badge"
                           style={{
                             fontSize: "11px",
                             fontWeight: 500,
-                            color: "var(--text-muted, #64748b)",
+                            color: "var(--muted, #64748b)",
                             backgroundColor:
                               "var(--surface-muted, rgba(0,0,0,0.05))",
                             padding: "1px 5px",
@@ -364,12 +373,13 @@ export function GlobalPatientSearch({
                       </div>
                     </div>
                     <div
+                      className="global-patient-search-arrow"
                       style={{
                         display: "flex",
                         alignItems: "center",
                         color: isSelected
                           ? "var(--teal-primary, #068D94)"
-                          : "var(--text-muted, #94a3b8)",
+                          : "var(--muted, #94a3b8)",
                         marginLeft: "8px",
                         flexShrink: 0,
                       }}

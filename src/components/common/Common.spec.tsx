@@ -11,6 +11,8 @@ import {
   ConfirmDialog,
   SearchableOptionSelect,
   GlobalPatientSearch,
+  Logo,
+  CliniqoLogoIcon,
 } from "./index"
 import { User } from "lucide-react"
 
@@ -285,11 +287,17 @@ describe("Common Components", () => {
         />,
       )
 
-      // Verified: contains patient name and ID
+      // Verified: contains patient name and ID with semantic styling classes
       expect(html).toContain("Ananya Iyer")
       expect(html).toContain("PC-1048")
       expect(html).toContain("Vikram Mehta")
       expect(html).toContain("PC-1047")
+      expect(html).toContain("global-patient-search-dropdown")
+      expect(html).toContain("global-patient-search-item")
+      expect(html).toContain("global-patient-search-avatar")
+      expect(html).toContain("global-patient-search-name")
+      expect(html).toContain("global-patient-search-badge")
+      expect(html).toContain("global-patient-search-arrow")
 
       // Verified: removed age, gender, mobile number and extra patient details from result display
       expect(html).not.toContain("yrs")
@@ -301,6 +309,51 @@ describe("Common Components", () => {
       // Verified: removed bottom footer containing keyboard instructions and patient count
       expect(html).not.toContain("Use ↑ and ↓ to navigate")
       expect(html).not.toContain("patient(s)")
+    })
+
+    it("renders empty state with semantic class when no patients match", () => {
+      const html = renderToString(
+        <GlobalPatientSearch
+          patients={[]}
+          onSelectPatient={() => {}}
+          initialOpen={true}
+        />,
+      )
+      expect(html).toContain("global-patient-search-empty")
+      expect(html).toContain("No patients found")
+    })
+  })
+
+  describe("Logo and Branding", () => {
+    it("renders official Cliniqo logo with vector SVG and brand colors", () => {
+      const html = renderToString(<Logo />)
+      expect(html).toContain("logo-lockup")
+      expect(html).toContain("Cliniqo")
+      expect(html).toContain("Doctor workspace")
+      expect(html).toContain("<svg")
+      expect(html).toContain('width="36"')
+      expect(html).toContain('height="36"')
+      expect(html).toContain("cliniqo-linear-gradient")
+      expect(html).toContain("#036c70")
+      expect(html).toContain("#00a69a")
+      expect(html).toContain("#d7fffc")
+      expect(html).toContain("#aefffd")
+      expect(html).toContain("#2dcbca")
+    })
+
+    it("renders large logo variant with proper dimensions", () => {
+      const html = renderToString(<Logo large />)
+      expect(html).toContain("logo-large")
+      expect(html).toContain('width="44"')
+      expect(html).toContain('height="44"')
+    })
+
+    it("renders standalone CliniqoLogoIcon with customizable dimensions", () => {
+      const html = renderToString(<CliniqoLogoIcon size={64} className="custom-logo" />)
+      expect(html).toContain('width="64"')
+      expect(html).toContain('height="64"')
+      expect(html).toContain("custom-logo")
+      expect(html).toContain('viewBox="0 0 1296 1296"')
     })
   })
 })

@@ -6,7 +6,8 @@ import {
   type ReactNode,
 } from "react"
 import { cn } from "../../utils/cn"
-import cliniqoLogo from "../../assets/logo.png"
+import cliniqoLogo from "../../assets/logo.svg"
+export { cliniqoLogo }
 import {
   Check,
   ChevronDown,
@@ -160,7 +161,7 @@ export function SearchableOptionSelect({
     new Map(normalizedOptions.map((item) => [item.value, item])).values(),
   )
 
-  const lowerVal = value.toLowerCase()
+  const lowerVal = (value || "").toLowerCase()
   const isExactSelectedOption =
     Boolean(lowerVal) &&
     uniqueOptions.some(
@@ -525,17 +526,81 @@ export function Modal({
   )
 }
 
+export function CliniqoLogoIcon({
+  size = 36,
+  className,
+}: {
+  size?: number
+  className?: string
+}) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 1296 1296"
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+      className={className}
+      aria-label="Cliniqo"
+      role="img"
+    >
+      <defs>
+        <linearGradient
+          id="cliniqo-linear-gradient"
+          x1="171.46"
+          y1="1124.54"
+          x2="1124.54"
+          y2="171.46"
+          gradientUnits="userSpaceOnUse"
+        >
+          <stop offset="0" stopColor="#036c70" />
+          <stop offset="1" stopColor="#00a69a" />
+        </linearGradient>
+      </defs>
+      <rect
+        fill="url(#cliniqo-linear-gradient)"
+        x="21"
+        y="21"
+        width="1254"
+        height="1254"
+        rx="513.7"
+        ry="513.7"
+      />
+      <g>
+        <path
+          fill="#d7fffc"
+          d="M795.32,262.64v112.28c0,47.17-18.74,92.41-52.09,125.76h0s-242.54,0-242.54,0v-238.04c0-31.25,25.34-56.59,56.59-56.59h181.45c31.25,0,56.59,25.34,56.59,56.59Z"
+        />
+        <path
+          fill="#d7fffc"
+          d="M795.32,795.32v238.04c0,31.25-25.34,56.59-56.59,56.59h-181.45c-31.25,0-56.59-25.34-56.59-56.59v-112.31c0-47.16,18.73-92.38,52.08-125.73h0s242.55,0,242.55,0Z"
+        />
+        <path
+          fill="#aefffd"
+          d="M500.68,500.68v242.54h0c-33.35,33.35-78.59,52.09-125.76,52.09h-112.28c-31.25,0-56.59-25.34-56.59-56.59v-181.45c0-31.25,25.34-56.59,56.59-56.59h238.04Z"
+        />
+        <polygon
+          fill="#2dcbca"
+          points="743.22 500.68 500.68 743.22 500.68 500.68 743.22 500.68"
+        />
+        <polygon
+          fill="#2dcbca"
+          points="795.32 552.75 795.32 795.32 552.76 795.32 795.32 552.75"
+        />
+        <path
+          fill="#aefffd"
+          d="M1089.95,557.27v181.45c0,31.25-25.34,56.59-56.59,56.59h-238.04v-242.57h0c33.34-33.34,78.55-52.07,125.7-52.07h112.35c31.25,0,56.59,25.34,56.59,56.59Z"
+        />
+      </g>
+    </svg>
+  )
+}
+
 export function Logo({ large = false }: { large?: boolean }) {
   return (
     <div className={cn("logo-lockup", large && "logo-large")}>
       <span className="logo-mark">
-        <img
-          src={cliniqoLogo}
-          alt="Cliniqo"
-          className="logo-img"
-          width={large ? 44 : 36}
-          height={large ? 44 : 36}
-        />
+        <CliniqoLogoIcon size={large ? 44 : 36} className="logo-img" />
       </span>
       <span>
         <strong>Cliniqo</strong>

@@ -395,7 +395,7 @@ export function ClinicalLibrarySettings({
                 Drag and drop your spreadsheet here or click to browse
               </p>
 
-              <div className="mt-6 flex items-center justify-center gap-3">
+              <div className="mt-6 flex flex-wrap items-center justify-center gap-3">
                 <Button
                   variant="primary"
                   icon={UploadCloud}
@@ -406,6 +406,15 @@ export function ClinicalLibrarySettings({
                 >
                   Upload Excel Sheet
                 </Button>
+                <a
+                  href="/Medicine_Import_Template.xlsx"
+                  download="Medicine_Import_Template.xlsx"
+                  onClick={(e) => e.stopPropagation()}
+                  className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-medium border border-teal-600/30 text-teal-700 dark:text-teal-300 hover:bg-teal-50 dark:hover:bg-teal-950/40 transition"
+                >
+                  <FileSpreadsheet size={16} />
+                  Download Excel Template
+                </a>
               </div>
             </div>
           )}

@@ -1,7 +1,11 @@
+import { useState, useEffect } from "react"
 import { ShieldCheck } from "lucide-react"
 import { Button, StatusPill } from "../common"
 import { formatDateTimeDDMMYYYY } from "../../types"
-import type { DesktopSessionContext } from "../../desktop/desktop-bridge"
+import {
+  type DesktopSessionContext,
+  getClinicProfile,
+} from "../../desktop/desktop-bridge"
 
 export interface SecuritySettingsProps {
   logout: () => void
@@ -12,6 +16,29 @@ export function SecuritySettings({
   logout,
   desktopSession,
 }: SecuritySettingsProps) {
+  const [clinicName, setClinicName] = useState<string>("")
+
+  useEffect(() => {
+    if (!desktopSession?.clinic_id) return
+    let active = true
+    getClinicProfile(desktopSession.clinic_id).then((profile) => {
+      if (active && profile?.name) {
+        setClinicName(profile.name)
+      }
+    })
+    return () => {
+      active = false
+    }
+  }, [desktopSession?.clinic_id])
+
+  const displayClinic =
+    clinicName ||
+    desktopSession?.clinic_name ||
+    (desktopSession?.clinic_id &&
+    !/^[0-9a-fA-F]{24}$/.test(desktopSession.clinic_id)
+      ? desktopSession.clinic_id
+      : "Medical Clinic")
+
   return (
     <section className="settings-section">
       <div className="settings-title">
@@ -32,7 +59,7 @@ export function SecuritySettings({
           </strong>
           <p>
             {desktopSession
-              ? `Clinic: ${desktopSession.clinic_id} • Role: ${
+              ? `Clinic: ${displayClinic} • Role: ${
                   desktopSession.role
                 } • Expires: ${formatDateTimeDDMMYYYY(
                   new Date(desktopSession.expires_at * 1000),

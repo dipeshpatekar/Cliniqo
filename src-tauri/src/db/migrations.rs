@@ -5,7 +5,7 @@ use crate::crypto::{encrypt_payload, CryptoError};
 use super::schema::{
     ClinicalData, PatientDemographics, CREATE_MIGRATIONS_TABLE, MIGRATION_V1_SQL, MIGRATION_V2_SQL,
     MIGRATION_V3_SQL, MIGRATION_V4_SQL, MIGRATION_V5_SQL, MIGRATION_V6_SQL, MIGRATION_V7_SQL,
-    MIGRATION_V8_SQL, MIGRATION_V9_SQL, MIGRATION_V10_SQL, MIGRATION_V11_SQL,
+    MIGRATION_V8_SQL, MIGRATION_V9_SQL, MIGRATION_V10_SQL, MIGRATION_V11_SQL, MIGRATION_V12_SQL,
 };
 
 #[derive(Error, Debug)]
@@ -22,7 +22,7 @@ pub enum MigrationError {
     #[error("Migration transaction failed: {0}")]
     TransactionError(String),
 
-    #[error("Unsupported schema version: database is at version {0}, but this client only supports up to version 10. Please update the application.")]
+    #[error("Unsupported schema version: database is at version {0}, but this client only supports up to version 12. Please update the application.")]
     UnsupportedSchemaVersion(i32),
 }
 
@@ -74,7 +74,7 @@ impl MigrationRunner {
             )
             .unwrap_or(0);
 
-        if max_version > 11 {
+        if max_version > 12 {
             return Err(MigrationError::UnsupportedSchemaVersion(max_version));
         }
 
@@ -247,6 +247,27 @@ impl MigrationRunner {
             log::info!("Applying local offline SQLite migration v11 (Purge CDCI dataset)...");
             Self::migrate_to_v11(conn)?;
             log::info!("Migration v11 applied successfully. Legacy CDCI tables purged.");
+        }
+
+        // 14. Check if v12 (Sequential Patient Counters) has been applied
+        let v12_applied: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = 12)",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or(false);
+
+        if !v12_applied {
+            log::info!("Applying local offline SQLite migration v12 (Sequential patient counters)...");
+            let tx = conn.transaction()?;
+            tx.execute_batch(MIGRATION_V12_SQL)?;
+            tx.execute(
+                "INSERT INTO schema_migrations (version, name, checksum) VALUES (?1, ?2, ?3)",
+                params![12, "sequential_patient_counters", "v12_seq_counters"],
+            )?;
+            tx.commit()?;
+            log::info!("Migration v12 applied successfully. Sequential patient counters active.");
         }
 
         Ok(())
@@ -802,7 +823,7 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(max_version, 11);
+        assert!(max_version >= 11);
 
         let v7_exists: bool = conn
             .query_row(

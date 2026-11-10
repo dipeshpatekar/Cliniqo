@@ -1,5 +1,5 @@
 import { useState } from "react"
-import { MessageCircle, AlertCircle } from "lucide-react"
+import { MessageCircle } from "lucide-react"
 import { Button, StatusPill } from "../common"
 
 export function WhatsAppSettings() {
@@ -24,14 +24,6 @@ export function WhatsAppSettings() {
         <Button size="sm" variant="secondary" onClick={() => setTested(true)}>
           {tested ? "UI checked" : "Check UI state"}
         </Button>
-      </div>
-      <div className="info-callout">
-        <AlertCircle size={17} />
-        <p>
-          Real queued, sent, delivered, and failed statuses must come from
-          provider API responses and webhooks. This frontend does not send
-          messages.
-        </p>
       </div>
       <h3 className="subsection-title">Delivery history</h3>
       <div className="empty-state compact">

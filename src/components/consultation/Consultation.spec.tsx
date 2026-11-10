@@ -472,6 +472,39 @@ describe("Consultation Components & UX", () => {
       expect(twoMedHtml).not.toContain("Paracetamol")
     })
 
+    it("confirms '+ Add another medicine' bottom button is removed while section '+ Add medicine' is preserved", () => {
+      const html = renderToString(
+        <Consultation
+          go={() => {}}
+          patient={samplePatient}
+          clinicalLibrary={library}
+          vitals={sampleVitals}
+          onVitalsChange={() => {}}
+          data={{
+            ...sampleData,
+            medicines: [
+              {
+                id: 1,
+                name: "Paracetamol",
+                formulation: "Tablet",
+                strength: "500 mg",
+                dose: "1",
+                route: "Oral",
+                frequency: "1-0-1",
+                duration: "5 days",
+                food: "After food",
+                directions: "Take after food",
+              },
+            ],
+          }}
+          onDataChange={() => {}}
+        />,
+      )
+      expect(html).toContain("Add medicine")
+      expect(html).not.toContain("Add another medicine")
+      expect(html).not.toContain("medicine-add-footer")
+    })
+
     it("verifies prescription validation and persistence roundtrip after saving and reopening", () => {
       // Create multi-formulation prescription (Oral, Topical, Injection)
       const prescriptionData: ConsultationData = {

@@ -90,6 +90,34 @@ export function PrescriptionPreview({
     }
   }, [desktopSession?.clinic_id, desktopSession?.doctor_id])
 
+  useEffect(() => {
+    if (typeof window === "undefined") return
+    const handleProfileUpdate = (e: Event) => {
+      const customEvent = e as CustomEvent
+      const detail = customEvent.detail
+      if (!detail) return
+      if (detail.type === "doctor") {
+        setDoctorProfile(detail.profile)
+      } else if (detail.type === "clinic") {
+        setClinicProfile(detail.profile)
+      } else if (detail.type === "clinic-logo") {
+        setClinicLogo(detail.logo ?? null)
+      }
+    }
+
+    window.addEventListener("cliniqo:profile-updated", handleProfileUpdate)
+    return () => {
+      window.removeEventListener("cliniqo:profile-updated", handleProfileUpdate)
+    }
+  }, [])
+
+  const handlePrint = (e?: React.MouseEvent) => {
+    e?.preventDefault()
+    if (typeof window !== "undefined") {
+      window.print()
+    }
+  }
+
   const send = () => {
     setDelivery("sending")
     window.setTimeout(() => setDelivery("queued"), 1000)
@@ -98,8 +126,16 @@ export function PrescriptionPreview({
   return (
     <>
       <AppHeader
-        title="Prescription preview"
-        subtitle="Local session preview · Not persisted"
+        title={
+          returnPage === "settings"
+            ? "Prescription layout preview"
+            : "Prescription preview"
+        }
+        subtitle={
+          returnPage === "settings"
+            ? "Sample preview · Layout changes apply to all future prescriptions"
+            : "Local session preview · Not persisted"
+        }
       >
         <IconButton
           className="topbar-back"
@@ -113,9 +149,10 @@ export function PrescriptionPreview({
           <ArrowLeft size={18} />
         </IconButton>
         <Button
+          type="button"
           variant="secondary"
           icon={Printer}
-          onClick={() => window.print()}
+          onClick={handlePrint}
         >
           Print prescription
         </Button>
@@ -227,8 +264,8 @@ export function PrescriptionPreview({
                 </div>
                 <div className="rx-doctor">
                   <strong>
-                    {desktopSession?.doctor_name ||
-                      doctorProfile?.full_name ||
+                    {doctorProfile?.full_name ||
+                      desktopSession?.doctor_name ||
                       "Doctor"}
                   </strong>
                   <span>
@@ -426,11 +463,15 @@ export function PrescriptionPreview({
               {signatureImage && (
                 <img
                   src={signatureImage.src}
-                  alt={`${desktopSession?.doctor_name || "Doctor"}’s signature`}
+                  alt={`${doctorProfile?.full_name || desktopSession?.doctor_name || "Doctor"}’s signature`}
                 />
               )}
               <span>Doctor’s signature</span>
-              <strong>{desktopSession?.doctor_name || "Doctor"}</strong>
+              <strong>
+                {doctorProfile?.full_name ||
+                  desktopSession?.doctor_name ||
+                  "Doctor"}
+              </strong>
             </div>
           </footer>
         </article>

@@ -20,6 +20,29 @@ import {
   ShieldCheck,
 } from "lucide-react"
 
+function sanitizeAuthErrorMessage(rawMessage: string): string {
+  if (!rawMessage) {
+    return "Invalid email or password. Please verify your credentials."
+  }
+  const lower = rawMessage.toLowerCase()
+  if (
+    lower.includes("render.com") ||
+    lower.includes("http://") ||
+    lower.includes("https://") ||
+    lower.includes("unreachable") ||
+    lower.includes("connection closed") ||
+    lower.includes("failed to fetch") ||
+    lower.includes("networkerror") ||
+    lower.includes("dns") ||
+    lower.includes("reqwest") ||
+    lower.includes("timeout") ||
+    lower.includes("socket")
+  ) {
+    return "Unable to connect to the authentication server. Please check your internet connection and try again."
+  }
+  return rawMessage
+}
+
 export function Login({
   go,
   onLoginSuccess,
@@ -95,11 +118,11 @@ export function Login({
         }
         return
       } catch (err: any) {
+        console.error("[Login Auth Error]", err)
         setAuthState("idle")
+        const raw = typeof err === "string" ? err : err?.message || ""
         setErrors({
-          form:
-            err?.message ||
-            "Invalid email or password. Please verify your credentials.",
+          form: sanitizeAuthErrorMessage(raw),
         })
         return
       }

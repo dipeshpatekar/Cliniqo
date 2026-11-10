@@ -238,31 +238,76 @@ pub async fn login_desktop(
     password: String,
 ) -> Result<DesktopLoginResult, String> {
     let base_url = crate::config::get_trusted_backend_url()?;
-    let client = crate::config::create_secure_http_client(Duration::from_secs(35))?;
+    let client = crate::config::create_secure_http_client(Duration::from_secs(60))?;
 
     let login_url = format!("{base_url}/auth/login");
-    let resp = client
-        .post(&login_url)
-        .json(&serde_json::json!({
-            "email": email.trim(),
-            "password": password
-        }))
-        .send()
-        .await
-        .map_err(|e| format!("Authentication server unreachable: {e}"))?;
+    let mut last_err = String::new();
+    let mut resp_opt = None;
+
+    // Retry up to 3 times for cold start / transient network failures
+    for attempt in 1..=3 {
+        match client
+            .post(&login_url)
+            .json(&serde_json::json!({
+                "email": email.trim(),
+                "password": password
+            }))
+            .send()
+            .await
+        {
+            Ok(resp) => {
+                let status = resp.status();
+                if (status == reqwest::StatusCode::BAD_GATEWAY
+                    || status == reqwest::StatusCode::SERVICE_UNAVAILABLE
+                    || status == reqwest::StatusCode::GATEWAY_TIMEOUT)
+                    && attempt < 3
+                {
+                    log::warn!(
+                        "Auth server returned HTTP {status} (cold start), retrying attempt {attempt}/3..."
+                    );
+                    tokio::time::sleep(Duration::from_millis(1500)).await;
+                    continue;
+                }
+                resp_opt = Some(resp);
+                break;
+            }
+            Err(e) => {
+                log::warn!("Auth server request failed on attempt {attempt}/3: {e}");
+                last_err = e.to_string();
+                if attempt < 3 {
+                    tokio::time::sleep(Duration::from_millis(1500)).await;
+                }
+            }
+        }
+    }
+
+    let resp = match resp_opt {
+        Some(r) => r,
+        None => {
+            log::error!("Auth server connection failed after retries: {last_err}");
+            return Err("Unable to connect to the authentication server. Please check your internet connection and try again.".to_string());
+        }
+    };
 
     let status = resp.status();
     if !status.is_success() {
         if status == reqwest::StatusCode::UNAUTHORIZED {
-            return Err("Invalid email or password.".to_string());
+            return Err("Invalid email or password. Please verify your credentials.".to_string());
         }
-        return Err(format!("Login failed: HTTP {status}"));
+        if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+            return Err("Too many sign-in attempts. Please wait a few moments and try again.".to_string());
+        }
+        log::error!("Authentication server returned HTTP status {status}");
+        return Err("Authentication service is temporarily unavailable. Please try again in a few moments.".to_string());
     }
 
     let login_data = resp
         .json::<BackendLoginResponse>()
         .await
-        .map_err(|e| format!("Invalid login response from auth server: {e}"))?;
+        .map_err(|e| {
+            log::error!("Failed to parse auth response: {e}");
+            "Unexpected response from authentication server. Please try again.".to_string()
+        })?;
 
     // 1. Securely persist refresh token using DPAPI immediately
     if let Some(ref rt) = login_data.refresh_token {
@@ -292,21 +337,31 @@ pub async fn login_desktop(
 
     // 2. Fetch authoritative clinic memberships from backend using access token
     let my_clinics_url = format!("{base_url}/clinics/my-clinics");
-    let clinics_resp = client
-        .get(&my_clinics_url)
-        .bearer_auth(&login_data.access_token)
-        .send()
-        .await
-        .map_err(|e| format!("Failed to fetch clinic memberships: {e}"))?;
-
-    if !clinics_resp.status().is_success() {
-        return Err(format!("Failed to retrieve clinic memberships: HTTP {}", clinics_resp.status()));
+    let mut clinics_resp_opt = None;
+    for attempt in 1..=2 {
+        match client
+            .get(&my_clinics_url)
+            .bearer_auth(&login_data.access_token)
+            .send()
+            .await
+        {
+            Ok(r) => {
+                clinics_resp_opt = Some(r);
+                break;
+            }
+            Err(e) => {
+                log::warn!("Failed fetching clinic memberships on attempt {attempt}/2: {e}");
+                if attempt < 2 {
+                    tokio::time::sleep(Duration::from_millis(1000)).await;
+                }
+            }
+        }
     }
 
-    let clinics: Vec<ClinicItem> = clinics_resp
-        .json()
-        .await
-        .map_err(|e| format!("Failed to parse clinic memberships: {e}"))?;
+    let clinics: Vec<ClinicItem> = match clinics_resp_opt {
+        Some(r) if r.status().is_success() => r.json().await.unwrap_or_default(),
+        _ => Vec::new(),
+    };
 
     // Persist all retrieved clinic profiles to local SQLite for durable offline access
     {
@@ -367,8 +422,21 @@ pub async fn login_desktop(
         ).await;
     }
 
+    let mut final_session = session;
+    {
+        let conn = state.db.get_connection();
+        if let Ok(Some(profile)) =
+            crate::db::operations::DbOperations::get_doctor_profile(&conn, &final_session.doctor_id)
+        {
+            if !profile.full_name.trim().is_empty() {
+                final_session.doctor_name = profile.full_name.clone();
+                state.session_mgr.update_doctor_name(&profile.full_name);
+            }
+        }
+    }
+
     Ok(DesktopLoginResult {
-        session,
+        session: final_session,
         clinics,
         active_clinic_id: selected_clinic_id,
     })
@@ -845,8 +913,21 @@ async fn do_actual_refresh_session(
     .await
     .map_err(|e| format!("Failed to validate refreshed access token: {e}"))?;
 
+    let mut final_session = session;
+    if let Some(db_mgr) = db {
+        let conn = db_mgr.get_connection();
+        if let Ok(Some(profile)) =
+            crate::db::operations::DbOperations::get_doctor_profile(&conn, &final_session.doctor_id)
+        {
+            if !profile.full_name.trim().is_empty() {
+                final_session.doctor_name = profile.full_name.clone();
+                session_mgr.update_doctor_name(&profile.full_name);
+            }
+        }
+    }
+
     Ok(DesktopLoginResult {
-        session,
+        session: final_session,
         clinics,
         active_clinic_id: selected_clinic_id,
     })
@@ -1373,6 +1454,9 @@ pub async fn save_doctor_profile(
             .map_err(|e| format!("Failed to update local doctor profile: {e}"))?;
     }
 
+    // Synchronize active session manager memory with updated doctor name immediately
+    state.session_mgr.update_doctor_name(&record.full_name);
+
     if let Some(token) = state.session_mgr.get_access_token() {
         if let Ok(base_url) = crate::config::get_trusted_backend_url() {
             if let Ok(client) = crate::config::create_secure_http_client(Duration::from_secs(10)) {
@@ -1398,7 +1482,19 @@ pub async fn save_doctor_profile(
 
 #[tauri::command]
 pub fn get_desktop_session(state: State<'_, AppState>) -> Result<Option<SessionContext>, String> {
-    Ok(state.session_mgr.get_session())
+    if let Some(mut session) = state.session_mgr.get_session() {
+        let conn = state.db.get_connection();
+        if let Ok(Some(profile)) =
+            crate::db::operations::DbOperations::get_doctor_profile(&conn, &session.doctor_id)
+        {
+            if !profile.full_name.trim().is_empty() {
+                session.doctor_name = profile.full_name;
+            }
+        }
+        Ok(Some(session))
+    } else {
+        Ok(None)
+    }
 }
 
 #[tauri::command]
@@ -1430,6 +1526,20 @@ pub struct SavePatientArgs {
     pub allergies: Vec<String>,
     pub conditions: Vec<String>,
     pub sensitive_notes: Option<String>,
+}
+
+#[tauri::command]
+pub fn get_next_patient_code(
+    state: State<'_, AppState>,
+    clinic_id: String,
+) -> Result<String, String> {
+    let _session = state
+        .session_mgr
+        .validate_session(Some(&clinic_id))
+        .map_err(|e| e.to_string())?;
+
+    let mut conn = state.db.get_connection();
+    DbOperations::get_next_patient_code(&mut conn, &clinic_id).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -2158,6 +2268,89 @@ pub async fn start_catalogue_sync(
     state: State<'_, AppState>,
 ) -> Result<crate::sync::CatalogueSyncStatus, String> {
     state.catalogue_sync.start_sync(None).await
+}
+
+#[tauri::command]
+pub fn export_encrypted_backup(
+    state: State<'_, AppState>,
+    clinic_id: String,
+    passphrase: Option<String>,
+    destination_path: Option<String>,
+) -> Result<crate::db::backup::BackupExportResult, String> {
+    let _session = state
+        .session_mgr
+        .validate_session(Some(&clinic_id))
+        .map_err(|e| e.to_string())?;
+
+    let dest = destination_path.as_deref().map(std::path::Path::new);
+    crate::db::backup::BackupManager::export_backup(
+        &state.db,
+        &clinic_id,
+        passphrase.as_deref(),
+        dest,
+    )
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn restore_encrypted_backup(
+    state: State<'_, AppState>,
+    clinic_id: Option<String>,
+    backup_bytes_base64: Option<String>,
+    backup_file_path: Option<String>,
+    passphrase: Option<String>,
+) -> Result<crate::db::backup::BackupRestoreResult, String> {
+    let _session = state
+        .session_mgr
+        .validate_session(clinic_id.as_deref())
+        .map_err(|e| e.to_string())?;
+
+    let bytes = if let Some(b64) = backup_bytes_base64 {
+        base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &b64)
+            .map_err(|e| format!("Invalid base64 backup encoding: {e}"))?
+    } else if let Some(path) = backup_file_path {
+        std::fs::read(&path)
+            .map_err(|e| format!("Failed to read backup file at {path}: {e}"))?
+    } else {
+        return Err("Neither backup data nor file path was provided".to_string());
+    };
+
+    crate::db::backup::BackupManager::restore_backup(
+        &state.db,
+        &bytes,
+        clinic_id.as_deref(),
+        passphrase.as_deref(),
+    )
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn check_app_update(
+    endpoint: Option<String>,
+) -> Result<crate::updater::UpdateCheckResult, String> {
+    crate::updater::AppUpdater::check_for_updates(endpoint.as_deref())
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn download_and_launch_update(
+    download_url: String,
+    target_version: String,
+) -> Result<crate::updater::UpdateInstallResult, String> {
+    let installer_path = crate::updater::AppUpdater::download_update_package(&download_url, &target_version)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    crate::updater::AppUpdater::launch_installer_non_destructive(&installer_path)
+        .map_err(|e| e.to_string())?;
+
+    Ok(crate::updater::UpdateInstallResult {
+        success: true,
+        target_version,
+        installer_path: installer_path.to_string_lossy().to_string(),
+        status_message: "Update downloaded and installer launched. Your local clinical database and encryption keys are safely preserved.".to_string(),
+    })
 }
 
 

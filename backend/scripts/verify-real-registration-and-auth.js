@@ -60,12 +60,17 @@ async function run() {
   const brandModel = conn.model("CatalogueBrand", CatalogueBrandSchema)
   const productModel = conn.model("CatalogueProduct", CatalogueProductSchema)
 
-  process.env.JWT_ACCESS_SECRET =
-    "REDACTED_SECRET"
-  process.env.JWT_REFRESH_SECRET =
-    "REDACTED_SECRET"
-  process.env.OUTBOX_ENCRYPTION_KEY =
-    "REDACTED_SECRET"
+const requiredSecrets = [
+  "JWT_ACCESS_SECRET",
+  "JWT_REFRESH_SECRET",
+  "OUTBOX_ENCRYPTION_KEY",
+]
+
+for (const secret of requiredSecrets) {
+  if (!process.env[secret]) {
+    throw new Error(`Missing required environment variable: ${secret}`)
+  }
+}
 
   // Initialize Config & Services
   const configService = new ConfigService()

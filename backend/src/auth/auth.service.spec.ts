@@ -376,7 +376,7 @@ describe("AuthService", () => {
       ).rejects.toThrow(HttpException)
 
       expect(mockRateLimiter.checkRateLimit).toHaveBeenCalledWith(
-        `recovery:cooldown:${doctorId}`,
+        `recovery:cooldown:${doctorId.toString()}`,
         1,
         30,
       )

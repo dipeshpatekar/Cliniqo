@@ -434,7 +434,7 @@ export class AuthService {
 
     // Enforce race-safe 30-second resend cooldown per doctor account using atomic distributed rate limiter
     const cooldownResult = await this.rateLimiter.checkRateLimit(
-      `recovery:cooldown:${doctor._id}`,
+      `recovery:cooldown:${doctor._id.toString()}`,
       1,
       30,
     )
@@ -526,7 +526,7 @@ export class AuthService {
       }
       if (!sent) {
         this.logger.warn(
-          `Password recovery email delivery could not be completed for account: ${doctor._id}`,
+          `Password recovery email delivery could not be completed for account: ${doctor._id.toString()}`,
         )
       }
     } catch (err) {

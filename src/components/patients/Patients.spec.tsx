@@ -73,6 +73,8 @@ describe("Patient Components & UX", () => {
       expect(html).toContain("Start consultation")
       expect(html).toContain("Sort by date")
       expect(html).toContain("Select date range")
+      expect(html).toContain('class="table-panel"')
+      expect(html).toContain('class="table-wrap"')
     })
 
     it("renders empty state when no patients match", () => {
@@ -140,6 +142,7 @@ describe("Patient Components & UX", () => {
       expect(html).toContain('type="datetime-local"')
       expect(html).toContain("Save patient")
       expect(html).toContain("start consultation")
+      expect(html).toMatch(/autofocus/i)
       expect(html).not.toContain("Patient record integrity")
       expect(html).not.toContain("Encrypted offline persistence")
     })

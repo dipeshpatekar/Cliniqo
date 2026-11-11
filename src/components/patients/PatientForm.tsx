@@ -42,6 +42,15 @@ export function PatientForm({
   const [dirty, setDirty] = useState(false)
   const formRef = useRef<HTMLFormElement>(null)
   const isSavingRef = useRef(false)
+  const nameInputRef = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    // Automatically focus the patient name input on mount so the user can type immediately
+    const timer = setTimeout(() => {
+      nameInputRef.current?.focus()
+    }, 50)
+    return () => clearTimeout(timer)
+  }, [])
 
   const editing = Boolean(patient)
   const showDob = editing || fieldPreferences.showDob
@@ -242,6 +251,8 @@ export function PatientForm({
                 }
               >
                 <TextInput
+                  ref={nameInputRef}
+                  autoFocus
                   name="name"
                   required
                   value={name}

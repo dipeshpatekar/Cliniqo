@@ -2879,10 +2879,22 @@ select:focus {
   border-radius: 16px;
   overflow: hidden;
   box-shadow: var(--glass-shadow);
+  width: 100%;
+  max-width: 100%;
 }
 
 .table-wrap {
   overflow-x: auto;
+  overflow-y: hidden;
+  width: 100%;
+  max-width: 100%;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-x: contain;
+}
+
+.table-wrap table {
+  width: 100%;
+  min-width: 860px;
 }
 
 table {
@@ -3821,8 +3833,22 @@ tbody tr:active {
   padding-right: 8px;
 }
 
+.medicines-head {
+  display: flex;
+  align-items: center;
+}
+
 .medicines-head>div {
   flex: 1;
+  display: flex;
+  align-items: center;
+}
+
+.medicines-head>.btn,
+.medicines-head>button {
+  align-self: center;
+  margin-top: 0;
+  margin-bottom: 0;
 }
 
 .medicines-container {
@@ -4191,6 +4217,7 @@ tbody tr:active {
   margin: 0 auto;
   overflow: hidden;
   box-shadow: var(--glass-shadow);
+  overscroll-behavior: auto;
 }
 .settings-section { padding: 23px; }
 .settings-title { padding-bottom: 16px; margin-bottom: 20px; border-bottom: 1px solid var(--glass-border-subtle); }
@@ -8066,8 +8093,6 @@ body {
 
 .page-content,
 .preview-page,
-.settings-content,
-.table-panel,
 .modal {
   contain: layout style;
   overscroll-behavior: contain;

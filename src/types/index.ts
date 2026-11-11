@@ -160,7 +160,14 @@ export type BillLayoutPreferences = {
   showPaymentNote: boolean
 }
 
-export type ClinicalLibraryCategory = "Medicines" | "Formulations" | "Strengths" | "Doses" | "Durations"
+export type ClinicalLibraryCategory =
+  | "Medicines"
+  | "Formulations"
+  | "Strengths"
+  | "Doses"
+  | "Durations"
+  | "Frequencies"
+  | "FoodInstructions"
 
 export type ClinicalMedicineDefinition = {
   id?: string
@@ -185,6 +192,8 @@ export const clinicalLibraryCategories: ClinicalLibraryCategory[] = [
   "Strengths",
   "Doses",
   "Durations",
+  "Frequencies",
+  "FoodInstructions",
 ]
 
 export const initialPatients: Patient[] = [
@@ -976,6 +985,18 @@ export const defaultClinicalLibrary: ClinicalLibrary = {
     "30 days",
     "Until review",
   ],
+  Frequencies: [
+    "Once daily",
+    "Twice daily",
+    "Three times daily",
+    "Four times daily",
+    "As needed",
+  ],
+  FoodInstructions: [
+    "Before food",
+    "After food",
+    "With food",
+  ],
   MedicineDefinitions: [],
 }
 
@@ -992,7 +1013,29 @@ export const loadClinicalLibrary = (): ClinicalLibrary => {
           ]),
         )
       : defaultClinicalLibrary.Formulations
-    return { ...defaultClinicalLibrary, ...saved, Formulations: formulations }
+    const frequencies = Array.isArray(saved.Frequencies)
+      ? Array.from(
+          new Set([
+            ...defaultClinicalLibrary.Frequencies,
+            ...saved.Frequencies,
+          ]),
+        )
+      : defaultClinicalLibrary.Frequencies
+    const foodInstructions = Array.isArray(saved.FoodInstructions)
+      ? Array.from(
+          new Set([
+            ...defaultClinicalLibrary.FoodInstructions,
+            ...saved.FoodInstructions,
+          ]),
+        )
+      : defaultClinicalLibrary.FoodInstructions
+    return {
+      ...defaultClinicalLibrary,
+      ...saved,
+      Formulations: formulations,
+      Frequencies: frequencies,
+      FoodInstructions: foodInstructions,
+    }
   } catch {
     return defaultClinicalLibrary
   }

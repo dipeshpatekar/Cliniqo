@@ -27,7 +27,6 @@ import type {
 import {
   emptyMedicine,
   getDoseConfig,
-  oralFormulations,
   topicalFormulations,
   medicineOptions,
   complaintOptions,
@@ -470,7 +469,6 @@ export function Consultation({
     setCatalogueSuggestions((prev) => ({ ...prev, [medicineId]: [] }))
     setCatalogueStrengthsMap((prev) => ({ ...prev, [medicineId]: [] }))
 
-    const isNewOral = oralFormulations.has(newFormulation)
     const isNewInjection = newFormulation === "Injection"
     const isNewTopical = topicalFormulations.has(newFormulation)
 
@@ -486,7 +484,7 @@ export function Consultation({
           dose: "",
           frequency: row.frequency,
           duration: row.duration,
-          food: isNewOral ? row.food : "",
+          food: row.food,
           route: isNewInjection ? row.route : "",
           directions: isNewTopical ? row.directions : "",
           activeIngredient: "",
@@ -1046,6 +1044,7 @@ export function Consultation({
                 icon={Plus}
                 title="Add medicine (Ctrl+Shift+M)"
                 onClick={addMedicine}
+                className="self-center my-auto"
               >
                 Add medicine
               </Button>
@@ -1090,21 +1089,22 @@ export function Consultation({
                           : ["1", "2", "3", "4"]),
                     ]),
                   ]
-                  const frequencyOptions: SearchOptionItem[] = [
-                    { value: "Once daily", label: "Once daily", badge: "1" },
-                    { value: "Twice daily", label: "Twice daily", badge: "2" },
-                    {
-                      value: "Three times daily",
-                      label: "Three times daily",
-                      badge: "3",
-                    },
-                    {
-                      value: "Four times daily",
-                      label: "Four times daily",
-                      badge: "4",
-                    },
-                    { value: "As needed", label: "As needed", badge: "5" },
-                  ]
+                  const availableFrequencies =
+                    clinicalLibrary.Frequencies && clinicalLibrary.Frequencies.length > 0
+                      ? clinicalLibrary.Frequencies
+                      : defaultClinicalLibrary.Frequencies
+                  const defaultBadgeMap: Record<string, string> = {
+                    "Once daily": "1",
+                    "Twice daily": "2",
+                    "Three times daily": "3",
+                    "Four times daily": "4",
+                    "As needed": "5",
+                  }
+                  const frequencyOptions: SearchOptionItem[] = availableFrequencies.map((freq, idx) => ({
+                    value: freq,
+                    label: freq,
+                    badge: defaultBadgeMap[freq] || String(idx + 1),
+                  }))
                   const validation = validateMedicineFormulation(medicine)
 
                   const rowSuggestions: SearchOptionItem[] = [
@@ -1412,27 +1412,32 @@ export function Consultation({
                                 />
                               </Field>
 
-                              {oralFormulations.has(medicine.formulation) && (
-                                <Field label="Food instruction">
-                                  <SelectInput
-                                    value={medicine.food}
-                                    style={{ height: "40px" }}
-                                    onChange={(e) =>
-                                      updateMedicine(
-                                        medicine.id,
-                                        "food",
-                                        e.target.value,
-                                      )
-                                    }
-                                  >
-                                    <option value="">Select</option>
-                                    <option>Before food</option>
-                                    <option>After food</option>
-                                    <option>With food</option>
-                                    <option>Not applicable</option>
-                                  </SelectInput>
-                                </Field>
-                              )}
+                              <Field label="Food instruction">
+                                <SelectInput
+                                  value={medicine.food}
+                                  style={{ height: "40px" }}
+                                  onChange={(e) =>
+                                    updateMedicine(
+                                      medicine.id,
+                                      "food",
+                                      e.target.value,
+                                    )
+                                  }
+                                >
+                                  <option value="">Select</option>
+                                  {(
+                                    clinicalLibrary.FoodInstructions &&
+                                    clinicalLibrary.FoodInstructions.length > 0
+                                      ? clinicalLibrary.FoodInstructions
+                                      : defaultClinicalLibrary.FoodInstructions
+                                  ).map((instruction) => (
+                                    <option key={instruction} value={instruction}>
+                                      {instruction}
+                                    </option>
+                                  ))}
+                                  <option>Not applicable</option>
+                                </SelectInput>
+                              </Field>
 
                               {medicine.formulation === "Injection" && (
                                 <Field label="Route (Required)">

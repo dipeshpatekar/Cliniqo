@@ -359,10 +359,15 @@ impl DbOperations {
     ) -> Result<(), DatabaseOpError> {
         let tx = conn.transaction()?;
 
-        let (actual_id, current_local_ver): (String, i32) = tx.query_row(
-            "SELECT id, local_version FROM local_patients WHERE clinic_id = ?1 AND (id = ?2 OR patient_code = ?2) LIMIT 1",
+        let (actual_id, server_id, patient_code, current_local_ver): (
+            String,
+            Option<String>,
+            Option<String>,
+            i32,
+        ) = tx.query_row(
+            "SELECT id, server_id, patient_code, local_version FROM local_patients WHERE clinic_id = ?1 AND (id = ?2 OR patient_code = ?2) LIMIT 1",
             params![clinic_id, patient_id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
         )?;
 
         let new_ver = current_local_ver + 1;
@@ -374,7 +379,16 @@ impl DbOperations {
 
         let outbox_id = Uuid::new_v4().to_string();
         let idempotency_key = format!("local-patient-delete-{actual_id}-{new_ver}");
-        let (encrypted_outbox, outbox_nonce) = encrypt_payload(&dek.key, b"{}")?;
+
+        let mut payload_map = serde_json::Map::new();
+        if let Some(ref sid) = server_id {
+            payload_map.insert("serverId".to_string(), serde_json::Value::String(sid.clone()));
+        }
+        if let Some(ref code) = patient_code {
+            payload_map.insert("patientCode".to_string(), serde_json::Value::String(code.clone()));
+        }
+        let payload_json = serde_json::Value::Object(payload_map).to_string();
+        let (encrypted_outbox, outbox_nonce) = encrypt_payload(&dek.key, payload_json.as_bytes())?;
 
         tx.execute(
             r#"
@@ -1816,25 +1830,52 @@ impl DbOperations {
 
             let server_id: Option<String> = match item.entity_type.as_str() {
                 "PATIENT" => {
-                    tx.query_row(
+                    let from_db: Option<String> = tx.query_row(
                         "SELECT server_id FROM local_patients WHERE id = ?1",
                         params![item.entity_id],
                         |r| r.get(0),
-                    ).ok().flatten()
+                    ).ok().flatten();
+
+                    from_db.or_else(|| {
+                        payload
+                            .get("serverId")
+                            .or_else(|| payload.get("server_id"))
+                            .and_then(|v| v.as_str())
+                            .filter(|s| !s.is_empty())
+                            .map(|s| s.to_string())
+                    })
                 }
                 "CONSULTATION" => {
-                    tx.query_row(
+                    let from_db: Option<String> = tx.query_row(
                         "SELECT server_id FROM local_consultations WHERE id = ?1",
                         params![item.entity_id],
                         |r| r.get(0),
-                    ).ok().flatten()
+                    ).ok().flatten();
+
+                    from_db.or_else(|| {
+                        payload
+                            .get("serverId")
+                            .or_else(|| payload.get("server_id"))
+                            .and_then(|v| v.as_str())
+                            .filter(|s| !s.is_empty())
+                            .map(|s| s.to_string())
+                    })
                 }
                 "PRESCRIPTION" | "PRESCRIPTION_REVISION" => {
-                    tx.query_row(
+                    let from_db: Option<String> = tx.query_row(
                         "SELECT server_id FROM local_prescriptions WHERE id = ?1",
                         params![item.entity_id],
                         |r| r.get(0),
-                    ).ok().flatten()
+                    ).ok().flatten();
+
+                    from_db.or_else(|| {
+                        payload
+                            .get("serverId")
+                            .or_else(|| payload.get("server_id"))
+                            .and_then(|v| v.as_str())
+                            .filter(|s| !s.is_empty())
+                            .map(|s| s.to_string())
+                    })
                 }
                 _ => None,
             };
@@ -7261,5 +7302,98 @@ mod tests {
         let patients_with_cloud = DbOperations::get_patients(&conn, &dek, clinic_id).unwrap();
         let cloud_patient = patients_with_cloud.iter().find(|p| p.id == pat_sync_id).unwrap();
         assert!(cloud_patient.last_visit.is_some(), "Cloud synced consultation matching via server_id must populate last_visit");
+    }
+
+    #[test]
+    fn test_patient_deletion_preserves_cloud_server_id_and_retry() {
+        let (mut conn, dek) = setup_test_db();
+        let clinic_id = "clinic_del_retry_test";
+        let cloud_server_id = "672f0123456789abcdef0123";
+
+        // 1. Create a patient that has already synced with the cloud (has server_id)
+        let pat_id = DbOperations::insert_patient(
+            &mut conn,
+            &dek,
+            clinic_id,
+            "P-DEL-101",
+            "Synced Patient",
+            "9876543210",
+            "FEMALE",
+            Some("1995-05-15"),
+            31,
+            &["Penicillin".to_string()],
+            &[],
+            None,
+        )
+        .unwrap();
+
+        // Simulate successful initial sync assigning server_id
+        conn.execute(
+            "UPDATE local_patients SET server_id = ?1, sync_status = 'SYNCED' WHERE id = ?2",
+            params![cloud_server_id, pat_id],
+        )
+        .unwrap();
+
+        // Clear create mutation from outbox to isolate delete test
+        conn.execute("DELETE FROM local_sync_outbox WHERE clinic_id = ?1", params![clinic_id]).unwrap();
+
+        // 2. Delete patient locally
+        DbOperations::delete_patient(&mut conn, &dek, clinic_id, &pat_id).unwrap();
+
+        // Confirm local patient row is completely gone from SQLite
+        let local_patients = DbOperations::get_patients(&conn, &dek, clinic_id).unwrap();
+        assert_eq!(local_patients.len(), 0);
+
+        // 3. Fetch pending outbox batch for sync worker push
+        let batch1 = DbOperations::get_pending_outbox_batch(&mut conn, &dek, clinic_id, 10).unwrap();
+        assert_eq!(batch1.len(), 1);
+        let item1 = &batch1[0];
+        assert_eq!(item1.action, "DELETE");
+        assert_eq!(item1.entity_type, "PATIENT");
+        assert_eq!(item1.entity_id, pat_id);
+        // CRITICAL: server_id must be preserved even though local_patients row was deleted!
+        assert_eq!(item1.server_id, Some(cloud_server_id.to_string()));
+        assert_eq!(item1.payload["serverId"], cloud_server_id);
+        assert_eq!(item1.payload["patientCode"], "P-DEL-101");
+
+        // Outbox is now IN_FLIGHT
+        let summary1 = DbOperations::get_outbox_summary(&conn, clinic_id).unwrap();
+        assert_eq!(summary1.pending_count, 0);
+        assert_eq!(summary1.in_flight_count, 1);
+
+        // 4. Simulate network failure during push and retry
+        let outbox_ids = vec![item1.id.clone()];
+        let reverted = DbOperations::revert_in_flight_to_pending(&conn, &outbox_ids, Some("Network timeout")).unwrap();
+        assert_eq!(reverted, 1);
+
+        let summary2 = DbOperations::get_outbox_summary(&conn, clinic_id).unwrap();
+        assert_eq!(summary2.pending_count, 1);
+        assert_eq!(summary2.in_flight_count, 0);
+
+        // 5. Next sync iteration (retry) must STILL retain the preserved server_id
+        let batch2 = DbOperations::get_pending_outbox_batch(&mut conn, &dek, clinic_id, 10).unwrap();
+        assert_eq!(batch2.len(), 1);
+        let item2 = &batch2[0];
+        assert_eq!(item2.server_id, Some(cloud_server_id.to_string()));
+        assert_eq!(item2.payload["serverId"], cloud_server_id);
+
+        // 6. Backend applies mutation
+        DbOperations::apply_push_mutation_result(
+            &mut conn,
+            &item2.id,
+            "APPLIED",
+            "PATIENT",
+            &pat_id,
+            Some(cloud_server_id),
+            Some(2),
+            None,
+            None,
+        )
+        .unwrap();
+
+        // Verify outbox marked SYNCED
+        let summary3 = DbOperations::get_outbox_summary(&conn, clinic_id).unwrap();
+        assert_eq!(summary3.pending_count, 0);
+        assert_eq!(summary3.in_flight_count, 0);
     }
 }

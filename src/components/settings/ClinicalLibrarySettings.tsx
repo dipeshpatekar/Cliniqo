@@ -57,6 +57,7 @@ export interface ClinicalLibrarySettingsProps {
   onAdd: (category: ClinicalLibraryCategory, value: string) => void
   onAddMedicine: (medicine: ClinicalMedicineDefinition) => void
   desktopSession?: DesktopSessionContext | null
+  initialTab?: MainTab
 }
 
 type MainTab = "import" | "history" | "options"
@@ -67,11 +68,12 @@ export function ClinicalLibrarySettings({
   onAdd,
   onAddMedicine,
   desktopSession,
+  initialTab = "import",
 }: ClinicalLibrarySettingsProps) {
   const clinicId = desktopSession?.clinic_id || "clinic-default"
   const doctorId = desktopSession?.doctor_id || undefined
 
-  const [activeTab, setActiveTab] = useState<MainTab>("import")
+  const [activeTab, setActiveTab] = useState<MainTab>(initialTab)
 
   // --- MEDICINES & DATA STATE ---
   const [medicines, setMedicines] = useState<ClinicalMedicineRecord[]>([])
@@ -987,8 +989,8 @@ export function ClinicalLibrarySettings({
                   className={optionCategory === item ? "active" : ""}
                   onClick={() => setOptionCategory(item)}
                 >
-                  {item}
-                  <span>{library[item].length}</span>
+                  {item === "FoodInstructions" ? "Food Instructions" : item}
+                  <span>{(library[item] || []).length}</span>
                 </button>
               ))}
           </div>
@@ -1001,19 +1003,25 @@ export function ClinicalLibrarySettings({
                 if (e.key === "Enter") {
                   e.preventDefault()
                   const val = newOptionValue.trim()
-                  if (val && !library[optionCategory].includes(val)) {
+                  if (val && !(library[optionCategory] || []).includes(val)) {
                     onAdd(optionCategory, val)
                     setNewOptionValue("")
                   }
                 }
               }}
-              placeholder={`Add custom ${optionCategory.toLowerCase().replace(/s$/, "")}...`}
+              placeholder={
+                optionCategory === "FoodInstructions"
+                  ? "Add custom food instruction..."
+                  : optionCategory === "Frequencies"
+                    ? "Add custom frequency..."
+                    : `Add custom ${optionCategory.toLowerCase().replace(/s$/, "")}...`
+              }
             />
             <Button
               icon={Plus}
               onClick={() => {
                 const val = newOptionValue.trim()
-                if (val && !library[optionCategory].includes(val)) {
+                if (val && !(library[optionCategory] || []).includes(val)) {
                   onAdd(optionCategory, val)
                   setNewOptionValue("")
                 }
@@ -1025,7 +1033,7 @@ export function ClinicalLibrarySettings({
           </div>
 
           <div className="library-list">
-            {library[optionCategory].map((item) => (
+            {(library[optionCategory] || []).map((item) => (
               <span key={item}>{item}</span>
             ))}
           </div>

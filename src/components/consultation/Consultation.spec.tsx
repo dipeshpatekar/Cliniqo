@@ -719,6 +719,146 @@ describe("Consultation Components & UX", () => {
       expect(html).toContain("Standard Options")
       expect(html).not.toContain("Medicine Catalogue")
     })
+
+    it("verifies custom Frequencies and Food Instructions populate prescription options and Clinical Library tabs", async () => {
+      const { ClinicalLibrarySettings } = await import(
+        "../settings/ClinicalLibrarySettings"
+      )
+      const customLib: ClinicalLibrary = {
+        ...loadClinicalLibrary(),
+        Frequencies: [
+          ...defaultClinicalLibrary.Frequencies,
+          "Every 6 hours PRN",
+        ],
+        FoodInstructions: [
+          ...defaultClinicalLibrary.FoodInstructions,
+          "Take with cold milk",
+        ],
+      }
+
+      // 1. Verify Consultation dropdown uses custom frequencies and food instructions
+      const consultationHtml = renderToString(
+        <Consultation
+          go={() => {}}
+          patient={samplePatient}
+          clinicalLibrary={customLib}
+          vitals={sampleVitals}
+          onVitalsChange={() => {}}
+          data={{
+            ...sampleData,
+            medicines: [
+              {
+                id: 1,
+                name: "Amoxicillin",
+                formulation: "Capsule",
+                strength: "500 mg",
+                dose: "1",
+                route: "Oral",
+                frequency: "Every 6 hours PRN",
+                duration: "5 days",
+                food: "Take with cold milk",
+                directions: "Take with cold milk",
+              },
+            ],
+          }}
+          onDataChange={() => {}}
+        />,
+      )
+
+      expect(consultationHtml).toContain("Every 6 hours PRN")
+      expect(consultationHtml).toContain("Take with cold milk")
+
+      // 2. Verify ClinicalLibrarySettings renders Frequencies and Food Instructions tabs
+      const settingsHtml = renderToString(
+        <ClinicalLibrarySettings
+          library={customLib}
+          initialTab="options"
+          onAdd={() => {}}
+          onAddMedicine={() => {}}
+        />,
+      )
+      expect(settingsHtml).toContain("Frequencies")
+      expect(settingsHtml).toContain("Food Instructions")
+    })
+
+    it("ensures Food instruction is available for custom formulations and rendered in prescription preview", async () => {
+      const { PrescriptionPreview } = await import("./PrescriptionPreview")
+      const customLib: ClinicalLibrary = {
+        ...loadClinicalLibrary(),
+        Formulations: [...defaultClinicalLibrary.Formulations, "new form"],
+        FoodInstructions: [
+          ...defaultClinicalLibrary.FoodInstructions,
+          "With lukewarm water",
+        ],
+      }
+
+      // 1. Consultation form with custom formulation ("new form") renders Food instruction field
+      const consultationHtml = renderToString(
+        <Consultation
+          go={() => {}}
+          patient={samplePatient}
+          clinicalLibrary={customLib}
+          vitals={sampleVitals}
+          onVitalsChange={() => {}}
+          data={{
+            ...sampleData,
+            medicines: [
+              {
+                id: 1,
+                name: "Custom Herbal Cure",
+                formulation: "new form",
+                strength: "10 ml",
+                dose: "1",
+                route: "",
+                frequency: "Twice daily",
+                duration: "7 days",
+                food: "With lukewarm water",
+                directions: "",
+              },
+            ],
+          }}
+          onDataChange={() => {}}
+        />,
+      )
+
+      expect(consultationHtml).toContain("Food instruction")
+      expect(consultationHtml).toContain("With lukewarm water")
+
+      // 2. Prescription preview renders the food instruction along with the custom formulation
+      const previewHtml = renderToString(
+        <PrescriptionPreview
+          patient={samplePatient}
+          data={{
+            ...sampleData,
+            medicines: [
+              {
+                id: 1,
+                name: "Custom Herbal Cure",
+                formulation: "new form",
+                strength: "10 ml",
+                dose: "1",
+                route: "",
+                frequency: "Twice daily",
+                duration: "7 days",
+                food: "With lukewarm water",
+                directions: "",
+              },
+            ],
+          }}
+          vitals={sampleVitals}
+          bannerVisible={false}
+          bannerImage={null}
+          signatureImage={null}
+          showClinicLogo={false}
+          showClinicEmail={false}
+          showAllergyWarning={false}
+        />,
+      )
+
+      expect(previewHtml).toContain("Custom Herbal Cure")
+      expect(previewHtml).toContain("new form")
+      expect(previewHtml).toContain("With lukewarm water")
+    })
   })
 
   describe("Stock Report Integration & Autocomplete Search (BODYPROOF, ZYTEE, EMRYS)", () => {

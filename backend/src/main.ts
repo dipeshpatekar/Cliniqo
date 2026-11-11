@@ -25,6 +25,9 @@ async function bootstrap() {
   // Fail startup if database or auth configuration is invalid fail-closed
   configService.validateDatabaseConfig()
   configService.validateAuthConfig()
+  if (configService.isProduction) {
+    configService.validateOutboxConfig()
+  }
 
   // Centralized safe exception handling
   app.useGlobalFilters(new HttpExceptionFilter())

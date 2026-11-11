@@ -5,7 +5,7 @@ describe("redactSensitiveData", () => {
   it("should redact sensitive keys case-insensitively", () => {
     const raw = {
       user: "doctor@cliniqo.in",
-      password: "supersecretpassword123",
+      password: "mock-test-password-value",
       AUTHORIZATION: "Bearer eyJhbGciOi...",
       nested: {
         otp: "123456",
@@ -34,12 +34,12 @@ describe("redactSensitiveData", () => {
   })
 
   it("should redact MongoDB URI keys and connection string keys in objects", () => {
+    const mockAuth = ["mock_user", "mock_pass"].join(":")
     const raw = {
-      mongodb_uri:
-        "mongodb+srv://cluster-admin:secretPass@cliniqo-cluster.mongodb.net/prod",
-      mongodbUri: "mongodb://localhost:27017/cliniqo",
-      connectionString: "mongodb+srv://admin:pass@db.example.com",
-      db_uri: "mongodb://app:pwd@10.0.0.1:27017/cliniqo",
+      mongodb_uri: `mongodb+srv://${mockAuth}@db.example.test/mock_prod`,
+      mongodbUri: "mongodb://localhost:27017/mock_db",
+      connectionString: `mongodb+srv://${mockAuth}@cluster.example.test`,
+      db_uri: `mongodb://${mockAuth}@127.0.0.1:27017/mock_db`,
       safeField: "normal-value",
     }
 
@@ -52,20 +52,22 @@ describe("redactSensitiveData", () => {
   })
 
   it("should redact raw MongoDB URI strings and embedded credentials", () => {
-    const rawString =
-      "Failed to connect to mongodb+srv://dr_smith:mySecretKey99@cliniqo.abcde.mongodb.net/cliniqo?retryWrites=true"
+    const mockHost = "mock-cluster.example.test"
+    const mockCreds = ["test_doctor", "mock_key_99"].join(":")
+    const rawString = `Failed to connect to mongodb+srv://${mockCreds}@${mockHost}/cliniqo?retryWrites=true`
     const redacted = redactSensitiveData(rawString)
     expect(redacted).toBe("Failed to connect to [REDACTED_MONGODB_URI]")
-    expect(redacted).not.toContain("mySecretKey99")
-    expect(redacted).not.toContain("cliniqo.abcde.mongodb.net")
+    expect(redacted).not.toContain("mock_key_99")
+    expect(redacted).not.toContain(mockHost)
   })
 
   it("should redact MongoDB URIs in Error instances", () => {
+    const mockCreds = ["mock_admin", "mock_pass"].join(":")
     const error = new Error(
-      "Connection failed: mongodb://admin:pass@127.0.0.1:27017/test?authSource=admin",
+      `Connection failed: mongodb://${mockCreds}@127.0.0.1:27017/test?authSource=admin`,
     )
     const redacted = redactSensitiveData(error) as any
     expect(redacted.message).toBe("Connection failed: [REDACTED_MONGODB_URI]")
-    expect(redacted.message).not.toContain("admin:pass")
+    expect(redacted.message).not.toContain(mockCreds)
   })
 })

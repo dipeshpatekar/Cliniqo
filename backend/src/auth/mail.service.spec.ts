@@ -88,18 +88,18 @@ describe("MailService", () => {
   })
 
   describe("sendPasswordResetOtpEmail", () => {
-    it("should format and deliver 6-digit OTP email with 5-minute expiry via Gmail SMTP", async () => {
+    it("should format and deliver 6-digit OTP email with 5-minute expiry via SMTP", async () => {
       const config = new ConfigService({
-        SMTP_HOST: "smtp.gmail.com",
+        SMTP_HOST: "smtp.mailtrap.io",
         SMTP_PORT: "587",
-        SMTP_USER: "notifications@cliniqo.app",
-        SMTP_PASS: "abcd efgh ijkl mnop",
+        SMTP_USER: "mock-mailer@example.test",
+        SMTP_PASS: "mock-test-smtp-token",
         SMTP_FROM: "Cliniqo Security <noreply@cliniqo.app>",
       })
 
       mailService = new MailService(config)
       mailService.setTransporter(mockTransporter)
-      mockTransporter.sendMail.mockResolvedValue({ messageId: "gmail-otp-123" })
+      mockTransporter.sendMail.mockResolvedValue({ messageId: "mock-otp-123" })
 
       const sent = await mailService.sendPasswordResetOtpEmail(
         "doctor@clinic.com",
@@ -124,12 +124,12 @@ describe("MailService", () => {
       expect(mailCall.text).toContain("can only be used once")
     })
 
-    it("should safely handle Gmail SMTP authentication or connection errors without throwing", async () => {
+    it("should safely handle SMTP authentication or connection errors without throwing", async () => {
       const config = new ConfigService({
-        SMTP_HOST: "smtp.gmail.com",
+        SMTP_HOST: "smtp.mailtrap.io",
         SMTP_PORT: "587",
-        SMTP_USER: "user@gmail.com",
-        SMTP_PASS: "wrong-pass",
+        SMTP_USER: "mock-failing-user@example.test",
+        SMTP_PASS: "mock-wrong-pass",
       })
 
       mailService = new MailService(config)

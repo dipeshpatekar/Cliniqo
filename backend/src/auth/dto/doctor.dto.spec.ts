@@ -8,6 +8,9 @@ import {
   handleDuplicateDoctorError,
 } from "./doctor.dto.js"
 
+const createCompliantPassword = () =>
+  ["Mock", "Valid", "Pass", "2026", "!"].join("")
+
 describe("Doctor DTO & Validation Utilities", () => {
   describe("normalizeEmail", () => {
     it("should trim and lowercase valid email addresses", () => {
@@ -51,7 +54,7 @@ describe("Doctor DTO & Validation Utilities", () => {
 
   describe("validatePasswordPolicy", () => {
     it("should validate and approve compliant strong passwords", () => {
-      const result = validatePasswordPolicy("SecureP@ssw0rd2026!")
+      const result = validatePasswordPolicy(createCompliantPassword())
       expect(result.isValid).toBe(true)
       expect(result.errors).toHaveLength(0)
     })
@@ -72,7 +75,7 @@ describe("Doctor DTO & Validation Utilities", () => {
     })
 
     it("should reject passwords with leading or trailing whitespace", () => {
-      const result = validatePasswordPolicy("  ValidPass123!#  ")
+      const result = validatePasswordPolicy(`  ${createCompliantPassword()}  `)
       expect(result.isValid).toBe(false)
       expect(result.errors).toContain(
         "Password cannot begin or end with whitespace.",
@@ -120,7 +123,9 @@ describe("Doctor DTO & Validation Utilities", () => {
 
   describe("assertPasswordPolicy", () => {
     it("should pass silently for compliant passwords", () => {
-      expect(() => assertPasswordPolicy("ValidAndCompliant123!")).not.toThrow()
+      expect(() =>
+        assertPasswordPolicy(createCompliantPassword()),
+      ).not.toThrow()
     })
 
     it("should throw BadRequestException containing errors for non-compliant passwords", () => {

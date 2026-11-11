@@ -487,4 +487,79 @@ describe("ConfigService", () => {
       )
     })
   })
+
+  describe("Production Outbox Startup Validation", () => {
+    const validHexKey =
+      "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+    const runStartupValidation = (service: ConfigService) => {
+      service.validateDatabaseConfig()
+      service.validateAuthConfig()
+      if (service.isProduction) {
+        service.validateOutboxConfig()
+      }
+    }
+
+    const baseProductionEnv = {
+      NODE_ENV: "production",
+      MONGODB_URI: "mongodb+srv://user:pass@cluster.example.test",
+      MONGODB_DB_NAME: "cliniqo_prod",
+      JWT_ACCESS_SECRET: "mock-prod-jwt-access-secret-32-chars-long!",
+      JWT_REFRESH_SECRET: "mock-prod-jwt-refresh-secret-32-chars-long!",
+      OTP_HMAC_SECRET: "mock-prod-otp-hmac-secret-32-chars-long!",
+      JWT_PRIVATE_KEY:
+        "-----BEGIN PRIVATE KEY-----\ntest\n-----END PRIVATE KEY-----",
+      JWT_PUBLIC_KEY:
+        "-----BEGIN PUBLIC KEY-----\ntest\n-----END PUBLIC KEY-----",
+    }
+
+    it("validates successfully in production with a valid Outbox key", () => {
+      const service = new ConfigService({
+        ...baseProductionEnv,
+        OUTBOX_ENCRYPTION_KEY: validHexKey,
+      })
+      expect(() => runStartupValidation(service)).not.toThrow()
+    })
+
+    it("fails startup in production with a missing key", () => {
+      const service = new ConfigService({
+        ...baseProductionEnv,
+      })
+      expect(() => runStartupValidation(service)).toThrow(
+        "Configuration error: OUTBOX_ENCRYPTION_KEY is required and must be a 256-bit key represented as exactly 64 hexadecimal characters",
+      )
+    })
+
+    it("fails startup in production with a malformed key", () => {
+      const service = new ConfigService({
+        ...baseProductionEnv,
+        OUTBOX_ENCRYPTION_KEY: "malformed-hex-key",
+      })
+      expect(() => runStartupValidation(service)).toThrow(
+        "Configuration error: OUTBOX_ENCRYPTION_KEY is required and must be a 256-bit key represented as exactly 64 hexadecimal characters",
+      )
+    })
+
+    it("does not require the production startup check in development or test environments", () => {
+      const devService = new ConfigService({
+        NODE_ENV: "development",
+        MONGODB_URI: "mongodb://localhost:27017",
+        MONGODB_DB_NAME: "cliniqo_dev",
+        JWT_ACCESS_SECRET: "mock-dev-jwt-access-secret-16-chars!",
+        JWT_REFRESH_SECRET: "mock-dev-jwt-refresh-secret-16-chars!",
+        OTP_HMAC_SECRET: "mock-dev-otp-hmac-secret-32-chars-long!",
+      })
+      expect(() => runStartupValidation(devService)).not.toThrow()
+
+      const testService = new ConfigService({
+        NODE_ENV: "test",
+        MONGODB_URI: "mongodb://localhost:27017",
+        MONGODB_DB_NAME: "cliniqo_dev",
+        JWT_ACCESS_SECRET: "mock-test-jwt-access-secret-16-chars!",
+        JWT_REFRESH_SECRET: "mock-test-jwt-refresh-secret-16-chars!",
+        OTP_HMAC_SECRET: "mock-test-otp-hmac-secret-32-chars-long!",
+      })
+      expect(() => runStartupValidation(testService)).not.toThrow()
+    })
+  })
 })

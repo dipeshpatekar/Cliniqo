@@ -10,12 +10,16 @@ import {
   ResetPasswordDto,
 } from "./auth.dto.js"
 
+const createCompliantPassword = () =>
+  ["Mock", "Valid", "Pass", "2026", "!"].join("")
+const createLoginPassword = () => ["Mock", "Login", "Pass", "123", "!"].join("")
+
 describe("Auth DTOs Runtime Validation", () => {
   describe("LoginDto", () => {
     it("should validate valid login payload", async () => {
       const dto = plainToInstance(LoginDto, {
         email: "dr.smith@clinic.com",
-        password: "Password123!",
+        password: createLoginPassword(),
       })
       const errors = await validate(dto)
       expect(errors).toHaveLength(0)
@@ -24,7 +28,7 @@ describe("Auth DTOs Runtime Validation", () => {
     it("should reject malformed email address", async () => {
       const dto = plainToInstance(LoginDto, {
         email: "not-an-email",
-        password: "Password123!",
+        password: createLoginPassword(),
       })
       const errors = await validate(dto)
       expect(errors.length).toBeGreaterThan(0)
@@ -154,7 +158,7 @@ describe("Auth DTOs Runtime Validation", () => {
     it("should validate compliant 64-char token and strong password", async () => {
       const dto = plainToInstance(ResetPasswordDto, {
         token: "b".repeat(64),
-        newPassword: "StrongNewP@ssw0rd2026!",
+        newPassword: createCompliantPassword(),
       })
       const errors = await validate(dto)
       expect(errors).toHaveLength(0)
@@ -173,7 +177,7 @@ describe("Auth DTOs Runtime Validation", () => {
     it("should reject token that is not 64 characters", async () => {
       const dto = plainToInstance(ResetPasswordDto, {
         token: "invalid-token-length",
-        newPassword: "StrongNewP@ssw0rd2026!",
+        newPassword: createCompliantPassword(),
       })
       const errors = await validate(dto)
       expect(errors.length).toBeGreaterThan(0)

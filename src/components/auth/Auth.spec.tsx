@@ -1087,4 +1087,134 @@ describe("Auth Flow Regression: Registration to Profile Setup Navigation", () =>
       expect(evaluateBootstrap(completeRestored)).toBe("dashboard")
     })
   })
+
+  describe("Forgot Password & OTP Verification Flow", () => {
+    it("renders Forgot Password screen with email input and Send verification code button", () => {
+      const html = renderToString(<Login go={vi.fn()} initialView="forgot" />)
+      expect(html).toContain("Forgot Password?")
+      expect(html).toContain("doctor@clinic.com")
+      expect(html).toContain("Send verification code")
+      expect(html).toContain("Back to Login")
+    })
+
+    it("renders OTP verification screen without prototype codes or mock test numbers", () => {
+      const html = renderToString(
+        <Login
+          go={vi.fn()}
+          initialView="otp"
+          initialEmail="doctor@clinic.com"
+        />,
+      )
+
+      expect(html).toContain("Check your email")
+      expect(html).toContain("Enter the 6-digit code sent to")
+      expect(html).toContain("Change email")
+      expect(html).toContain("Resend available in 00:30")
+      expect(html).toContain("Resend code")
+      expect(html).toContain("Verify code")
+
+      // CRITICAL: Prototype section and hardcoded test codes must NOT be rendered in production UI
+      expect(html).not.toContain("Prototype states")
+      expect(html).not.toContain("123456")
+      expect(html).not.toContain("000000")
+      expect(html).not.toContain("111111")
+      expect(html).not.toContain("222222")
+      expect(html).not.toContain("333333")
+
+      // Verify 6 input boxes exist with proper numeric inputMode and accessibility attributes
+      for (let i = 1; i <= 6; i++) {
+        expect(html).toContain(`aria-label="Verification code digit ${i}"`)
+      }
+      expect(html).toContain('inputMode="numeric"')
+    })
+
+    it("renders Reset Password screen with password complexity requirements", () => {
+      const html = renderToString(<Login go={vi.fn()} initialView="reset" />)
+      expect(html).toContain("Reset your password")
+      expect(html).toContain("New password")
+      expect(html).toContain("Confirm new password")
+      expect(html).toContain("Reset password")
+      expect(html).toContain("Cancel")
+    })
+
+    it("calls requestPasswordResetOtp via desktop bridge to send verification code", async () => {
+      const mockFetch = vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          message:
+            "If an account exists with this email address, password reset instructions have been sent.",
+        }),
+      })
+      globalThis.fetch = mockFetch
+
+      const res = await desktopBridge.requestPasswordResetOtp("doctor@clinic.com")
+      expect(res.message).toContain("If an account exists with this email address")
+      expect(mockFetch).toHaveBeenCalledWith(
+        expect.stringContaining("/auth/forgot-password"),
+        expect.objectContaining({
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email: "doctor@clinic.com" }),
+        }),
+      )
+    })
+
+    it("calls verifyPasswordResetOtp via desktop bridge and receives reset token", async () => {
+      const mockFetch = vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          message: "Verification code confirmed successfully.",
+          resetToken: "mock-64-character-reset-token-for-password-recovery-flow-12345678",
+        }),
+      })
+      globalThis.fetch = mockFetch
+
+      const res = await desktopBridge.verifyPasswordResetOtp(
+        "doctor@clinic.com",
+        "491823",
+      )
+      expect(res.resetToken).toBe(
+        "mock-64-character-reset-token-for-password-recovery-flow-12345678",
+      )
+      expect(mockFetch).toHaveBeenCalledWith(
+        expect.stringContaining("/auth/verify-otp"),
+        expect.objectContaining({
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            email: "doctor@clinic.com",
+            otp: "491823",
+          }),
+        }),
+      )
+    })
+
+    it("calls resetPasswordWithToken via desktop bridge and completes password reset", async () => {
+      const mockFetch = vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          message:
+            "Password has been reset successfully. Please log in with your new password.",
+        }),
+      })
+      globalThis.fetch = mockFetch
+
+      const res = await desktopBridge.resetPasswordWithToken(
+        "mock-64-char-reset-token",
+        "NewSecureP@ssw0rd2026!",
+      )
+      expect(res.message).toContain("Password has been reset successfully")
+      expect(mockFetch).toHaveBeenCalledWith(
+        expect.stringContaining("/auth/reset-password"),
+        expect.objectContaining({
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            token: "mock-64-char-reset-token",
+            newPassword: "NewSecureP@ssw0rd2026!",
+          }),
+        }),
+      )
+    })
+  })
 })

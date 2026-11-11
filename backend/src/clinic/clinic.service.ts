@@ -93,6 +93,9 @@ export class ClinicService {
         )
       }
 
+      const locationLinkValue =
+        (dto.location_link !== undefined ? dto.location_link : dto.locationLink)?.trim() || ""
+
       const clinics = await this.clinicModel.create(
         [
           {
@@ -101,6 +104,7 @@ export class ClinicService {
             phone: dto.phone.trim(),
             email: dto.email.toLowerCase().trim(),
             address: dto.address,
+            location_link: locationLinkValue,
             status: ClinicStatus.ACTIVE,
             ownerDoctorId: creator._id,
             createdBy: creator._id,
@@ -162,6 +166,7 @@ export class ClinicService {
         phone: m.clinicId.phone,
         email: m.clinicId.email,
         address: m.clinicId.address,
+        location_link: m.clinicId.location_link || "",
         status: m.clinicId.status,
         role: m.role,
         joinedAt: m.joinedAt,
@@ -192,6 +197,10 @@ export class ClinicService {
     if (dto.phone) updatePayload.phone = dto.phone.trim()
     if (dto.email) updatePayload.email = dto.email.toLowerCase().trim()
     if (dto.address) updatePayload.address = dto.address
+    if (dto.location_link !== undefined || dto.locationLink !== undefined) {
+      updatePayload.location_link =
+        (dto.location_link !== undefined ? dto.location_link : dto.locationLink)?.trim() || ""
+    }
 
     return executeInTransaction(this.connection, async (session) => {
       const updated = await this.clinicModel.findOneAndUpdate(

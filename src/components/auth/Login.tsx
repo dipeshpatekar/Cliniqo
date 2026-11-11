@@ -46,16 +46,22 @@ function sanitizeAuthErrorMessage(rawMessage: string): string {
   return rawMessage
 }
 
+export interface LoginProps {
+  go: (page: Page) => void
+  onLoginSuccess?: (session: DesktopSessionContext) => void
+  initialView?: "login" | "forgot" | "otp" | "reset" | "success"
+  initialEmail?: string
+}
+
 export function Login({
   go,
   onLoginSuccess,
-}: {
-  go: (page: Page) => void
-  onLoginSuccess?: (session: DesktopSessionContext) => void
-}) {
+  initialView = "login",
+  initialEmail = "",
+}: LoginProps) {
   const [view, setView] =
-    useState<"login" | "forgot" | "otp" | "reset" | "success">("login")
-  const [email, setEmail] = useState("")
+    useState<"login" | "forgot" | "otp" | "reset" | "success">(initialView)
+  const [email, setEmail] = useState(initialEmail)
   const [password, setPassword] = useState("")
   const [newPassword, setNewPassword] = useState("")
   const [confirmPassword, setConfirmPassword] = useState("")
@@ -189,10 +195,6 @@ export function Login({
     const code = otp.join("")
     if (code.length !== 6) {
       setAuthState("invalid")
-      return
-    }
-    if (countdown === 0) {
-      setAuthState("expired")
       return
     }
 
@@ -592,8 +594,18 @@ export function Login({
                         updateOtpDigit(index, event.target.value)
                       }
                       onKeyDown={(event) => {
-                        if (event.key === "Backspace" && !digit && index > 0)
-                          otpRefs.current[index - 1]?.focus()
+                        if (event.key === "Backspace") {
+                          if (!digit && index > 0) {
+                            event.preventDefault()
+                            const prevIndex = index - 1
+                            setOtp((current) =>
+                              current.map((item, itemIndex) =>
+                                itemIndex === prevIndex ? "" : item,
+                              ),
+                            )
+                            otpRefs.current[prevIndex]?.focus()
+                          }
+                        }
                       }}
                       inputMode="numeric"
                       autoComplete={index === 0 ? "one-time-code" : "off"}
@@ -625,21 +637,15 @@ export function Login({
                   type="submit"
                   className="login-submit-btn"
                   disabled={
-                    authState === "verifying" || authState === "sending"
+                    authState === "verifying" ||
+                    authState === "sending" ||
+                    otp.join("").length !== 6
                   }
                   loading={authState === "verifying"}
                 >
                   {authState === "verifying" ? "Verifying…" : "Verify code"}
                 </Button>
               </form>
-              <div className="login-prototype-codes">
-                <strong>Prototype states:</strong>
-                <span>
-                  {" "}
-                  123456 success · 000000 invalid · 111111 expired · 222222
-                  network · 333333 resend limit
-                </span>
-              </div>
             </>
           )}
 

@@ -1,9 +1,9 @@
-import { Injectable, Logger } from "@nestjs/common"
+import { Injectable, Logger, type OnModuleInit } from "@nestjs/common"
 import nodemailer, { type Transporter } from "nodemailer"
 import { ConfigService } from "../config/config.service.js"
 
 @Injectable()
-export class MailService {
+export class MailService implements OnModuleInit {
   private readonly logger = new Logger(MailService.name)
   private transporter: Transporter | null = null
 
@@ -28,7 +28,38 @@ export class MailService {
                 pass: smtp.pass,
               }
             : undefined,
+        tls: {
+          rejectUnauthorized: true,
+          minVersion: "TLSv1.2",
+        },
       })
+      this.logger.log(
+        `Gmail SMTP mail transport initialized via ${smtp.host}:${smtp.port}`,
+      )
+    }
+  }
+
+  private sanitizeSmtpError(rawMsg: string): string {
+    return rawMsg
+      .replace(/\b\d{6}\b/g, "******")
+      .replace(/\b[a-f0-9]{64}\b/gi, "[REDACTED_TOKEN]")
+      .replace(/(password|pass|auth|key|secret|token)\s*[:=]\s*[^\s,]+/gi, "$1: [REDACTED]")
+      .replace(/accepted[:=\s]+[^\s,]+/gi, "accepted: [REDACTED]")
+      .replace(/:\s*([A-Za-z0-9_-]{8,})/g, ": [REDACTED]")
+  }
+
+  async onModuleInit() {
+    if (this.transporter && !this.configService.isTest) {
+      try {
+        await this.transporter.verify()
+        this.logger.log(
+          `Gmail SMTP connection verified successfully for host: ${this.configService.smtpConfig.host}`,
+        )
+      } catch (err) {
+        const rawMsg = (err as Error)?.message || "Unknown SMTP connection error"
+        const sanitized = this.sanitizeSmtpError(rawMsg)
+        this.logger.error(`Gmail SMTP connection verification failed: ${sanitized}`)
+      }
     }
   }
 
@@ -141,12 +172,7 @@ Cliniqo Security Team`
       return true
     } catch (err) {
       const rawMsg = (err as Error)?.message || "Unknown SMTP delivery failure"
-      const sanitized = rawMsg
-        .replace(/\b\d{6}\b/g, "******")
-        .replace(
-          /(password|pass|auth|key|secret)[:=\s]+[^\s,]+/gi,
-          "$1: [REDACTED]",
-        )
+      const sanitized = this.sanitizeSmtpError(rawMsg)
       this.logger.error(`Failed to send password reset OTP email: ${sanitized}`)
       return false
     }
@@ -207,12 +233,7 @@ Cliniqo Security Team`
     } catch (err) {
       // Log sanitized error without credentials or token leaks
       const rawMsg = (err as Error)?.message || "Unknown SMTP delivery failure"
-      const sanitized = rawMsg
-        .replace(/\b[a-f0-9]{64}\b/gi, "[REDACTED_TOKEN]")
-        .replace(
-          /(password|pass|auth|key|secret)[:=\s]+[^\s,]+/gi,
-          "$1: [REDACTED]",
-        )
+      const sanitized = this.sanitizeSmtpError(rawMsg)
       this.logger.error(`Failed to send password reset email: ${sanitized}`)
       return false
     }

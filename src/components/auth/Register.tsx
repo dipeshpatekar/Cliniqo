@@ -194,7 +194,7 @@ export function Register({ go, onRegisterSuccess }: RegisterProps) {
             <ShieldCheck size={16} /> Secure account interface
           </span>
           <span>
-            <LockKeyhole size={16} /> Frontend demo only
+            <LockKeyhole size={16} /> Live authentication
           </span>
         </div>
       </section>
@@ -208,10 +208,9 @@ export function Register({ go, onRegisterSuccess }: RegisterProps) {
               <span>
                 <Check size={26} />
               </span>
-              <h2>Registration UI complete</h2>
+              <h2>Account created successfully</h2>
               <p>
-                Your details passed the local demo validation. No account was
-                created and no email or SMS verification occurred.
+                Your doctor account has been registered. Proceed to set up your clinic profile.
               </p>
               <Button
                 className="auth-success-button"

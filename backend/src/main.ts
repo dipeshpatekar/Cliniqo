@@ -27,6 +27,7 @@ async function bootstrap() {
   configService.validateAuthConfig()
   if (configService.isProduction) {
     configService.validateOutboxConfig()
+    configService.validateSmtpConfig()
   }
 
   // Centralized safe exception handling

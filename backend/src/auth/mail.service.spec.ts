@@ -172,5 +172,59 @@ describe("MailService", () => {
       )
       loggerWarnSpy.mockRestore()
     })
+
+    it("should initialize Gmail SMTP with STARTTLS and verify connection safely", async () => {
+      const config = new ConfigService({
+        NODE_ENV: "development",
+        SMTP_HOST: "smtp.gmail.com",
+        SMTP_PORT: "587",
+        SMTP_USER: "doctor@gmail.com",
+        SMTP_PASS: "abcd efgh ijkl mnop",
+        SMTP_FROM: "Cliniqo <doctor@gmail.com>",
+        SMTP_SECURE: "false",
+      })
+
+      mailService = new MailService(config)
+      const mockVerify = vi.fn().mockResolvedValue(true)
+      mailService.setTransporter({
+        sendMail: vi.fn(),
+        verify: mockVerify,
+      } as any)
+
+      await mailService.onModuleInit()
+      expect(mockVerify).toHaveBeenCalled()
+    })
+
+    it("should handle verify connection failure without throwing and sanitize error logs", async () => {
+      const config = new ConfigService({
+        NODE_ENV: "development",
+        SMTP_HOST: "smtp.gmail.com",
+        SMTP_PORT: "587",
+        SMTP_USER: "doctor@gmail.com",
+        SMTP_PASS: "abcd efgh ijkl mnop",
+      })
+
+      mailService = new MailService(config)
+      const mockVerify = vi
+        .fn()
+        .mockRejectedValue(new Error("535 5.7.8 Username and Password not accepted: secret-app-pass"))
+      mailService.setTransporter({
+        sendMail: vi.fn(),
+        verify: mockVerify,
+      } as any)
+
+      const loggerSpy = vi
+        .spyOn((mailService as any).logger, "error")
+        .mockImplementation(() => {})
+
+      await mailService.onModuleInit()
+      expect(loggerSpy).toHaveBeenCalledWith(
+        expect.stringContaining("Gmail SMTP connection verification failed"),
+      )
+      expect(loggerSpy).not.toHaveBeenCalledWith(
+        expect.stringContaining("secret-app-pass"),
+      )
+      loggerSpy.mockRestore()
+    })
   })
 })

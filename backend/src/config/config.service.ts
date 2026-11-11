@@ -504,4 +504,54 @@ export class ConfigService {
     }
     return Buffer.from(key.trim(), "hex")
   }
+
+  /**
+   * Validates SMTP configuration fail-closed.
+   * Ensures Gmail SMTP host, port, user and app password meet requirements.
+   */
+  validateSmtpConfig(): SmtpConfig | null {
+    if (!this.config.smtpHost || this.config.smtpHost.trim() === "") {
+      if (this.isProduction) {
+        throw new Error(
+          "SMTP configuration error: SMTP_HOST is required in production environment.",
+        )
+      }
+      return null
+    }
+
+    const host = this.config.smtpHost.trim()
+    const port = this.config.smtpPort ?? 587
+    if (isNaN(port) || port <= 0 || port > 65535) {
+      throw new Error(
+        `SMTP configuration error: SMTP_PORT must be a valid port number, got ${this.config.smtpPort}.`,
+      )
+    }
+
+    const user = this.config.smtpUser?.trim()
+    if (!user) {
+      throw new Error(
+        "SMTP configuration error: SMTP_USER is required when SMTP_HOST is configured.",
+      )
+    }
+
+    const pass = this.config.smtpPass?.trim()
+    if (!pass) {
+      throw new Error(
+        "SMTP configuration error: SMTP_PASS (Gmail App Password) is required when SMTP_HOST is configured.",
+      )
+    }
+
+    const from =
+      this.config.smtpFrom?.trim() || (user ? `Cliniqo <${user}>` : "noreply@cliniqo.app")
+    const secure = Boolean(this.config.smtpSecure)
+
+    return {
+      host,
+      port,
+      user,
+      pass,
+      from,
+      secure,
+    }
+  }
 }

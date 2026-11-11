@@ -562,4 +562,74 @@ describe("ConfigService", () => {
       expect(() => runStartupValidation(testService)).not.toThrow()
     })
   })
+
+  describe("validateSmtpConfig", () => {
+    it("validates and returns valid Gmail SMTP configuration", () => {
+      const service = new ConfigService({
+        SMTP_HOST: "smtp.gmail.com",
+        SMTP_PORT: "587",
+        SMTP_USER: "doctor@gmail.com",
+        SMTP_PASS: "abcd efgh ijkl mnop",
+        SMTP_FROM: "Cliniqo <doctor@gmail.com>",
+        SMTP_SECURE: "false",
+      })
+      const config = service.validateSmtpConfig()
+      expect(config).toEqual({
+        host: "smtp.gmail.com",
+        port: 587,
+        user: "doctor@gmail.com",
+        pass: "abcd efgh ijkl mnop",
+        from: "Cliniqo <doctor@gmail.com>",
+        secure: false,
+      })
+    })
+
+    it("fails in production when SMTP_HOST is missing", () => {
+      const prodService = new ConfigService({
+        NODE_ENV: "production",
+      })
+      expect(() => prodService.validateSmtpConfig()).toThrow(
+        "SMTP configuration error: SMTP_HOST is required in production environment.",
+      )
+    })
+
+    it("returns null in development/test when SMTP_HOST is omitted", () => {
+      const devService = new ConfigService({
+        NODE_ENV: "development",
+      })
+      expect(devService.validateSmtpConfig()).toBeNull()
+    })
+
+    it("throws when SMTP_HOST is configured but SMTP_USER is missing", () => {
+      const service = new ConfigService({
+        SMTP_HOST: "smtp.gmail.com",
+        SMTP_PASS: "app-password",
+      })
+      expect(() => service.validateSmtpConfig()).toThrow(
+        "SMTP configuration error: SMTP_USER is required when SMTP_HOST is configured.",
+      )
+    })
+
+    it("throws when SMTP_HOST is configured but SMTP_PASS is missing", () => {
+      const service = new ConfigService({
+        SMTP_HOST: "smtp.gmail.com",
+        SMTP_USER: "doctor@gmail.com",
+      })
+      expect(() => service.validateSmtpConfig()).toThrow(
+        "SMTP configuration error: SMTP_PASS (Gmail App Password) is required when SMTP_HOST is configured.",
+      )
+    })
+
+    it("throws when SMTP_PORT is invalid", () => {
+      const service = new ConfigService({
+        SMTP_HOST: "smtp.gmail.com",
+        SMTP_PORT: "invalid-port",
+        SMTP_USER: "doctor@gmail.com",
+        SMTP_PASS: "app-password",
+      })
+      expect(() => service.validateSmtpConfig()).toThrow(
+        "SMTP configuration error: SMTP_PORT must be a valid port number",
+      )
+    })
+  })
 })

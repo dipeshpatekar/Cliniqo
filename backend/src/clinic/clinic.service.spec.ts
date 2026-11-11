@@ -191,6 +191,62 @@ describe("ClinicService & Domain Security (Unit)", () => {
       expect(mockSession.endSession).toHaveBeenCalled()
     })
 
+    it("creates clinic and correctly persists optional location_link", async () => {
+      const dto = {
+        name: "Metro Wellness",
+        phone: "9876543210",
+        email: "wellness@example.com",
+        address: {
+          street: "456 Park Ave",
+          city: "Pune",
+          state: "Maharashtra",
+          postalCode: "411001",
+          country: "India",
+        },
+        location_link: "https://maps.google.com/?q=18.5204,73.8567",
+      }
+
+      await clinicService.createClinicWithMembership(mockDoctor, dto)
+
+      expect(mockClinicModel.create).toHaveBeenCalledWith(
+        [
+          expect.objectContaining({
+            name: "Metro Wellness",
+            location_link: "https://maps.google.com/?q=18.5204,73.8567",
+          }),
+        ],
+        expect.anything(),
+      )
+    })
+
+    it("creates clinic accepting camelCase locationLink for backward compatibility", async () => {
+      const dto = {
+        name: "City Care",
+        phone: "9876543210",
+        email: "citycare@example.com",
+        address: {
+          street: "789 High St",
+          city: "Mumbai",
+          state: "Maharashtra",
+          postalCode: "400001",
+          country: "India",
+        },
+        locationLink: "https://maps.google.com/?q=19.0760,72.8777",
+      }
+
+      await clinicService.createClinicWithMembership(mockDoctor, dto)
+
+      expect(mockClinicModel.create).toHaveBeenCalledWith(
+        [
+          expect.objectContaining({
+            name: "City Care",
+            location_link: "https://maps.google.com/?q=19.0760,72.8777",
+          }),
+        ],
+        expect.anything(),
+      )
+    })
+
     it("rejects clinic creation when slug already exists", async () => {
       mockClinicModel.findOne.mockReturnValue({
         session: vi.fn().mockResolvedValue({ _id: new Types.ObjectId() }),

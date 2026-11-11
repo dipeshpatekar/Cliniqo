@@ -33,6 +33,9 @@ export class Clinic {
     country: string
   }
 
+  @Prop({ required: false, trim: true, default: "" })
+  location_link?: string
+
   @Prop({
     type: String,
     required: true,

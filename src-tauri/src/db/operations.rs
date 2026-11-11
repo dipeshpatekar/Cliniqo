@@ -359,10 +359,10 @@ impl DbOperations {
     ) -> Result<(), DatabaseOpError> {
         let tx = conn.transaction()?;
 
-        let (actual_id, current_local_ver): (String, i32) = tx.query_row(
-            "SELECT id, local_version FROM local_patients WHERE clinic_id = ?1 AND (id = ?2 OR patient_code = ?2) LIMIT 1",
+        let (actual_id, server_id, current_local_ver): (String, Option<String>, i32) = tx.query_row(
+            "SELECT id, server_id, local_version FROM local_patients WHERE clinic_id = ?1 AND (id = ?2 OR patient_code = ?2) LIMIT 1",
             params![clinic_id, patient_id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )?;
 
         let new_ver = current_local_ver + 1;
@@ -374,7 +374,10 @@ impl DbOperations {
 
         let outbox_id = Uuid::new_v4().to_string();
         let idempotency_key = format!("local-patient-delete-{actual_id}-{new_ver}");
-        let (encrypted_outbox, outbox_nonce) = encrypt_payload(&dek.key, b"{}")?;
+        // Keep the cloud ID in the encrypted outbox before deleting the local row.
+        let delete_payload = json!({ "__serverId": server_id });
+        let (encrypted_outbox, outbox_nonce) =
+            encrypt_payload(&dek.key, delete_payload.to_string().as_bytes())?;
 
         tx.execute(
             r#"
@@ -1811,10 +1814,19 @@ impl DbOperations {
 
         for item in &items {
             let plaintext = decrypt_payload(&dek.key, &item.encrypted_payload, &item.nonce)?;
-            let payload: serde_json::Value = serde_json::from_slice(&plaintext)
+            let mut payload: serde_json::Value = serde_json::from_slice(&plaintext)
                 .map_err(DatabaseOpError::Serialization)?;
 
-            let server_id: Option<String> = match item.entity_type.as_str() {
+            // The local patient row is already gone when a DELETE is dispatched.
+            let deleted_patient_server_id = if item.entity_type == "PATIENT" && item.action == "DELETE" {
+                payload.as_object_mut()
+                    .and_then(|object| object.remove("__serverId"))
+                    .and_then(|value| value.as_str().map(str::to_owned))
+            } else {
+                None
+            };
+
+            let server_id: Option<String> = deleted_patient_server_id.or_else(|| match item.entity_type.as_str() {
                 "PATIENT" => {
                     tx.query_row(
                         "SELECT server_id FROM local_patients WHERE id = ?1",
@@ -1837,7 +1849,7 @@ impl DbOperations {
                     ).ok().flatten()
                 }
                 _ => None,
-            };
+            });
 
             decrypted_items.push(DecryptedOutboxItem {
                 id: item.id.clone(),
@@ -5350,15 +5362,27 @@ mod tests {
             assert_eq!(restored[0].age, 37);
             assert_eq!(restored[0].local_version, 2);
 
+            conn.execute(
+                "UPDATE local_patients SET server_id = 'srv_patient_delete_1' WHERE id = ?1",
+                params![patient_id],
+            ).unwrap();
+
             // 5. Delete patient
             DbOperations::delete_patient(&mut conn, &dek, clinic_id, &patient_id).unwrap();
 
             let after_delete = DbOperations::get_patients(&conn, &dek, clinic_id).unwrap();
             assert_eq!(after_delete.len(), 0);
 
-            // Verify outbox contains the delete action
+            // The cloud ID must survive local-row deletion and an offline retry.
             let outbox = DbOperations::get_pending_outbox_batch(&mut conn, &dek, clinic_id, 10).unwrap();
-            assert!(outbox.iter().any(|item| item.action == "DELETE" && item.entity_id == patient_id));
+            let delete_item = outbox.iter().find(|item| item.action == "DELETE" && item.entity_id == patient_id).unwrap();
+            assert_eq!(delete_item.server_id.as_deref(), Some("srv_patient_delete_1"));
+            assert_eq!(delete_item.payload, json!({}));
+
+            DbOperations::revert_in_flight_to_pending(&conn, &[delete_item.id.clone()], Some("offline")).unwrap();
+            let retried = DbOperations::get_pending_outbox_batch(&mut conn, &dek, clinic_id, 10).unwrap();
+            let retried_delete = retried.iter().find(|item| item.action == "DELETE" && item.entity_id == patient_id).unwrap();
+            assert_eq!(retried_delete.server_id.as_deref(), Some("srv_patient_delete_1"));
         }
 
         let _ = std::fs::remove_file(db_path);

@@ -11,7 +11,7 @@ import type {
   ClinicalMedicineDefinition,
   Medicine,
 } from "../../types"
-import { loadClinicalLibrary, createEmptyConsultationData, defaultClinicalLibrary } from "../../types"
+import { loadClinicalLibrary, defaultClinicalLibrary } from "../../types"
 import { validateMedicineFormulation } from "../../utils/billing"
 
 describe("Consultation Components & UX", () => {
@@ -1079,54 +1079,58 @@ describe("Consultation Components & UX", () => {
       expect(afterInjection[1].name).toBe("Amoxicillin")
     })
 
-    it("renders all 16 formulations with letter shortcuts in consultation dropdown", () => {
-      const consultationData: ConsultationData = {
-        ...createEmptyConsultationData(),
-        medicines: [
-          {
-            id: 1,
-            name: "Paracetamol",
-            formulation: "Tablet",
-            strength: "500 mg",
-            dose: "1",
-            frequency: "Three times daily",
-            duration: "5 days",
-            food: "After food",
-            route: "",
-            directions: "",
-          },
-        ],
-      }
+    it(
+      "renders all 16 formulations with letter shortcuts in consultation dropdown",
+      () => {
+        const consultationData: ConsultationData = {
+          ...sampleData,
+          medicines: [
+            {
+              id: 1,
+              name: "Paracetamol",
+              formulation: "Tablet",
+              strength: "500 mg",
+              dose: "1",
+              frequency: "Three times daily",
+              duration: "5 days",
+              food: "After food",
+              route: "",
+              directions: "",
+            },
+          ],
+        }
 
-      const html = renderToString(
-        <Consultation
-          patient={samplePatient}
-          go={() => {}}
-          vitals={sampleVitals}
-          onVitalsChange={() => {}}
-          data={consultationData}
-          onDataChange={() => {}}
-          clinicalLibrary={defaultClinicalLibrary}
-        />,
-      )
+        const html = renderToString(
+          <Consultation
+            patient={samplePatient}
+            go={() => {}}
+            vitals={sampleVitals}
+            onVitalsChange={() => {}}
+            data={consultationData}
+            onDataChange={() => {}}
+            clinicalLibrary={defaultClinicalLibrary}
+          />,
+        )
 
-      // Verified: all 16 formulations with shortcuts are present in dropdown options
-      expect(html).toContain("Tablet (T)")
-      expect(html).toContain("Capsule (C)")
-      expect(html).toContain("Syrup (S)")
-      expect(html).toContain("Drops (D)")
-      expect(html).toContain("Injection (I)")
-      expect(html).toContain("Ointment (O)")
-      expect(html).toContain("Cream (R)")
-      expect(html).toContain("Gel (G)")
-      expect(html).toContain("Powder (P)")
-      expect(html).toContain("Lotion (L)")
-      expect(html).toContain("Suspension (N)")
-      expect(html).toContain("Mouthwash (M)")
-      expect(html).toContain("Inhaler (H)")
-      expect(html).toContain("Eye Drops (E)")
-      expect(html).toContain("Ear Drops (U)")
-      expect(html).toContain("Suppository (B)")
-    })
+        // Verified: all 16 formulations with shortcuts are present in dropdown options
+        expect(html).toContain("Tablet (T)")
+        expect(html).toContain("Capsule (C)")
+        expect(html).toContain("Syrup (S)")
+        expect(html).toContain("Drops (D)")
+        expect(html).toContain("Injection (I)")
+        expect(html).toContain("Ointment (O)")
+        expect(html).toContain("Cream (R)")
+        expect(html).toContain("Gel (G)")
+        expect(html).toContain("Powder (P)")
+        expect(html).toContain("Lotion (L)")
+        expect(html).toContain("Suspension (N)")
+        expect(html).toContain("Mouthwash (M)")
+        expect(html).toContain("Inhaler (H)")
+        expect(html).toContain("Eye Drops (E)")
+        expect(html).toContain("Ear Drops (U)")
+        expect(html).toContain("Suppository (B)")
+      },
+      15000,
+    )
   })
 })

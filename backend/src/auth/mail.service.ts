@@ -2,16 +2,29 @@ import { Injectable, Logger, type OnModuleInit } from "@nestjs/common"
 import nodemailer, { type Transporter } from "nodemailer"
 import { ConfigService } from "../config/config.service.js"
 
+interface CachedAccessToken {
+  token: string
+  expiresAt: number
+}
+
 @Injectable()
 export class MailService implements OnModuleInit {
   private readonly logger = new Logger(MailService.name)
   private transporter: Transporter | null = null
+  private cachedToken: CachedAccessToken | null = null
 
   constructor(private readonly configService: ConfigService) {
     this.initializeTransporter()
   }
 
   private initializeTransporter() {
+    if (this.configService.isGmailApiConfigured) {
+      this.logger.log(
+        "Gmail API OAuth2 delivery configured (HTTPS port 443)",
+      )
+      return
+    }
+
     if (this.configService.isSmtpConfigured) {
       const smtp = this.configService.smtpConfig
       this.transporter = nodemailer.createTransport({
@@ -39,17 +52,164 @@ export class MailService implements OnModuleInit {
     }
   }
 
-  private sanitizeSmtpError(rawMsg: string): string {
+  private sanitizeMailError(rawMsg: string): string {
     return rawMsg
       .replace(/\b\d{6}\b/g, "******")
       .replace(/\b[a-f0-9]{64}\b/gi, "[REDACTED_TOKEN]")
-      .replace(/(password|pass|auth|key|secret|token)\s*[:=]\s*[^\s,]+/gi, "$1: [REDACTED]")
+      .replace(
+        /(["']?(?:password|pass|auth|key|secret|token|refresh_token|access_token|client_secret)["']?\s*[:=]\s*["']?)[^"',\s}]+/gi,
+        "$1[REDACTED]",
+      )
+      .replace(/Bearer\s+[A-Za-z0-9_.\-]+/gi, "Bearer [REDACTED]")
       .replace(/accepted[:=\s]+[^\s,]+/gi, "accepted: [REDACTED]")
       .replace(/:\s*([A-Za-z0-9_-]{8,})/g, ": [REDACTED]")
   }
 
+  /**
+   * Acquires or reuses a valid Google OAuth2 access token using the configured refresh token.
+   * Caches token until 60 seconds before expiration.
+   */
+  async getGmailAccessToken(): Promise<string> {
+    const oauth = this.configService.gmailOAuthConfig
+    if (!oauth.clientId || !oauth.clientSecret || !oauth.refreshToken) {
+      throw new Error("Gmail API OAuth2 configuration is incomplete")
+    }
+
+    const now = Date.now()
+    if (this.cachedToken && this.cachedToken.expiresAt > now + 60000) {
+      return this.cachedToken.token
+    }
+
+    const tokenParams = new URLSearchParams({
+      client_id: oauth.clientId,
+      client_secret: oauth.clientSecret,
+      refresh_token: oauth.refreshToken,
+      grant_type: "refresh_token",
+    })
+
+    const response = await fetch("https://oauth2.googleapis.com/token", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+      body: tokenParams.toString(),
+    })
+
+    if (!response.ok) {
+      const errText = await response.text()
+      throw new Error(`OAuth2 token exchange failed with status ${response.status}: ${this.sanitizeMailError(errText)}`)
+    }
+
+    const data = (await response.json()) as { access_token: string; expires_in: number }
+    if (!data.access_token) {
+      throw new Error("OAuth2 response missing access_token")
+    }
+
+    const expiresInSec = typeof data.expires_in === "number" ? data.expires_in : 3600
+    this.cachedToken = {
+      token: data.access_token,
+      expiresAt: now + expiresInSec * 1000,
+    }
+
+    return data.access_token
+  }
+
+  /**
+   * Builds an RFC 5322 MIME message string and returns its URL-safe base64 encoding.
+   */
+  buildRfc2822Raw(from: string, to: string, subject: string, text: string, html: string): string {
+    const boundary = `====_Part_${Date.now()}_${Math.random().toString(36).substring(2, 10)}====`
+    const encodedSubject = `=?UTF-8?B?${Buffer.from(subject, "utf-8").toString("base64")}?=`
+
+    const lines = [
+      `From: ${from}`,
+      `To: ${to}`,
+      `Subject: ${encodedSubject}`,
+      "MIME-Version: 1.0",
+      `Content-Type: multipart/alternative; boundary="${boundary}"`,
+      "",
+      `--${boundary}`,
+      "Content-Type: text/plain; charset=UTF-8",
+      "Content-Transfer-Encoding: base64",
+      "",
+      Buffer.from(text, "utf-8").toString("base64"),
+      "",
+      `--${boundary}`,
+      "Content-Type: text/html; charset=UTF-8",
+      "Content-Transfer-Encoding: base64",
+      "",
+      Buffer.from(html, "utf-8").toString("base64"),
+      "",
+      `--${boundary}--`,
+      "",
+    ]
+
+    const mimeMessage = lines.join("\r\n")
+    return Buffer.from(mimeMessage, "utf-8").toString("base64url")
+  }
+
+  /**
+   * Sends an email via Google Gmail REST API over HTTPS (port 443).
+   * Works on restrictive networks and cloud hosts that block outbound SMTP (such as Render Free).
+   */
+  async sendViaGmailApi(
+    to: string,
+    subject: string,
+    text: string,
+    html: string,
+  ): Promise<boolean> {
+    try {
+      const accessToken = await this.getGmailAccessToken()
+      const oauth = this.configService.gmailOAuthConfig
+      const from = oauth.from
+
+      const raw = this.buildRfc2822Raw(from, to, subject, text, html)
+
+      const response = await fetch("https://gmail.googleapis.com/gmail/v1/users/me/messages/send", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ raw }),
+      })
+
+      if (!response.ok) {
+        const errBody = await response.text()
+        throw new Error(`Gmail API returned status ${response.status}: ${this.sanitizeMailError(errBody)}`)
+      }
+
+      const result = (await response.json()) as { id?: string }
+      this.logger.log(
+        `Email accepted by Gmail API for: ${to} (messageId: ${result.id || "unknown"})`,
+      )
+      return true
+    } catch (err) {
+      const rawMsg = (err as Error)?.message || "Unknown Gmail API delivery failure"
+      const sanitized = this.sanitizeMailError(rawMsg)
+      this.logger.error(`Failed to send email via Gmail API: ${sanitized}`)
+      return false
+    }
+  }
+
   async onModuleInit() {
-    if (this.transporter && !this.configService.isTest) {
+    if (this.configService.isTest) {
+      return
+    }
+
+    if (this.configService.isGmailApiConfigured) {
+      try {
+        await this.getGmailAccessToken()
+        this.logger.log("Gmail API OAuth2 credentials verified successfully")
+      } catch (err) {
+        const rawMsg = (err as Error)?.message || "Unknown Gmail API verification error"
+        const sanitized = this.sanitizeMailError(rawMsg)
+        this.logger.error(`Gmail API OAuth2 verification failed: ${sanitized}`)
+      }
+      return
+    }
+
+    if (this.transporter) {
       try {
         await this.transporter.verify()
         this.logger.log(
@@ -57,7 +217,7 @@ export class MailService implements OnModuleInit {
         )
       } catch (err) {
         const rawMsg = (err as Error)?.message || "Unknown SMTP connection error"
-        const sanitized = this.sanitizeSmtpError(rawMsg)
+        const sanitized = this.sanitizeMailError(rawMsg)
         this.logger.error(`Gmail SMTP connection verification failed: ${sanitized}`)
       }
     }
@@ -71,6 +231,48 @@ export class MailService implements OnModuleInit {
   }
 
   /**
+   * Dispatches an email through the active provider (Gmail API or SMTP fallback).
+   */
+  private async dispatchEmail(
+    to: string,
+    subject: string,
+    text: string,
+    html: string,
+    actionDesc: string,
+  ): Promise<boolean> {
+    if (this.configService.isGmailApiConfigured) {
+      return this.sendViaGmailApi(to, subject, text, html)
+    }
+
+    if (this.transporter) {
+      const from = this.configService.smtpConfig.from
+      try {
+        const info = await this.transporter.sendMail({
+          from,
+          to,
+          subject,
+          text,
+          html,
+        })
+        this.logger.log(
+          `${actionDesc} email accepted by SMTP for: ${to} (messageId: ${info.messageId})`,
+        )
+        return true
+      } catch (err) {
+        const rawMsg = (err as Error)?.message || "Unknown SMTP delivery failure"
+        const sanitized = this.sanitizeMailError(rawMsg)
+        this.logger.error(`Failed to send ${actionDesc} email: ${sanitized}`)
+        return false
+      }
+    }
+
+    this.logger.warn(
+      `SMTP is not configured. Skipping ${actionDesc} email delivery for: ${to}`,
+    )
+    return false
+  }
+
+  /**
    * Sends a 6-digit OTP email with 5-minute expiry for password recovery.
    * Fails safely without leaking credentials or errors to the HTTP caller.
    */
@@ -78,14 +280,6 @@ export class MailService implements OnModuleInit {
     to: string,
     otp: string,
   ): Promise<boolean> {
-    if (!this.transporter) {
-      this.logger.warn(
-        `SMTP is not configured. Skipping password reset OTP email delivery for: ${to}`,
-      )
-      return false
-    }
-
-    const from = this.configService.smtpConfig.from
     const subject = `Cliniqo Verification Code: ${otp}`
     const text = `Hello Doctor,
 
@@ -158,24 +352,7 @@ Cliniqo Security Team`
 </body>
 </html>`
 
-    try {
-      const info = await this.transporter.sendMail({
-        from,
-        to,
-        subject,
-        text,
-        html,
-      })
-      this.logger.log(
-        `Password reset OTP email accepted by SMTP for: ${to} (messageId: ${info.messageId})`,
-      )
-      return true
-    } catch (err) {
-      const rawMsg = (err as Error)?.message || "Unknown SMTP delivery failure"
-      const sanitized = this.sanitizeSmtpError(rawMsg)
-      this.logger.error(`Failed to send password reset OTP email: ${sanitized}`)
-      return false
-    }
+    return this.dispatchEmail(to, subject, text, html, "password reset OTP")
   }
 
   /**
@@ -186,14 +363,6 @@ Cliniqo Security Team`
     to: string,
     resetToken: string,
   ): Promise<boolean> {
-    if (!this.transporter) {
-      this.logger.warn(
-        `SMTP is not configured. Skipping password reset email delivery for: ${to}`,
-      )
-      return false
-    }
-
-    const from = this.configService.smtpConfig.from
     const subject = "Cliniqo Password Reset Request"
     const text = `Hello Doctor,
 
@@ -218,25 +387,7 @@ Cliniqo Security Team`
 <br>
 <p>Regards,<br><strong>Cliniqo Security Team</strong></p>`
 
-    try {
-      const info = await this.transporter.sendMail({
-        from,
-        to,
-        subject,
-        text,
-        html,
-      })
-      this.logger.log(
-        `Password reset email accepted by SMTP for: ${to} (messageId: ${info.messageId})`,
-      )
-      return true
-    } catch (err) {
-      // Log sanitized error without credentials or token leaks
-      const rawMsg = (err as Error)?.message || "Unknown SMTP delivery failure"
-      const sanitized = this.sanitizeSmtpError(rawMsg)
-      this.logger.error(`Failed to send password reset email: ${sanitized}`)
-      return false
-    }
+    return this.dispatchEmail(to, subject, text, html, "password reset")
   }
 
   /**
@@ -249,14 +400,6 @@ Cliniqo Security Team`
     role: string,
     invitationToken: string,
   ): Promise<boolean> {
-    if (!this.transporter) {
-      this.logger.warn(
-        `SMTP is not configured. Skipping clinic invitation email delivery for: ${to}`,
-      )
-      return false
-    }
-
-    const from = this.configService.smtpConfig.from
     const subject = `Invitation to join ${clinicName} on Cliniqo`
     const text = `Hello Doctor,
 
@@ -281,23 +424,6 @@ Cliniqo Security Team`
 <br>
 <p>Regards,<br><strong>Cliniqo Security Team</strong></p>`
 
-    try {
-      const info = await this.transporter.sendMail({
-        from,
-        to,
-        subject,
-        text,
-        html,
-      })
-      this.logger.log(
-        `Clinic invitation email accepted by SMTP for: ${to} (messageId: ${info.messageId})`,
-      )
-      return true
-    } catch (err) {
-      this.logger.error(
-        `Failed to send clinic invitation email: ${(err as Error)?.message}`,
-      )
-      return false
-    }
+    return this.dispatchEmail(to, subject, text, html, "clinic invitation")
   }
 }

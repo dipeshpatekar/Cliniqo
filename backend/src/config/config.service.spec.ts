@@ -632,4 +632,53 @@ describe("ConfigService", () => {
       )
     })
   })
+
+  describe("Gmail OAuth2 configuration", () => {
+    it("correctly identifies when Gmail API is configured", () => {
+      const service = new ConfigService({
+        GMAIL_CLIENT_ID: "client-id-123.apps.googleusercontent.com",
+        GMAIL_CLIENT_SECRET: "GOCSPX-secret",
+        GMAIL_REFRESH_TOKEN: "1//refresh-token",
+        GMAIL_USER: "support@cliniqo.app",
+      })
+
+      expect(service.isGmailApiConfigured).toBe(true)
+      expect(service.isEmailDeliveryConfigured).toBe(true)
+      expect(service.gmailOAuthConfig).toEqual({
+        clientId: "client-id-123.apps.googleusercontent.com",
+        clientSecret: "GOCSPX-secret",
+        refreshToken: "1//refresh-token",
+        user: "support@cliniqo.app",
+        from: "Cliniqo <support@cliniqo.app>",
+      })
+    })
+
+    it("reports isGmailApiConfigured as false when credentials are incomplete", () => {
+      const service = new ConfigService({
+        GMAIL_CLIENT_ID: "client-id-123",
+      })
+      expect(service.isGmailApiConfigured).toBe(false)
+    })
+
+    it("validates email configuration successfully in production when Gmail API is configured", () => {
+      const prodService = new ConfigService({
+        NODE_ENV: "production",
+        GMAIL_CLIENT_ID: "client-id-123",
+        GMAIL_CLIENT_SECRET: "client-secret",
+        GMAIL_REFRESH_TOKEN: "refresh-token",
+      })
+
+      expect(prodService.validateEmailConfig()).toEqual({ mode: "gmail-api" })
+    })
+
+    it("throws in production when neither Gmail API nor SMTP is configured", () => {
+      const prodService = new ConfigService({
+        NODE_ENV: "production",
+      })
+
+      expect(() => prodService.validateEmailConfig()).toThrow(
+        "Email delivery configuration error: Either Gmail API OAuth credentials (GMAIL_CLIENT_ID, GMAIL_CLIENT_SECRET, GMAIL_REFRESH_TOKEN) or SMTP credentials (SMTP_HOST, SMTP_USER, SMTP_PASS) are required in production.",
+      )
+    })
+  })
 })

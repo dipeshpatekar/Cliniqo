@@ -28,6 +28,10 @@ export interface AppConfig {
   outboxEncryptionKey?: string
   adminDiagnosticKey?: string
   otpHmacSecret?: string
+  gmailClientId?: string
+  gmailClientSecret?: string
+  gmailRefreshToken?: string
+  gmailUser?: string
 }
 
 export interface AuthConfig {
@@ -50,6 +54,14 @@ export interface SmtpConfig {
   pass?: string
   from: string
   secure: boolean
+}
+
+export interface GmailOAuthConfig {
+  clientId?: string
+  clientSecret?: string
+  refreshToken?: string
+  user?: string
+  from: string
 }
 
 export interface RateLimitConfig {
@@ -120,7 +132,7 @@ export class ConfigService {
       smtpPass: env.SMTP_PASS,
       smtpFrom:
         env.SMTP_FROM ||
-        (env.SMTP_USER ? env.SMTP_USER : "noreply@cliniqo.app"),
+        (env.SMTP_USER || env.GMAIL_USER ? `Cliniqo <${env.SMTP_USER || env.GMAIL_USER}>` : "noreply@cliniqo.app"),
       smtpSecure:
         env.SMTP_SECURE === "true" ||
         (env.SMTP_PORT === "465" && env.SMTP_SECURE !== "false"),
@@ -139,6 +151,10 @@ export class ConfigService {
       outboxEncryptionKey: env.OUTBOX_ENCRYPTION_KEY,
       adminDiagnosticKey: env.ADMIN_DIAGNOSTIC_KEY,
       otpHmacSecret: env.OTP_HMAC_SECRET,
+      gmailClientId: env.GMAIL_CLIENT_ID,
+      gmailClientSecret: env.GMAIL_CLIENT_SECRET,
+      gmailRefreshToken: env.GMAIL_REFRESH_TOKEN,
+      gmailUser: env.GMAIL_USER || env.SMTP_USER,
     }
   }
 
@@ -261,6 +277,32 @@ export class ConfigService {
 
   get isSmtpConfigured(): boolean {
     return Boolean(this.config.smtpHost && this.config.smtpHost.trim() !== "")
+  }
+
+  get isGmailApiConfigured(): boolean {
+    return Boolean(
+      this.config.gmailClientId?.trim() &&
+        this.config.gmailClientSecret?.trim() &&
+        this.config.gmailRefreshToken?.trim(),
+    )
+  }
+
+  get isEmailDeliveryConfigured(): boolean {
+    return this.isGmailApiConfigured || this.isSmtpConfigured
+  }
+
+  get gmailOAuthConfig(): GmailOAuthConfig {
+    const user = this.config.gmailUser?.trim() || this.config.smtpUser?.trim()
+    const from =
+      this.config.smtpFrom?.trim() ||
+      (user ? `Cliniqo <${user}>` : "noreply@cliniqo.app")
+    return {
+      clientId: this.config.gmailClientId?.trim(),
+      clientSecret: this.config.gmailClientSecret?.trim(),
+      refreshToken: this.config.gmailRefreshToken?.trim(),
+      user,
+      from,
+    }
   }
 
   get rateLimitConfig(): RateLimitConfig {
@@ -506,12 +548,32 @@ export class ConfigService {
   }
 
   /**
+   * Validates email delivery configuration fail-closed in production.
+   * Allows either Gmail API OAuth (recommended for serverless/Render Free) or standard SMTP.
+   */
+  validateEmailConfig(): { mode: "gmail-api" | "smtp" } | null {
+    if (this.isGmailApiConfigured) {
+      return { mode: "gmail-api" }
+    }
+    if (this.isSmtpConfigured) {
+      this.validateSmtpConfig()
+      return { mode: "smtp" }
+    }
+    if (this.isProduction) {
+      throw new Error(
+        "Email delivery configuration error: Either Gmail API OAuth credentials (GMAIL_CLIENT_ID, GMAIL_CLIENT_SECRET, GMAIL_REFRESH_TOKEN) or SMTP credentials (SMTP_HOST, SMTP_USER, SMTP_PASS) are required in production.",
+      )
+    }
+    return null
+  }
+
+  /**
    * Validates SMTP configuration fail-closed.
    * Ensures Gmail SMTP host, port, user and app password meet requirements.
    */
   validateSmtpConfig(): SmtpConfig | null {
     if (!this.config.smtpHost || this.config.smtpHost.trim() === "") {
-      if (this.isProduction) {
+      if (this.isProduction && !this.isGmailApiConfigured) {
         throw new Error(
           "SMTP configuration error: SMTP_HOST is required in production environment.",
         )

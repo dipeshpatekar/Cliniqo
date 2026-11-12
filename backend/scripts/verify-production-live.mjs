@@ -6,7 +6,7 @@ import { fileURLToPath } from "url"
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
 
-const BASE_URL = "https://cliniqo-api.onrender.com"
+const BASE_URL = "https://cliniqo-backend-68x3.onrender.com"
 
 async function fetchWithRetry(url, options = {}, retries = 3) {
   for (let attempt = 1; attempt <= retries; attempt++) {

@@ -4,62 +4,62 @@ import {
   IsEnum,
   MaxLength,
   IsBoolean,
-} from 'class-validator';
+} from "class-validator"
 import {
   MedicineFormulation,
   MedicineRoute,
   FoodInstruction,
-} from '../../prescription/schemas/prescription-item.schema.js';
+} from "../../prescription/schemas/prescription-item.schema.js"
 
 export class UpdateFormularyItemDto {
   @IsOptional()
   @IsString()
   @MaxLength(200)
-  name?: string;
+  name?: string
 
   @IsOptional()
   @IsString()
   @MaxLength(200)
-  activeIngredient?: string;
+  activeIngredient?: string
 
   @IsOptional()
   @IsEnum(MedicineFormulation)
-  formulation?: MedicineFormulation;
+  formulation?: MedicineFormulation
 
   @IsOptional()
   @IsString()
   @MaxLength(100)
-  strength?: string;
+  strength?: string
 
   @IsOptional()
   @IsString()
   @MaxLength(100)
-  defaultDose?: string;
+  defaultDose?: string
 
   @IsOptional()
   @IsEnum(MedicineRoute)
-  defaultRoute?: MedicineRoute;
+  defaultRoute?: MedicineRoute
 
   @IsOptional()
   @IsString()
   @MaxLength(100)
-  defaultFrequency?: string;
+  defaultFrequency?: string
 
   @IsOptional()
   @IsString()
   @MaxLength(100)
-  defaultDuration?: string;
+  defaultDuration?: string
 
   @IsOptional()
   @IsEnum(FoodInstruction)
-  defaultFoodInstruction?: FoodInstruction;
+  defaultFoodInstruction?: FoodInstruction
 
   @IsOptional()
   @IsString()
   @MaxLength(500)
-  defaultDirections?: string;
+  defaultDirections?: string
 
   @IsOptional()
   @IsBoolean()
-  isActive?: boolean;
+  isActive?: boolean
 }

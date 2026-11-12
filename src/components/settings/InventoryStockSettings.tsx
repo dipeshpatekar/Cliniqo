@@ -305,7 +305,7 @@ export function InventoryStockSettings({
       <div
         className="info-callout mt-4"
         style={{
-          borderLeftColor: "#0d9488",
+          borderColor: "#0d9488",
           backgroundColor: "#f0fdfa",
           color: "#0f766e",
         }}

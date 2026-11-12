@@ -24,17 +24,11 @@ export function BillLayoutSettings({
     <section className="settings-section">
       <div className="settings-title">
         <h2>Bill layout</h2>
-        <p>
-          Choose which clinic details appear when bills are printed or shared.
-        </p>
       </div>
       <div className="option-list">
         <label>
           <span>
             <strong>Show bill banner</strong>
-            <small>
-              Display the clinic and doctor banner at the top of bills
-            </small>
           </span>
           <input
             type="checkbox"
@@ -45,7 +39,6 @@ export function BillLayoutSettings({
         <label>
           <span>
             <strong>Show clinic logo</strong>
-            <small>Display the clinic logo in the bill header</small>
           </span>
           <input
             type="checkbox"
@@ -56,7 +49,6 @@ export function BillLayoutSettings({
         <label>
           <span>
             <strong>Show clinic email</strong>
-            <small>Include the clinic email with contact details</small>
           </span>
           <input
             type="checkbox"
@@ -69,9 +61,6 @@ export function BillLayoutSettings({
         <label>
           <span>
             <strong>Show doctor’s signature</strong>
-            <small>
-              Display the uploaded signature and doctor name in the footer
-            </small>
           </span>
           <input
             type="checkbox"
@@ -82,9 +71,6 @@ export function BillLayoutSettings({
         <label>
           <span>
             <strong>Show payment note</strong>
-            <small>
-              Include payment status and the patient receipt message
-            </small>
           </span>
           <input
             type="checkbox"

@@ -18,6 +18,7 @@ export interface DesktopInfo {
 export interface DesktopSessionContext {
   doctor_id: string
   clinic_id: string
+  clinic_name?: string
   doctor_email: string
   doctor_name: string
   role: string
@@ -92,6 +93,7 @@ export interface LocalPatientRecord {
   server_version: number
   local_version: number
   updated_at: string
+  last_visit?: string | null
 }
 
 export interface LocalConsultationArgs {
@@ -365,7 +367,10 @@ export async function registerDoctor(
         const loginRes = await fetch(`${baseUrl}/auth/login`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ email: input.email, password: input.password }),
+          body: JSON.stringify({
+            email: input.email,
+            password: input.password,
+          }),
         })
         if (loginRes.ok) {
           const loginData = await loginRes.json()
@@ -496,6 +501,91 @@ export async function refreshAuthTokens(
   return data
 }
 
+export interface ForgotPasswordResult {
+  message: string
+}
+
+export interface VerifyOtpResult {
+  message: string
+  resetToken: string
+}
+
+export interface ResetPasswordResult {
+  message: string
+}
+
+export async function requestPasswordResetOtp(
+  email: string,
+): Promise<ForgotPasswordResult> {
+  const baseUrl = getApiBaseUrl()
+  const res = await fetch(`${baseUrl}/auth/forgot-password`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email: email.trim().toLowerCase() }),
+  })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    const errorMsg =
+      data?.message || data?.error || "Failed to send verification code."
+    const err = new Error(
+      Array.isArray(errorMsg) ? errorMsg.join(" ") : errorMsg,
+    )
+    ;(err as any).status = res.status
+    throw err
+  }
+  return data
+}
+
+export async function verifyPasswordResetOtp(
+  email: string,
+  otp: string,
+): Promise<VerifyOtpResult> {
+  const baseUrl = getApiBaseUrl()
+  const res = await fetch(`${baseUrl}/auth/verify-otp`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      email: email.trim().toLowerCase(),
+      otp: otp.trim(),
+    }),
+  })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    const errorMsg =
+      data?.message ||
+      data?.error ||
+      "That code is not valid. Check all six digits and try again."
+    const err = new Error(
+      Array.isArray(errorMsg) ? errorMsg.join(" ") : errorMsg,
+    )
+    ;(err as any).status = res.status
+    throw err
+  }
+  return data
+}
+
+export async function resetPasswordWithToken(
+  token: string,
+  newPassword: string,
+): Promise<ResetPasswordResult> {
+  const baseUrl = getApiBaseUrl()
+  const res = await fetch(`${baseUrl}/auth/reset-password`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ token, newPassword }),
+  })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    const errorMsg = data?.message || data?.error || "Failed to reset password."
+    const err = new Error(
+      Array.isArray(errorMsg) ? errorMsg.join(" ") : errorMsg,
+    )
+    ;(err as any).status = res.status
+    throw err
+  }
+  return data
+}
+
 export async function getDesktopInfo(): Promise<DesktopInfo | null> {
   return invokeTauri<DesktopInfo>("get_desktop_info")
 }
@@ -563,6 +653,15 @@ export async function getDesktopSession(): Promise<DesktopSessionContext | null>
   return invokeTauri<DesktopSessionContext | null>("get_desktop_session")
 }
 
+export async function getNextPatientCode(
+  clinicId: string,
+): Promise<string | null> {
+  if (!isTauriDesktop()) {
+    return null
+  }
+  return invokeTauri<string>("get_next_patient_code", { clinicId })
+}
+
 export async function saveLocalPatient(
   args: LocalPatientArgs,
 ): Promise<string | null> {
@@ -573,6 +672,9 @@ export async function deleteLocalPatient(
   clinicId: string,
   patientId: string,
 ): Promise<boolean> {
+  if (!isTauriDesktop()) {
+    return false
+  }
   const result = await invokeTauri<void>("delete_local_patient", {
     clinicId,
     patientId,
@@ -597,10 +699,11 @@ export async function saveLocalConsultation(
 
 export async function getLocalConsultations(
   clinicId: string,
+  patientId?: string | null,
 ): Promise<LocalConsultationRecord[]> {
   const result = await invokeTauri<LocalConsultationRecord[]>(
     "get_local_consultations",
-    { clinicId },
+    { clinicId, patientId: patientId || null },
   )
   return result ?? []
 }
@@ -613,10 +716,11 @@ export async function saveLocalPrescription(
 
 export async function getLocalPrescriptions(
   clinicId: string,
+  patientId?: string | null,
 ): Promise<LocalPrescriptionRecord[]> {
   const result = await invokeTauri<LocalPrescriptionRecord[]>(
     "get_local_prescriptions",
-    { clinicId },
+    { clinicId, patientId: patientId || null },
   )
   return result ?? []
 }
@@ -1162,8 +1266,12 @@ export function mapStockUnitToFormulation(unit?: string | null): string {
     return "Injection"
   if (u.includes("CREAM")) return "Cream"
   if (u.includes("LOTION")) return "Lotion"
+  if (u.includes("EYE DROP") || u.includes("OPHTH")) return "Eye Drops"
+  if (u.includes("EAR DROP") || u.includes("OTIC")) return "Ear Drops"
   if (u.includes("DROP")) return "Drops"
   if (u.includes("POW")) return "Powder"
+  if (u.includes("MOUTHWASH") || u.includes("GARGLE")) return "Mouthwash"
+  if (u.includes("SUPP")) return "Suppository"
   if (u.includes("SPRAY")) return "Spray"
   if (u.includes("SOLUTION")) return "Solution"
   if (u.includes("OINT") || u.includes("PASTE")) return "Ointment"
@@ -1247,7 +1355,8 @@ export async function searchCatalogue(
           page: 1,
           limit,
           totalPages: Math.ceil(localItems.length / limit) || 1,
-          attribution: "Cliniqo Clinical Formulary & Stock — Local Offline Cache",
+          attribution:
+            "Cliniqo Clinical Formulary & Stock — Local Offline Cache",
           isOfflineCache: true,
         }
       }
@@ -1499,27 +1608,39 @@ export async function getClinicProfile(
 export async function saveClinicProfile(
   args: Omit<ClinicProfile, "updated_at">,
 ): Promise<ClinicProfile | null> {
+  let saved: ClinicProfile | null = null
   if (isTauriDesktop()) {
     try {
-      return await invokeTauri<ClinicProfile>("save_clinic_profile", { args })
+      saved = await invokeTauri<ClinicProfile>("save_clinic_profile", { args })
     } catch (e) {
       console.warn("Failed to persist clinic profile to desktop SQLite:", e)
       return null
     }
+  } else {
+    saved = {
+      ...args,
+      updated_at: new Date().toISOString(),
+    }
+    try {
+      if (typeof window !== "undefined" && window.localStorage) {
+        window.localStorage.setItem(
+          `cliniqo_clinic_profile_${args.clinic_id}`,
+          JSON.stringify(saved),
+        )
+      }
+    } catch {}
   }
 
-  const saved: ClinicProfile = {
-    ...args,
-    updated_at: new Date().toISOString(),
-  }
-  try {
-    if (typeof window !== "undefined" && window.localStorage) {
-      window.localStorage.setItem(
-        `cliniqo_clinic_profile_${args.clinic_id}`,
-        JSON.stringify(saved),
+  if (saved && typeof window !== "undefined") {
+    try {
+      window.dispatchEvent(
+        new CustomEvent("cliniqo:profile-updated", {
+          detail: { type: "clinic", profile: saved },
+        }),
       )
-    }
-  } catch {}
+    } catch {}
+  }
+
   return saved
 }
 
@@ -1562,27 +1683,39 @@ export async function getDoctorProfile(
 export async function saveDoctorProfile(
   args: Omit<DoctorProfile, "updated_at">,
 ): Promise<DoctorProfile | null> {
+  let saved: DoctorProfile | null = null
   if (isTauriDesktop()) {
     try {
-      return await invokeTauri<DoctorProfile>("save_doctor_profile", { args })
+      saved = await invokeTauri<DoctorProfile>("save_doctor_profile", { args })
     } catch (e) {
       console.warn("Failed to persist doctor profile to desktop SQLite:", e)
       return null
     }
+  } else {
+    saved = {
+      ...args,
+      updated_at: new Date().toISOString(),
+    }
+    try {
+      if (typeof window !== "undefined" && window.localStorage) {
+        window.localStorage.setItem(
+          `cliniqo_doctor_profile_${args.doctor_id || "default"}`,
+          JSON.stringify(saved),
+        )
+      }
+    } catch {}
   }
 
-  const saved: DoctorProfile = {
-    ...args,
-    updated_at: new Date().toISOString(),
-  }
-  try {
-    if (typeof window !== "undefined" && window.localStorage) {
-      window.localStorage.setItem(
-        `cliniqo_doctor_profile_${args.doctor_id || "default"}`,
-        JSON.stringify(saved),
+  if (saved && typeof window !== "undefined") {
+    try {
+      window.dispatchEvent(
+        new CustomEvent("cliniqo:profile-updated", {
+          detail: { type: "doctor", profile: saved },
+        }),
       )
-    }
-  } catch {}
+    } catch {}
+  }
+
   return saved
 }
 
@@ -1700,10 +1833,13 @@ export async function importClinicalLibrary(
   batch: ClinicalImportBatchInput,
 ): Promise<ClinicalImportSummary> {
   if (isTauriDesktop()) {
-    const res = await invokeTauri<ClinicalImportSummary>("import_clinical_library", {
-      clinicId: batch.clinic_id,
-      batch,
-    })
+    const res = await invokeTauri<ClinicalImportSummary>(
+      "import_clinical_library",
+      {
+        clinicId: batch.clinic_id,
+        batch,
+      },
+    )
     if (res) return res
   }
 
@@ -1714,7 +1850,9 @@ export async function importClinicalLibrary(
   const batchKey = `cliniqo_clinical_batches_${batch.clinic_id}`
 
   const existingRaw = localStorage.getItem(storageKey)
-  const existing: ClinicalMedicineRecord[] = existingRaw ? JSON.parse(existingRaw) : []
+  const existing: ClinicalMedicineRecord[] = existingRaw
+    ? JSON.parse(existingRaw)
+    : []
 
   let importedRows = 0
   let skippedRows = 0
@@ -1724,7 +1862,8 @@ export async function importClinicalLibrary(
       (e) =>
         e.is_active &&
         e.name.toLowerCase().trim() === item.name.toLowerCase().trim() &&
-        e.formulation.toLowerCase().trim() === item.formulation.toLowerCase().trim() &&
+        e.formulation.toLowerCase().trim() ===
+          item.formulation.toLowerCase().trim() &&
         e.strength.toLowerCase().trim() === item.strength.toLowerCase().trim(),
     )
     if (isDup && !batch.allow_update) {
@@ -1762,7 +1901,9 @@ export async function importClinicalLibrary(
   localStorage.setItem(storageKey, JSON.stringify(existing))
 
   const batchesRaw = localStorage.getItem(batchKey)
-  const batches: ClinicalImportBatchRecord[] = batchesRaw ? JSON.parse(batchesRaw) : []
+  const batches: ClinicalImportBatchRecord[] = batchesRaw
+    ? JSON.parse(batchesRaw)
+    : []
   const batchRecord: ClinicalImportBatchRecord = {
     id: batchId,
     clinic_id: batch.clinic_id,
@@ -1841,12 +1982,15 @@ export async function getClinicalLibraryItems(
   offset = 0,
 ): Promise<ClinicalMedicineRecord[]> {
   if (isTauriDesktop()) {
-    const res = await invokeTauri<ClinicalMedicineRecord[]>("get_clinical_library_items", {
-      clinicId,
-      query: query || null,
-      limit,
-      offset,
-    })
+    const res = await invokeTauri<ClinicalMedicineRecord[]>(
+      "get_clinical_library_items",
+      {
+        clinicId,
+        query: query || null,
+        limit,
+        offset,
+      },
+    )
     if (res) return res
   }
 
@@ -1872,9 +2016,12 @@ export async function getClinicalLibraryBatches(
   clinicId: string,
 ): Promise<ClinicalImportBatchRecord[]> {
   if (isTauriDesktop()) {
-    const res = await invokeTauri<ClinicalImportBatchRecord[]>("get_clinical_library_batches", {
-      clinicId,
-    })
+    const res = await invokeTauri<ClinicalImportBatchRecord[]>(
+      "get_clinical_library_batches",
+      {
+        clinicId,
+      },
+    )
     if (res) return res
   }
 
@@ -1960,3 +2107,201 @@ export async function archiveClinicalLibraryItem(
   }
 }
 
+// ---------------------------------------------------------------------------
+// Encrypted Backup & Restore Interfaces & Functions
+// ---------------------------------------------------------------------------
+
+export interface BackupManifest {
+  magic: string
+  version: number
+  clinic_id: string
+  created_at: string
+  app_version: string
+  schema_version: number
+  patients_count: number
+  consultations_count: number
+  prescriptions_count: number
+  invoices_count: number
+  outbox_count: number
+  db_sha256: string
+}
+
+export interface BackupExportResult {
+  success: boolean
+  backup_file_name: string
+  backup_file_path: string | null
+  backup_bytes_base64: string | null
+  manifest: BackupManifest
+  file_size_bytes: number
+}
+
+export interface BackupRestoreResult {
+  success: boolean
+  restored_at: string
+  clinic_id: string
+  manifest: BackupManifest
+  patients_count: number
+  consultations_count: number
+  prescriptions_count: number
+  invoices_count: number
+}
+
+export async function exportEncryptedBackup(
+  clinicId: string,
+  passphrase?: string,
+  destinationPath?: string,
+): Promise<BackupExportResult> {
+  if (isTauriDesktop()) {
+    const res = await invokeTauri<BackupExportResult>("export_encrypted_backup", {
+      clinicId,
+      passphrase: passphrase || null,
+      destinationPath: destinationPath || null,
+    })
+    if (res) return res
+    throw new Error("Encrypted backup export failed: desktop invocation returned no result")
+  }
+
+  // Browser / Demo fallback
+  const mockManifest: BackupManifest = {
+    magic: "CLINIQO_BACKUP",
+    version: 1,
+    clinic_id: clinicId,
+    created_at: new Date().toISOString(),
+    app_version: "1.0.0",
+    schema_version: 12,
+    patients_count: 5,
+    consultations_count: 8,
+    prescriptions_count: 8,
+    invoices_count: 4,
+    outbox_count: 0,
+    db_sha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  }
+
+  const dummyData = "CLINIQO_BACKUP_V1\0" + JSON.stringify(mockManifest)
+  const base64Data = btoa(dummyData)
+
+  return {
+    success: true,
+    backup_file_name: `cliniqo_backup_${clinicId}_${new Date().toISOString().replace(/[:.]/g, "-")}.clxbk`,
+    backup_file_path: null,
+    backup_bytes_base64: base64Data,
+    manifest: mockManifest,
+    file_size_bytes: dummyData.length,
+  }
+}
+
+export async function restoreEncryptedBackup(options: {
+  clinicId?: string
+  backupBytesBase64?: string
+  backupFilePath?: string
+  passphrase?: string
+}): Promise<BackupRestoreResult> {
+  if (isTauriDesktop()) {
+    const res = await invokeTauri<BackupRestoreResult>("restore_encrypted_backup", {
+      clinicId: options.clinicId || null,
+      backupBytesBase64: options.backupBytesBase64 || null,
+      backupFilePath: options.backupFilePath || null,
+      passphrase: options.passphrase || null,
+    })
+    if (res) return res
+    throw new Error("Encrypted backup restore failed: desktop invocation returned no result")
+  }
+
+  // Browser / Demo validation
+  if (!options.backupBytesBase64 && !options.backupFilePath) {
+    throw new Error("No backup data or file provided")
+  }
+
+  return {
+    success: true,
+    restored_at: new Date().toISOString(),
+    clinic_id: options.clinicId || "clinic_demo",
+    manifest: {
+      magic: "CLINIQO_BACKUP",
+      version: 1,
+      clinic_id: options.clinicId || "clinic_demo",
+      created_at: new Date().toISOString(),
+      app_version: "1.0.0",
+      schema_version: 12,
+      patients_count: 5,
+      consultations_count: 8,
+      prescriptions_count: 8,
+      invoices_count: 4,
+      outbox_count: 0,
+      db_sha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    },
+    patients_count: 5,
+    consultations_count: 8,
+    prescriptions_count: 8,
+    invoices_count: 4,
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Application Auto-Updater Interfaces & Functions
+// ---------------------------------------------------------------------------
+
+export interface UpdateCheckResult {
+  available: boolean
+  current_version: string
+  target_version: string | null
+  release_notes: string | null
+  pub_date: string | null
+  download_url: string | null
+  signature: string | null
+  endpoint: string
+  checked_at: string
+}
+
+export interface UpdateInstallResult {
+  success: boolean
+  target_version: string
+  installer_path: string
+  status_message: string
+}
+
+export async function checkAppUpdate(endpoint?: string): Promise<UpdateCheckResult> {
+  if (isTauriDesktop()) {
+    const res = await invokeTauri<UpdateCheckResult>("check_app_update", {
+      endpoint: endpoint || null,
+    })
+    if (res) return res
+    throw new Error("App update check failed: desktop invocation returned no result")
+  }
+
+  return {
+    available: false,
+    current_version: "1.0.0",
+    target_version: null,
+    release_notes: null,
+    pub_date: null,
+    download_url: null,
+    signature: null,
+    endpoint: "https://github.com/dipeshpatekar/Cliniqo/releases/latest/download/latest.json",
+    checked_at: new Date().toISOString(),
+  }
+}
+
+export async function downloadAndLaunchUpdate(
+  downloadUrl: string,
+  targetVersion: string,
+  signature?: string | null,
+): Promise<UpdateInstallResult> {
+  if (isTauriDesktop()) {
+    const res = await invokeTauri<UpdateInstallResult>("download_and_launch_update", {
+      downloadUrl,
+      targetVersion,
+      signature: signature ?? null,
+    })
+    if (res) return res
+    throw new Error("Download and install failed: desktop invocation returned no result")
+  }
+
+  return {
+    success: true,
+    target_version: targetVersion,
+    installer_path: "/tmp/Cliniqo-Setup.exe",
+    status_message:
+      "Demo mode: Update simulated. Existing local SQLite database and keys are preserved.",
+  }
+}

@@ -7,65 +7,62 @@ import {
   UnprocessableEntityException,
   InternalServerErrorException,
   Logger,
-} from '@nestjs/common';
-import { InjectModel, InjectConnection } from '@nestjs/mongoose';
-import type { Connection, ClientSession } from 'mongoose';
-import { Model, Types } from 'mongoose';
-import { randomUUID, createHash } from 'crypto';
+} from "@nestjs/common"
+import { InjectModel, InjectConnection } from "@nestjs/mongoose"
+import type { Connection, ClientSession } from "mongoose"
+import { Model, Types } from "mongoose"
+import { randomUUID, createHash } from "crypto"
 import {
   Prescription,
   PrescriptionDocument,
   PrescriptionStatus,
-} from './schemas/prescription.schema.js';
+} from "./schemas/prescription.schema.js"
 import {
   PrescriptionRevision,
   PrescriptionRevisionDocument,
   PrescriptionClinicalSnapshot,
-} from './schemas/prescription-revision.schema.js';
+} from "./schemas/prescription-revision.schema.js"
 import {
   Consultation,
   ConsultationDocument,
   ConsultationStatus,
-} from '../consultation/schemas/consultation.schema.js';
-import {
-  Patient,
-  PatientDocument,
-} from '../patient/schemas/patient.schema.js';
+} from "../consultation/schemas/consultation.schema.js"
+import { Patient, PatientDocument } from "../patient/schemas/patient.schema.js"
 import {
   ClinicSequenceCounter,
   ClinicSequenceCounterDocument,
-} from '../patient/schemas/clinic-sequence-counter.schema.js';
+} from "../patient/schemas/clinic-sequence-counter.schema.js"
 import {
   ClinicAuditLog,
   ClinicAuditLogDocument,
   ClinicAuditAction,
-} from '../clinic/schemas/clinic-audit-log.schema.js';
+} from "../clinic/schemas/clinic-audit-log.schema.js"
 import {
   IdempotencyRecord,
   IdempotencyRecordDocument,
-} from '../common/schemas/idempotency-record.schema.js';
-import { ClinicRole } from '../clinic/schemas/clinic-membership.schema.js';
-import { executeInTransaction } from '../database/transaction.helper.js';
-import { redactString } from '../common/logging/app-logger.service.js';
-import { validatePrescriptionItem } from './validators/formulation-route.validator.js';
-import type { CreatePrescriptionDto } from './dto/create-prescription.dto.js';
-import type { RevisePrescriptionDto } from './dto/revise-prescription.dto.js';
-import type { DiscontinuePrescriptionDto } from './dto/discontinue-prescription.dto.js';
-import type { CancelPrescriptionDto } from './dto/cancel-prescription.dto.js';
-import type { QueryPrescriptionsDto } from './dto/query-prescriptions.dto.js';
+} from "../common/schemas/idempotency-record.schema.js"
+import { ClinicRole } from "../clinic/schemas/clinic-membership.schema.js"
+import { executeInTransaction } from "../database/transaction.helper.js"
+import { redactString } from "../common/logging/app-logger.service.js"
+import { validatePrescriptionItem } from "./validators/formulation-route.validator.js"
+import type { CreatePrescriptionDto } from "./dto/create-prescription.dto.js"
+import type { RevisePrescriptionDto } from "./dto/revise-prescription.dto.js"
+import type { DiscontinuePrescriptionDto } from "./dto/discontinue-prescription.dto.js"
+import type { CancelPrescriptionDto } from "./dto/cancel-prescription.dto.js"
+import type { QueryPrescriptionsDto } from "./dto/query-prescriptions.dto.js"
 
 export function canonicalJsonStringify(obj: any): string {
-  if (obj === null || typeof obj !== 'object') {
-    return JSON.stringify(obj);
+  if (obj === null || typeof obj !== "object") {
+    return JSON.stringify(obj)
   }
   if (Array.isArray(obj)) {
-    return `[${obj.map((item) => canonicalJsonStringify(item)).join(',')}]`;
+    return `[${obj.map((item) => canonicalJsonStringify(item)).join(",")}]`
   }
-  const keys = Object.keys(obj).sort();
+  const keys = Object.keys(obj).sort()
   const entries = keys.map(
     (k) => `${JSON.stringify(k)}:${canonicalJsonStringify(obj[k])}`,
-  );
-  return `{${entries.join(',')}}`;
+  )
+  return `{${entries.join(",")}}`
 }
 
 export function computeRequestFingerprint(
@@ -73,9 +70,9 @@ export function computeRequestFingerprint(
   normalizedRoute: string,
   body: any,
 ): string {
-  const canonicalBody = canonicalJsonStringify(body || {});
-  const payload = `${httpMethod.toUpperCase()}:${normalizedRoute.trim()}:${canonicalBody}`;
-  return createHash('sha256').update(payload).digest('hex');
+  const canonicalBody = canonicalJsonStringify(body || {})
+  const payload = `${httpMethod.toUpperCase()}:${normalizedRoute.trim()}:${canonicalBody}`
+  return createHash("sha256").update(payload).digest("hex")
 }
 
 /**
@@ -84,19 +81,19 @@ export function computeRequestFingerprint(
  * Avoids retrying unrelated E11000 errors (such as duplicate patient, prescription or draft errors).
  */
 export function isCounterInitializationRace(err: any): boolean {
-  if (err?.code !== 11000) return false;
+  if (err?.code !== 11000) return false
 
   const hasExactSequenceKeyPattern =
     err?.keyPattern?.clinicId !== undefined &&
-    err?.keyPattern?.sequenceName !== undefined;
+    err?.keyPattern?.sequenceName !== undefined
 
-  const msg = typeof err?.message === 'string' ? err.message : '';
+  const msg = typeof err?.message === "string" ? err.message : ""
   const isCountersCollectionOrIndex =
-    msg.includes('clinic_counters') ||
-    msg.includes('clinicId_1_sequenceName_1') ||
-    msg.includes('uniq_clinic_sequence_counter');
+    msg.includes("clinic_counters") ||
+    msg.includes("clinicId_1_sequenceName_1") ||
+    msg.includes("uniq_clinic_sequence_counter")
 
-  return hasExactSequenceKeyPattern && isCountersCollectionOrIndex;
+  return hasExactSequenceKeyPattern && isCountersCollectionOrIndex
 }
 
 /**
@@ -105,50 +102,50 @@ export function isCounterInitializationRace(err: any): boolean {
  */
 export function computePatientCurrentAge(
   patient: { age: number; dateOfBirth?: Date | null },
-  clinicTimezone: string = 'Asia/Kolkata',
+  clinicTimezone: string = "Asia/Kolkata",
   referenceDate: Date = new Date(),
 ): number {
   if (!patient.dateOfBirth) {
-    return patient.age;
+    return patient.age
   }
 
-  const formatter = new Intl.DateTimeFormat('en-US', {
+  const formatter = new Intl.DateTimeFormat("en-US", {
     timeZone: clinicTimezone,
-    year: 'numeric',
-    month: 'numeric',
-    day: 'numeric',
-  });
+    year: "numeric",
+    month: "numeric",
+    day: "numeric",
+  })
 
   const extractParts = (d: Date) => {
-    const parts = formatter.formatToParts(d);
-    let year = 0;
-    let month = 0;
-    let day = 0;
+    const parts = formatter.formatToParts(d)
+    let year = 0
+    let month = 0
+    let day = 0
     for (const part of parts) {
-      if (part.type === 'year') year = Number(part.value);
-      if (part.type === 'month') month = Number(part.value);
-      if (part.type === 'day') day = Number(part.value);
+      if (part.type === "year") year = Number(part.value)
+      if (part.type === "month") month = Number(part.value)
+      if (part.type === "day") day = Number(part.value)
     }
-    return { year, month, day };
-  };
+    return { year, month, day }
+  }
 
-  const refParts = extractParts(referenceDate);
-  const dobParts = extractParts(new Date(patient.dateOfBirth));
+  const refParts = extractParts(referenceDate)
+  const dobParts = extractParts(new Date(patient.dateOfBirth))
 
-  let age = refParts.year - dobParts.year;
+  let age = refParts.year - dobParts.year
   if (
     refParts.month < dobParts.month ||
     (refParts.month === dobParts.month && refParts.day < dobParts.day)
   ) {
-    age--;
+    age--
   }
 
-  return Math.max(0, age);
+  return Math.max(0, age)
 }
 
 @Injectable()
 export class PrescriptionService {
-  private readonly logger = new Logger(PrescriptionService.name);
+  private readonly logger = new Logger(PrescriptionService.name)
 
   constructor(
     @InjectModel(Prescription.name)
@@ -179,15 +176,15 @@ export class PrescriptionService {
     normalizedRoute: string,
     requestFingerprint: string,
   ): Promise<{
-    replayed?: boolean;
-    responseCode?: number;
-    responseBody?: any;
-    claimToken: string;
+    replayed?: boolean
+    responseCode?: number
+    responseBody?: any
+    claimToken: string
   }> {
-    const claimToken = randomUUID();
-    const now = new Date();
-    const leaseExpiry = new Date(now.getTime() + 60_000); // 60s lease
-    const ttlExpiry = new Date(now.getTime() + 24 * 60 * 60 * 1000); // 24h TTL
+    const claimToken = randomUUID()
+    const now = new Date()
+    const leaseExpiry = new Date(now.getTime() + 60_000) // 60s lease
+    const ttlExpiry = new Date(now.getTime() + 24 * 60 * 60 * 1000) // 24h TTL
 
     try {
       await this.idempotencyModel.create({
@@ -196,48 +193,48 @@ export class PrescriptionService {
         httpMethod,
         normalizedRoute,
         requestFingerprint,
-        status: 'PROCESSING',
+        status: "PROCESSING",
         claimToken,
         lockedUntil: leaseExpiry,
         expiresAt: ttlExpiry,
-      });
-      return { claimToken };
+      })
+      return { claimToken }
     } catch (err: any) {
-      if (err?.code !== 11000) throw err;
+      if (err?.code !== 11000) throw err
 
-      const existing = await this.idempotencyModel.findOne({ clinicId, key });
+      const existing = await this.idempotencyModel.findOne({ clinicId, key })
       if (!existing) {
         throw new InternalServerErrorException(
-          'Idempotency record race condition encountered.',
-        );
+          "Idempotency record race condition encountered.",
+        )
       }
 
       if (existing.requestFingerprint !== requestFingerprint) {
         throw new UnprocessableEntityException(
-          'Idempotency key was previously used with a different HTTP method, route, or request payload.',
-        );
+          "Idempotency key was previously used with a different HTTP method, route, or request payload.",
+        )
       }
 
-      if (existing.status === 'COMPLETED') {
+      if (existing.status === "COMPLETED") {
         return {
           replayed: true,
           responseCode: existing.responseCode || 200,
           responseBody: existing.responseBody,
           claimToken: existing.claimToken,
-        };
+        }
       }
 
       if (
-        existing.status === 'PROCESSING' &&
+        existing.status === "PROCESSING" &&
         existing.lockedUntil &&
         existing.lockedUntil > now
       ) {
         throw new ConflictException({
           statusCode: 409,
           message:
-            'A request with this Idempotency-Key is currently in progress.',
+            "A request with this Idempotency-Key is currently in progress.",
           retryAfterSeconds: 2,
-        });
+        })
       }
 
       // Expired lease (crash recovery) or retry of FAILED record
@@ -246,32 +243,32 @@ export class PrescriptionService {
           clinicId,
           key,
           $or: [
-            { status: 'PROCESSING', lockedUntil: { $lte: now } },
-            { status: 'FAILED' },
+            { status: "PROCESSING", lockedUntil: { $lte: now } },
+            { status: "FAILED" },
           ],
         },
         {
           $set: {
-            status: 'PROCESSING',
+            status: "PROCESSING",
             claimToken,
             lockedUntil: leaseExpiry,
             lastError: null,
           },
           $inc: { recoveryAttempts: 1 },
         },
-        { returnDocument: 'after' },
-      );
+        { returnDocument: "after" },
+      )
 
       if (!reclaimed) {
         throw new ConflictException({
           statusCode: 409,
           message:
-            'A concurrent retry claimed the processing lease. Please retry shortly.',
+            "A concurrent retry claimed the processing lease. Please retry shortly.",
           retryAfterSeconds: 2,
-        });
+        })
       }
 
-      return { claimToken };
+      return { claimToken }
     }
   }
 
@@ -285,22 +282,22 @@ export class PrescriptionService {
     claimToken: string,
     errorMessage: string,
   ): Promise<void> {
-    const sanitizedMsg = redactString(errorMessage);
+    const sanitizedMsg = redactString(errorMessage)
     await this.idempotencyModel.updateOne(
       {
         clinicId,
         key: key.trim(),
         claimToken,
-        status: 'PROCESSING',
+        status: "PROCESSING",
       },
       {
         $set: {
-          status: 'FAILED',
+          status: "FAILED",
           lastError: sanitizedMsg,
           lockedUntil: null,
         },
       },
-    );
+    )
   }
 
   /**
@@ -314,36 +311,36 @@ export class PrescriptionService {
     const updatePipeline = [
       {
         $set: {
-          seq: { $ifNull: [{ $add: ['$seq', 1] }, 101] },
-          createdAt: { $ifNull: ['$createdAt', '$$NOW'] },
-          updatedAt: '$$NOW',
+          seq: { $ifNull: [{ $add: ["$seq", 1] }, 101] },
+          createdAt: { $ifNull: ["$createdAt", "$$NOW"] },
+          updatedAt: "$$NOW",
         },
       },
-    ];
+    ]
 
     const counterDoc = await this.counterModel.findOneAndUpdate(
-      { clinicId, sequenceName: 'prescription' },
+      { clinicId, sequenceName: "prescription" },
       updatePipeline,
       {
         upsert: true,
-        returnDocument: 'after',
+        returnDocument: "after",
         updatePipeline: true,
         ...(session ? { session } : {}),
       },
-    );
+    )
 
     if (
       !counterDoc ||
-      typeof counterDoc.seq !== 'number' ||
+      typeof counterDoc.seq !== "number" ||
       !Number.isFinite(counterDoc.seq) ||
       counterDoc.seq < 101
     ) {
       throw new InternalServerErrorException(
-        'Failed to allocate valid sequential prescription number from clinic counter.',
-      );
+        "Failed to allocate valid sequential prescription number from clinic counter.",
+      )
     }
 
-    return `RX-${String(counterDoc.seq).padStart(5, '0')}`;
+    return `RX-${String(counterDoc.seq).padStart(5, "0")}`
   }
 
   /**
@@ -357,37 +354,43 @@ export class PrescriptionService {
     idempotencyKey?: string,
   ): Promise<any> {
     if (!Types.ObjectId.isValid(consultationId)) {
-      throw new NotFoundException('Invalid consultation identifier');
+      throw new NotFoundException("Invalid consultation identifier")
     }
 
     if (!dto.items || dto.items.length === 0) {
-      throw new BadRequestException('Prescription must contain at least one medicine item');
+      throw new BadRequestException(
+        "Prescription must contain at least one medicine item",
+      )
     }
 
     for (const item of dto.items) {
-      validatePrescriptionItem(item);
+      validatePrescriptionItem(item)
     }
 
-    const consultationObjId = new Types.ObjectId(consultationId);
+    const consultationObjId = new Types.ObjectId(consultationId)
 
-    let claimToken: string | undefined;
-    const normalizedRoute = `/clinics/${clinicId.toString()}/consultations/${consultationId}/prescriptions`;
+    let claimToken: string | undefined
+    const normalizedRoute = `/clinics/${clinicId.toString()}/consultations/${consultationId}/prescriptions`
 
     if (idempotencyKey && idempotencyKey.trim()) {
-      const cleanKey = idempotencyKey.trim();
-      const fingerprint = computeRequestFingerprint('POST', normalizedRoute, dto);
+      const cleanKey = idempotencyKey.trim()
+      const fingerprint = computeRequestFingerprint(
+        "POST",
+        normalizedRoute,
+        dto,
+      )
       const claim = await this.claimIdempotencyLease(
         clinicId,
         cleanKey,
-        'POST',
+        "POST",
         normalizedRoute,
         fingerprint,
-      );
+      )
 
       if (claim.replayed) {
-        return claim.responseBody;
+        return claim.responseBody
       }
-      claimToken = claim.claimToken;
+      claimToken = claim.claimToken
     }
 
     try {
@@ -397,35 +400,42 @@ export class PrescriptionService {
           // 1. Session-bound read of the Consultation under snapshot read concern
           const consultation = await this.consultationModel
             .findOne({ _id: consultationObjId, clinicId })
-            .session(session);
+            .session(session)
 
           if (!consultation) {
-            throw new NotFoundException('Consultation not found in this clinic');
+            throw new NotFoundException("Consultation not found in this clinic")
           }
           if (consultation.status !== ConsultationStatus.FINALIZED) {
             throw new ConflictException(
-              'Prescriptions can only be issued for finalized consultations.',
-            );
+              "Prescriptions can only be issued for finalized consultations.",
+            )
           }
 
           // 2. Validate Replacement or Initial Invariants
-          let oldPrescription: PrescriptionDocument | null = null;
+          let oldPrescription: PrescriptionDocument | null = null
           if (dto.replacesPrescriptionId) {
             if (!Types.ObjectId.isValid(dto.replacesPrescriptionId)) {
-              throw new NotFoundException('Invalid replacement prescription identifier');
+              throw new NotFoundException(
+                "Invalid replacement prescription identifier",
+              )
             }
-            const oldId = new Types.ObjectId(dto.replacesPrescriptionId);
+            const oldId = new Types.ObjectId(dto.replacesPrescriptionId)
             oldPrescription = await this.prescriptionModel
               .findOne({ _id: oldId, clinicId })
-              .session(session);
+              .session(session)
 
             if (!oldPrescription) {
-              throw new NotFoundException('Target prescription to replace was not found in this clinic');
+              throw new NotFoundException(
+                "Target prescription to replace was not found in this clinic",
+              )
             }
-            if (oldPrescription.consultationId.toString() !== consultationObjId.toString()) {
+            if (
+              oldPrescription.consultationId.toString() !==
+              consultationObjId.toString()
+            ) {
               throw new BadRequestException(
-                'The replaced prescription does not belong to this consultation',
-              );
+                "The replaced prescription does not belong to this consultation",
+              )
             }
             if (
               oldPrescription.status !== PrescriptionStatus.DISCONTINUED &&
@@ -433,12 +443,12 @@ export class PrescriptionService {
             ) {
               throw new ConflictException(
                 `Cannot replace an active prescription (status is '${oldPrescription.status}'). Discontinue or cancel it first.`,
-              );
+              )
             }
             if (oldPrescription.replacedByPrescriptionId) {
               throw new ConflictException(
-                'Target prescription has already been replaced by another prescription',
-              );
+                "Target prescription has already been replaced by another prescription",
+              )
             }
           } else {
             // Check for existing ACTIVE prescription on this consultation
@@ -448,12 +458,12 @@ export class PrescriptionService {
                 consultationId: consultationObjId,
                 status: PrescriptionStatus.ACTIVE,
               })
-              .session(session);
+              .session(session)
 
             if (existingActive) {
               throw new ConflictException(
-                'An active prescription already exists for this consultation. Use revision or discontinue/cancel first.',
-              );
+                "An active prescription already exists for this consultation. Use revision or discontinue/cancel first.",
+              )
             }
           }
 
@@ -468,11 +478,14 @@ export class PrescriptionService {
             diagnosis: consultation.diagnosis,
             vitals: consultation.vitals || {},
             provisionalMedicines: consultation.provisionalMedicines || [],
-          };
+          }
 
           // 4. Allocate Prescription Number in Session
-          const prescriptionNumber = await this.generatePrescriptionNumber(clinicId, session);
-          const newPrescriptionId = new Types.ObjectId();
+          const prescriptionNumber = await this.generatePrescriptionNumber(
+            clinicId,
+            session,
+          )
+          const newPrescriptionId = new Types.ObjectId()
 
           // 5. Create Immutable Revision 1
           const [newRevision] = await this.revisionModel.create(
@@ -486,14 +499,14 @@ export class PrescriptionService {
                 revisionNumber: 1,
                 reasonForRevision: oldPrescription
                   ? `Replacement for ${oldPrescription.prescriptionNumber}`
-                  : 'Initial prescription issuance',
+                  : "Initial prescription issuance",
                 items: dto.items,
                 generalAdvice: dto.generalAdvice?.trim() || null,
                 clinicalSnapshot,
               },
             ],
             { session },
-          );
+          )
 
           // 6. Create Parent Prescription Document
           const [newPrescription] = await this.prescriptionModel.create(
@@ -509,13 +522,15 @@ export class PrescriptionService {
                 currentRevisionNumber: 1,
                 latestRevisionId: newRevision._id,
                 prescribedBy: actorDoctorId,
-                replacesPrescriptionId: oldPrescription ? oldPrescription._id : null,
+                replacesPrescriptionId: oldPrescription
+                  ? oldPrescription._id
+                  : null,
                 replacedByPrescriptionId: null,
                 version: 1,
               },
             ],
             { session },
-          );
+          )
 
           // 7. If replacement: verify conditional update on old prescription
           if (oldPrescription) {
@@ -540,43 +555,44 @@ export class PrescriptionService {
                 $inc: { version: 1 },
               },
               { session },
-            );
+            )
 
             if (!updatedOld) {
               throw new ConflictException(
-                'Replacement conflict: Target prescription was concurrently modified or replaced by another request',
-              );
+                "Replacement conflict: Target prescription was concurrently modified or replaced by another request",
+              )
             }
           }
 
           // 8. Update Consultation bridge fields: assert matchedCount === 1
-          const updateConsultationResult = await this.consultationModel.updateOne(
-            {
-              _id: consultationObjId,
-              clinicId,
-              status: ConsultationStatus.FINALIZED,
-            },
-            {
-              $set: {
-                prescriptionId: newPrescription._id,
-                hasPrescription: true,
-                updatedBy: actorDoctorId,
+          const updateConsultationResult =
+            await this.consultationModel.updateOne(
+              {
+                _id: consultationObjId,
+                clinicId,
+                status: ConsultationStatus.FINALIZED,
               },
-              $inc: { version: 1 },
-            },
-            { session },
-          );
+              {
+                $set: {
+                  prescriptionId: newPrescription._id,
+                  hasPrescription: true,
+                  updatedBy: actorDoctorId,
+                },
+                $inc: { version: 1 },
+              },
+              { session },
+            )
 
           if (updateConsultationResult.matchedCount !== 1) {
             throw new ConflictException(
-              'Consultation linkage failed: Consultation is no longer finalized or not found in clinic.',
-            );
+              "Consultation linkage failed: Consultation is no longer finalized or not found in clinic.",
+            )
           }
 
           // 9. Commit Audit Log
           const action = oldPrescription
             ? ClinicAuditAction.PRESCRIPTION_REPLACED
-            : ClinicAuditAction.PRESCRIPTION_ISSUED;
+            : ClinicAuditAction.PRESCRIPTION_ISSUED
 
           await this.auditLogModel.create(
             [
@@ -593,18 +609,19 @@ export class PrescriptionService {
                   ...(oldPrescription
                     ? {
                         replacedPrescriptionId: oldPrescription._id.toString(),
-                        replacedPrescriptionNumber: oldPrescription.prescriptionNumber,
+                        replacedPrescriptionNumber:
+                          oldPrescription.prescriptionNumber,
                       }
                     : {}),
                 },
               },
             ],
             { session },
-          );
+          )
 
           const responsePayload = Object.assign(newPrescription.toObject(), {
             latestRevision: newRevision.toObject(),
-          });
+          })
 
           // 10. Fenced Idempotency Record Transition
           if (idempotencyKey && claimToken) {
@@ -613,41 +630,41 @@ export class PrescriptionService {
                 clinicId,
                 key: idempotencyKey.trim(),
                 claimToken,
-                status: 'PROCESSING',
+                status: "PROCESSING",
                 lockedUntil: { $gt: new Date() },
               },
               {
                 $set: {
-                  status: 'COMPLETED',
+                  status: "COMPLETED",
                   responseCode: 201,
                   responseBody: responsePayload,
                   lockedUntil: null,
                 },
               },
               { session },
-            );
+            )
 
             if (!fenced) {
               throw new ConflictException(
-                'Idempotency lease expired or was revoked by a concurrent retry. Transaction aborted.',
-              );
+                "Idempotency lease expired or was revoked by a concurrent retry. Transaction aborted.",
+              )
             }
           }
 
-          return responsePayload;
+          return responsePayload
         },
         { isRetryableError: isCounterInitializationRace },
-      );
+      )
     } catch (err: any) {
       if (idempotencyKey && claimToken) {
         await this.updateIdempotencyToFailed(
           clinicId,
           idempotencyKey,
           claimToken,
-          err?.message || 'Transaction aborted',
-        );
+          err?.message || "Transaction aborted",
+        )
       }
-      throw err;
+      throw err
     }
   }
 
@@ -662,69 +679,73 @@ export class PrescriptionService {
     idempotencyKey?: string,
   ): Promise<any> {
     if (!Types.ObjectId.isValid(prescriptionId)) {
-      throw new NotFoundException('Invalid prescription identifier');
+      throw new NotFoundException("Invalid prescription identifier")
     }
 
     if (!dto.items || dto.items.length === 0) {
-      throw new BadRequestException('Revised prescription must contain at least one medicine item');
+      throw new BadRequestException(
+        "Revised prescription must contain at least one medicine item",
+      )
     }
 
     for (const item of dto.items) {
-      validatePrescriptionItem(item);
+      validatePrescriptionItem(item)
     }
 
-    const prescriptionObjId = new Types.ObjectId(prescriptionId);
+    const prescriptionObjId = new Types.ObjectId(prescriptionId)
 
-    let claimToken: string | undefined;
-    const normalizedRoute = `/clinics/${clinicId.toString()}/prescriptions/${prescriptionId}/revisions`;
+    let claimToken: string | undefined
+    const normalizedRoute = `/clinics/${clinicId.toString()}/prescriptions/${prescriptionId}/revisions`
 
     if (idempotencyKey && idempotencyKey.trim()) {
-      const cleanKey = idempotencyKey.trim();
-      const fingerprint = computeRequestFingerprint('POST', normalizedRoute, dto);
+      const cleanKey = idempotencyKey.trim()
+      const fingerprint = computeRequestFingerprint(
+        "POST",
+        normalizedRoute,
+        dto,
+      )
       const claim = await this.claimIdempotencyLease(
         clinicId,
         cleanKey,
-        'POST',
+        "POST",
         normalizedRoute,
         fingerprint,
-      );
+      )
 
       if (claim.replayed) {
-        return claim.responseBody;
+        return claim.responseBody
       }
-      claimToken = claim.claimToken;
+      claimToken = claim.claimToken
     }
 
     try {
       return await executeInTransaction(this.connection, async (session) => {
         const parent = await this.prescriptionModel
           .findOne({ _id: prescriptionObjId, clinicId })
-          .session(session);
+          .session(session)
 
         if (!parent) {
-          throw new NotFoundException('Prescription not found in this clinic');
+          throw new NotFoundException("Prescription not found in this clinic")
         }
 
         if (parent.status === PrescriptionStatus.DISCONTINUED) {
           throw new ConflictException(
-            'Cannot revise a discontinued prescription. Issue a replacement instead.',
-          );
+            "Cannot revise a discontinued prescription. Issue a replacement instead.",
+          )
         }
         if (parent.status === PrescriptionStatus.CANCELLED) {
-          throw new ConflictException(
-            'Cannot revise a cancelled prescription.',
-          );
+          throw new ConflictException("Cannot revise a cancelled prescription.")
         }
 
         if (parent.currentRevisionNumber !== dto.expectedRevisionNumber) {
           throw new ConflictException(
             `Optimistic lock conflict: Prescription revision sequence was modified (expected: ${dto.expectedRevisionNumber}, current: ${parent.currentRevisionNumber}).`,
-          );
+          )
         }
         if (parent.version !== dto.expectedVersion) {
           throw new ConflictException(
             `Optimistic lock conflict: Prescription document version mismatch (expected: ${dto.expectedVersion}, current: ${parent.version}).`,
-          );
+          )
         }
 
         // Fetch previous revision to carry forward the clinical snapshot
@@ -733,16 +754,16 @@ export class PrescriptionService {
             prescriptionId: parent._id,
             revisionNumber: parent.currentRevisionNumber,
           })
-          .session(session);
+          .session(session)
 
         if (!previousRevision) {
           throw new InternalServerErrorException(
-            'Previous prescription revision could not be loaded.',
-          );
+            "Previous prescription revision could not be loaded.",
+          )
         }
 
-        const newRevisionId = new Types.ObjectId();
-        const nextRevisionNumber = parent.currentRevisionNumber + 1;
+        const newRevisionId = new Types.ObjectId()
+        const nextRevisionNumber = parent.currentRevisionNumber + 1
 
         // 1. Insert new immutable revision
         const [newRevision] = await this.revisionModel.create(
@@ -762,7 +783,7 @@ export class PrescriptionService {
             },
           ],
           { session },
-        );
+        )
 
         // 2. Conditional optimistic update on parent prescription
         const updatedParent = await this.prescriptionModel.findOneAndUpdate(
@@ -781,13 +802,13 @@ export class PrescriptionService {
             },
             $inc: { version: 1 },
           },
-          { returnDocument: 'after', session },
-        );
+          { returnDocument: "after", session },
+        )
 
         if (!updatedParent) {
           throw new ConflictException(
-            'Optimistic lock conflict: Prescription parent document was modified by another session.',
-          );
+            "Optimistic lock conflict: Prescription parent document was modified by another session.",
+          )
         }
 
         // 3. Commit Audit Log
@@ -806,11 +827,11 @@ export class PrescriptionService {
             },
           ],
           { session },
-        );
+        )
 
         const responsePayload = Object.assign(updatedParent.toObject(), {
           latestRevision: newRevision.toObject(),
-        });
+        })
 
         // 4. Fenced Idempotency Completion
         if (idempotencyKey && claimToken) {
@@ -819,39 +840,39 @@ export class PrescriptionService {
               clinicId,
               key: idempotencyKey.trim(),
               claimToken,
-              status: 'PROCESSING',
+              status: "PROCESSING",
               lockedUntil: { $gt: new Date() },
             },
             {
               $set: {
-                status: 'COMPLETED',
+                status: "COMPLETED",
                 responseCode: 201,
                 responseBody: responsePayload,
                 lockedUntil: null,
               },
             },
             { session },
-          );
+          )
 
           if (!fenced) {
             throw new ConflictException(
-              'Idempotency lease expired or revoked during revision. Transaction aborted.',
-            );
+              "Idempotency lease expired or revoked during revision. Transaction aborted.",
+            )
           }
         }
 
-        return responsePayload;
-      });
+        return responsePayload
+      })
     } catch (err: any) {
       if (idempotencyKey && claimToken) {
         await this.updateIdempotencyToFailed(
           clinicId,
           idempotencyKey,
           claimToken,
-          err?.message || 'Transaction aborted',
-        );
+          err?.message || "Transaction aborted",
+        )
       }
-      throw err;
+      throw err
     }
   }
 
@@ -866,55 +887,61 @@ export class PrescriptionService {
     idempotencyKey?: string,
   ): Promise<any> {
     if (!Types.ObjectId.isValid(prescriptionId)) {
-      throw new NotFoundException('Invalid prescription identifier');
+      throw new NotFoundException("Invalid prescription identifier")
     }
 
-    const prescriptionObjId = new Types.ObjectId(prescriptionId);
+    const prescriptionObjId = new Types.ObjectId(prescriptionId)
 
-    let claimToken: string | undefined;
-    const normalizedRoute = `/clinics/${clinicId.toString()}/prescriptions/${prescriptionId}/discontinue`;
+    let claimToken: string | undefined
+    const normalizedRoute = `/clinics/${clinicId.toString()}/prescriptions/${prescriptionId}/discontinue`
 
     if (idempotencyKey && idempotencyKey.trim()) {
-      const cleanKey = idempotencyKey.trim();
-      const fingerprint = computeRequestFingerprint('POST', normalizedRoute, dto);
+      const cleanKey = idempotencyKey.trim()
+      const fingerprint = computeRequestFingerprint(
+        "POST",
+        normalizedRoute,
+        dto,
+      )
       const claim = await this.claimIdempotencyLease(
         clinicId,
         cleanKey,
-        'POST',
+        "POST",
         normalizedRoute,
         fingerprint,
-      );
+      )
 
       if (claim.replayed) {
-        return claim.responseBody;
+        return claim.responseBody
       }
-      claimToken = claim.claimToken;
+      claimToken = claim.claimToken
     }
 
     try {
       return await executeInTransaction(this.connection, async (session) => {
         const prescription = await this.prescriptionModel
           .findOne({ _id: prescriptionObjId, clinicId })
-          .session(session);
+          .session(session)
 
         if (!prescription) {
-          throw new NotFoundException('Prescription not found in this clinic');
+          throw new NotFoundException("Prescription not found in this clinic")
         }
 
         if (prescription.status === PrescriptionStatus.DISCONTINUED) {
-          throw new ConflictException('Prescription is already discontinued.');
+          throw new ConflictException("Prescription is already discontinued.")
         }
         if (prescription.status === PrescriptionStatus.CANCELLED) {
-          throw new ConflictException('Cancelled prescriptions cannot be discontinued.');
+          throw new ConflictException(
+            "Cancelled prescriptions cannot be discontinued.",
+          )
         }
 
         const query: Record<string, any> = {
           _id: prescription._id,
           clinicId,
           status: PrescriptionStatus.ACTIVE,
-        };
+        }
         if (dto.expectedVersion) {
-          query.version = dto.expectedVersion;
+          query.version = dto.expectedVersion
         }
 
         const updated = await this.prescriptionModel.findOneAndUpdate(
@@ -929,13 +956,13 @@ export class PrescriptionService {
             },
             $inc: { version: 1 },
           },
-          { returnDocument: 'after', session },
-        );
+          { returnDocument: "after", session },
+        )
 
         if (!updated) {
           throw new ConflictException(
-            'Prescription could not be discontinued (concurrent update or version conflict).',
-          );
+            "Prescription could not be discontinued (concurrent update or version conflict).",
+          )
         }
 
         await this.auditLogModel.create(
@@ -952,9 +979,9 @@ export class PrescriptionService {
             },
           ],
           { session },
-        );
+        )
 
-        const responsePayload = updated.toObject();
+        const responsePayload = updated.toObject()
 
         if (idempotencyKey && claimToken) {
           const fenced = await this.idempotencyModel.findOneAndUpdate(
@@ -962,39 +989,39 @@ export class PrescriptionService {
               clinicId,
               key: idempotencyKey.trim(),
               claimToken,
-              status: 'PROCESSING',
+              status: "PROCESSING",
               lockedUntil: { $gt: new Date() },
             },
             {
               $set: {
-                status: 'COMPLETED',
+                status: "COMPLETED",
                 responseCode: 200,
                 responseBody: responsePayload,
                 lockedUntil: null,
               },
             },
             { session },
-          );
+          )
 
           if (!fenced) {
             throw new ConflictException(
-              'Idempotency lease expired. Transaction aborted.',
-            );
+              "Idempotency lease expired. Transaction aborted.",
+            )
           }
         }
 
-        return responsePayload;
-      });
+        return responsePayload
+      })
     } catch (err: any) {
       if (idempotencyKey && claimToken) {
         await this.updateIdempotencyToFailed(
           clinicId,
           idempotencyKey,
           claimToken,
-          err?.message || 'Transaction aborted',
-        );
+          err?.message || "Transaction aborted",
+        )
       }
-      throw err;
+      throw err
     }
   }
 
@@ -1011,32 +1038,32 @@ export class PrescriptionService {
     dto: CancelPrescriptionDto,
   ): Promise<{ message: string }> {
     if (!Types.ObjectId.isValid(prescriptionId)) {
-      throw new NotFoundException('Invalid prescription identifier');
+      throw new NotFoundException("Invalid prescription identifier")
     }
 
     const prescription = await this.prescriptionModel.findOne({
       _id: new Types.ObjectId(prescriptionId),
       clinicId,
-    });
+    })
 
     if (!prescription) {
-      throw new NotFoundException('Prescription not found in this clinic');
+      throw new NotFoundException("Prescription not found in this clinic")
     }
 
     // 1. AUTHORIZE FIRST: Enforce authorization before inspecting/revealing status
     const isPrescribingDoctor =
-      prescription.prescribedBy.toString() === actorDoctorId.toString();
-    const isClinicOwner = actorRole === ClinicRole.OWNER;
+      prescription.prescribedBy.toString() === actorDoctorId.toString()
+    const isClinicOwner = actorRole === ClinicRole.OWNER
 
     if (!isPrescribingDoctor && !isClinicOwner) {
       throw new ForbiddenException(
-        'You are not authorized to cancel a prescription issued by another doctor.',
-      );
+        "You are not authorized to cancel a prescription issued by another doctor.",
+      )
     }
 
     // 2. Short-circuit idempotently if already cancelled (Authorized callers only)
     if (prescription.status === PrescriptionStatus.CANCELLED) {
-      return { message: 'Prescription is already cancelled.' };
+      return { message: "Prescription is already cancelled." }
     }
 
     return executeInTransaction(this.connection, async (session) => {
@@ -1044,9 +1071,9 @@ export class PrescriptionService {
         _id: prescription._id,
         clinicId,
         status: PrescriptionStatus.ACTIVE,
-      };
+      }
       if (dto.expectedVersion) {
-        query.version = dto.expectedVersion;
+        query.version = dto.expectedVersion
       }
 
       const updated = await this.prescriptionModel.findOneAndUpdate(
@@ -1061,13 +1088,13 @@ export class PrescriptionService {
           },
           $inc: { version: 1 },
         },
-        { returnDocument: 'after', session },
-      );
+        { returnDocument: "after", session },
+      )
 
       if (!updated) {
         throw new ConflictException(
-          'Prescription cannot be cancelled (it was concurrently modified, discontinued, or cancelled).',
-        );
+          "Prescription cannot be cancelled (it was concurrently modified, discontinued, or cancelled).",
+        )
       }
 
       await this.auditLogModel.create(
@@ -1087,10 +1114,10 @@ export class PrescriptionService {
           },
         ],
         { session },
-      );
+      )
 
-      return { message: 'Prescription successfully cancelled.' };
-    });
+      return { message: "Prescription successfully cancelled." }
+    })
   }
 
   /**
@@ -1102,37 +1129,43 @@ export class PrescriptionService {
     revisionNumber?: number,
   ): Promise<any> {
     if (!Types.ObjectId.isValid(prescriptionId)) {
-      throw new NotFoundException('Invalid prescription identifier');
+      throw new NotFoundException("Invalid prescription identifier")
     }
 
     const prescription = await this.prescriptionModel.findOne({
       _id: new Types.ObjectId(prescriptionId),
       clinicId,
-    });
+    })
 
     if (!prescription) {
-      throw new NotFoundException('Prescription not found in this clinic');
+      throw new NotFoundException("Prescription not found in this clinic")
     }
 
-    const targetRevNumber = revisionNumber || prescription.currentRevisionNumber;
+    const targetRevNumber = revisionNumber || prescription.currentRevisionNumber
     const revision = await this.revisionModel.findOne({
       prescriptionId: prescription._id,
       revisionNumber: targetRevNumber,
-    });
+    })
 
     if (!revision) {
-      throw new NotFoundException(`Prescription revision ${targetRevNumber} not found`);
+      throw new NotFoundException(
+        `Prescription revision ${targetRevNumber} not found`,
+      )
     }
 
     // Dynamic Demographics Resolution from Patient Domain
     const patient = await this.patientModel.findOne({
       _id: prescription.patientId,
       clinicId,
-    });
+    })
 
     const dynamicAge = patient
-      ? computePatientCurrentAge(patient, 'Asia/Kolkata', prescription.createdAt)
-      : null;
+      ? computePatientCurrentAge(
+          patient,
+          "Asia/Kolkata",
+          prescription.createdAt,
+        )
+      : null
 
     return Object.assign(prescription.toObject(), {
       patient: patient
@@ -1154,7 +1187,7 @@ export class PrescriptionService {
         : null,
       latestRevision: revision.toObject(),
       revision: revision.toObject(),
-    });
+    })
   }
 
   /**
@@ -1165,22 +1198,22 @@ export class PrescriptionService {
     prescriptionId: string,
   ): Promise<any[]> {
     if (!Types.ObjectId.isValid(prescriptionId)) {
-      throw new NotFoundException('Invalid prescription identifier');
+      throw new NotFoundException("Invalid prescription identifier")
     }
 
     const prescription = await this.prescriptionModel.findOne({
       _id: new Types.ObjectId(prescriptionId),
       clinicId,
-    });
+    })
 
     if (!prescription) {
-      throw new NotFoundException('Prescription not found in this clinic');
+      throw new NotFoundException("Prescription not found in this clinic")
     }
 
     return this.revisionModel
       .find({ prescriptionId: prescription._id, clinicId })
       .sort({ revisionNumber: 1 })
-      .exec();
+      .exec()
   }
 
   /**
@@ -1191,20 +1224,22 @@ export class PrescriptionService {
     consultationId: string,
   ): Promise<any> {
     if (!Types.ObjectId.isValid(consultationId)) {
-      throw new NotFoundException('Invalid consultation identifier');
+      throw new NotFoundException("Invalid consultation identifier")
     }
 
     const prescription = await this.prescriptionModel.findOne({
       clinicId,
       consultationId: new Types.ObjectId(consultationId),
       status: PrescriptionStatus.ACTIVE,
-    });
+    })
 
     if (!prescription) {
-      throw new NotFoundException('No active prescription found for this consultation');
+      throw new NotFoundException(
+        "No active prescription found for this consultation",
+      )
     }
 
-    return this.getPrescriptionById(clinicId, prescription._id.toString());
+    return this.getPrescriptionById(clinicId, prescription._id.toString())
   }
 
   /**
@@ -1214,21 +1249,21 @@ export class PrescriptionService {
     clinicId: Types.ObjectId,
     query: QueryPrescriptionsDto,
   ): Promise<{ data: any[]; total: number; page: number; limit: number }> {
-    const filter: Record<string, any> = { clinicId };
+    const filter: Record<string, any> = { clinicId }
 
     if (query.patientId && Types.ObjectId.isValid(query.patientId)) {
-      filter.patientId = new Types.ObjectId(query.patientId);
+      filter.patientId = new Types.ObjectId(query.patientId)
     }
     if (query.consultationId && Types.ObjectId.isValid(query.consultationId)) {
-      filter.consultationId = new Types.ObjectId(query.consultationId);
+      filter.consultationId = new Types.ObjectId(query.consultationId)
     }
     if (query.status) {
-      filter.status = query.status;
+      filter.status = query.status
     }
 
-    const page = query.page || 1;
-    const limit = query.limit || 20;
-    const skip = (page - 1) * limit;
+    const page = query.page || 1
+    const limit = query.limit || 20
+    const skip = (page - 1) * limit
 
     const [data, total] = await Promise.all([
       this.prescriptionModel
@@ -1238,13 +1273,13 @@ export class PrescriptionService {
         .limit(limit)
         .exec(),
       this.prescriptionModel.countDocuments(filter),
-    ]);
+    ])
 
     return {
       data,
       total,
       page,
       limit,
-    };
+    }
   }
 }

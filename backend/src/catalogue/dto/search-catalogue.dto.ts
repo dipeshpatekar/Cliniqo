@@ -1,67 +1,60 @@
-import {
-  IsString,
-  IsOptional,
-  IsEnum,
-  IsInt,
-  Min,
-  Max,
-} from 'class-validator';
-import { Type } from 'class-transformer';
+import { IsString, IsOptional, IsEnum, IsInt, Min, Max } from "class-validator"
+import { Type } from "class-transformer"
 
 export enum CatalogueSearchType {
-  ALL = 'all',
-  BRAND = 'brand',
-  GENERIC = 'generic',
+  ALL = "all",
+  BRAND = "brand",
+  GENERIC = "generic",
 }
 
 export class SearchCatalogueDto {
   @IsString()
-  q: string;
+  q: string
 
   @IsOptional()
   @IsEnum(CatalogueSearchType)
-  type?: CatalogueSearchType = CatalogueSearchType.ALL;
+  type?: CatalogueSearchType = CatalogueSearchType.ALL
 
   @IsOptional()
   @IsString()
-  formulation?: string;
+  formulation?: string
 
   @IsOptional()
   @IsString()
-  releaseType?: string;
+  releaseType?: string
 
   @IsOptional()
   @Type(() => Number)
   @IsInt()
   @Min(1)
   @Max(100)
-  limit?: number = 20;
+  limit?: number = 20
 
   @IsOptional()
   @Type(() => Number)
   @IsInt()
   @Min(1)
-  page?: number = 1;
+  page?: number = 1
 }
 
 export class GetStrengthsQueryDto {
   @IsString()
-  name: string;
+  name: string
 
   @IsOptional()
   @IsString()
-  formulation?: string;
+  formulation?: string
 }
 
 export class CatalogueFeedQueryDto {
   @IsOptional()
   @IsString()
-  cursor?: string;
+  cursor?: string
 
   @IsOptional()
   @Type(() => Number)
   @IsInt()
   @Min(1)
   @Max(500)
-  limit?: number = 100;
+  limit?: number = 100
 }

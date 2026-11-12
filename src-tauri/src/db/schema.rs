@@ -419,6 +419,16 @@ DROP TABLE IF EXISTS local_catalogue_cache_v1;
 DROP TABLE IF EXISTS local_catalogue_sync_state_v1;
 "#;
 
+/// Migration V12: Sequential patient ID counters per clinic (format AAA-0001 ... ZZZ-9999).
+pub const MIGRATION_V12_SQL: &str = r#"
+CREATE TABLE IF NOT EXISTS local_seq_counters (
+    clinic_id TEXT NOT NULL,
+    sequence_name TEXT NOT NULL,
+    last_seq INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (clinic_id, sequence_name)
+);
+"#;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DoctorProfileRecord {
     pub doctor_id: String,
@@ -496,6 +506,8 @@ pub struct PatientRecord {
     pub server_version: i32,
     pub local_version: i32,
     pub updated_at: String,
+    #[serde(default)]
+    pub last_visit: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

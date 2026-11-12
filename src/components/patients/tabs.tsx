@@ -1,7 +1,20 @@
 import { Button, StatusPill } from "../common"
 import { cn } from "../../utils/cn"
-import type { Page, Patient } from "../../types"
-import type { DesktopSessionContext } from "../../desktop/desktop-bridge"
+import { analyzeAllergies } from "../../utils/allergy"
+import {
+  formatDateDDMMYYYY,
+  formatIndiaDateTime,
+  formatPatientAge,
+  formatPatientGender,
+  getPublicPatientId,
+  type Page,
+  type Patient,
+} from "../../types"
+import type {
+  DesktopSessionContext,
+  LocalConsultationRecord,
+  LocalPrescriptionRecord,
+} from "../../desktop/desktop-bridge"
 import {
   ClipboardList,
   FileText,
@@ -14,10 +27,14 @@ export function OverviewTab({
   go,
   patient,
   hasHistory,
+  consultations = [],
+  prescriptions = [],
 }: {
   go: (page: Page) => void
   patient: Patient
   hasHistory: boolean
+  consultations?: LocalConsultationRecord[]
+  prescriptions?: LocalPrescriptionRecord[]
 }) {
   return (
     <div className="profile-grid">
@@ -25,7 +42,6 @@ export function OverviewTab({
         <div className="panel-head">
           <div>
             <h2>Patient details</h2>
-            <p>Demographic information</p>
           </div>
           <button className="text-btn" onClick={() => go("patient-form")}>
             Edit
@@ -34,11 +50,11 @@ export function OverviewTab({
         <dl className="details-list">
           <div>
             <dt>Age</dt>
-            <dd>{patient.age} years</dd>
+            <dd>{formatPatientAge(patient.age, "years")}</dd>
           </div>
           <div>
             <dt>Gender</dt>
-            <dd>{patient.gender}</dd>
+            <dd>{formatPatientGender(patient.gender)}</dd>
           </div>
           <div>
             <dt>Phone</dt>
@@ -46,12 +62,40 @@ export function OverviewTab({
           </div>
           <div>
             <dt>Patient ID</dt>
-            <dd>{patient.id}</dd>
+            <dd>{getPublicPatientId(patient)}</dd>
           </div>
+          {patient.registeredAt && (
+            <div>
+              <dt>Registered</dt>
+              <dd>{formatIndiaDateTime(patient.registeredAt)}</dd>
+            </div>
+          )}
+          {patient.dateOfBirth && (
+            <div>
+              <dt>Date of birth</dt>
+              <dd>{formatDateDDMMYYYY(patient.dateOfBirth)}</dd>
+            </div>
+          )}
+          {patient.alternatePhone && (
+            <div>
+              <dt>Alternate phone</dt>
+              <dd>{patient.alternatePhone}</dd>
+            </div>
+          )}
+          {patient.address && (
+            <div className="wide">
+              <dt>Address</dt>
+              <dd>{patient.address}</dd>
+            </div>
+          )}
           <div className="wide">
             <dt>Consultation status</dt>
             <dd>
-              {hasHistory ? patient.lastVisit : "No consultations recorded"}
+              {consultations.length > 0
+                ? `Last visit: ${formatDateDDMMYYYY(consultations[0].consultation_date) || consultations[0].consultation_date || "Recorded"}`
+                : hasHistory
+                  ? formatDateDDMMYYYY(patient.lastVisit) || patient.lastVisit
+                  : "No consultations recorded"}
             </dd>
           </div>
         </dl>
@@ -60,14 +104,18 @@ export function OverviewTab({
         <div className="panel-head">
           <div>
             <h2>Clinical background</h2>
-            <p>Persistent across consultations</p>
           </div>
         </div>
         <div className="clinical-item">
           <span>Known allergies</span>
-          <strong className={patient.allergies.length > 0 ? "danger-text" : ""}>
-            {patient.allergies.join(", ") || "None recorded"}
-          </strong>
+          {(() => {
+            const allergyAnalysis = analyzeAllergies(patient.allergies)
+            return (
+              <strong className={allergyAnalysis.hasGenuineAllergies ? "danger-text" : ""}>
+                {allergyAnalysis.displayLabel}
+              </strong>
+            )
+          })()}
         </div>
         <div className="clinical-item">
           <span>Medical conditions</span>
@@ -75,7 +123,13 @@ export function OverviewTab({
         </div>
         <div className="clinical-item">
           <span>Current medicines</span>
-          <strong>None recorded</strong>
+          <strong>
+            {prescriptions.length > 0
+              ? `${prescriptions.length} active ${
+                  prescriptions.length === 1 ? "prescription" : "prescriptions"
+                }`
+              : "None recorded"}
+          </strong>
         </div>
         <div className="clinical-item">
           <span>Family history</span>
@@ -86,13 +140,44 @@ export function OverviewTab({
         <div className="panel-head">
           <div>
             <h2>Recent clinical activity</h2>
-            <p>Consultations and prescriptions</p>
           </div>
           <button className="text-btn" onClick={() => go("consultation")}>
             New consultation
           </button>
         </div>
-        {hasHistory ? (
+        {consultations.length > 0 ? (
+          consultations.slice(0, 3).map((entry, index) => {
+            const isDraft = entry.status === "DRAFT"
+            const dateStr =
+              formatDateDDMMYYYY(entry.consultation_date || entry.updated_at) ||
+              "Recorded"
+            return (
+              <div className="timeline-row" key={entry.id}>
+                <span className={cn("timeline-icon", isDraft && "draft")}>
+                  <FileText size={16} />
+                </span>
+                <div>
+                  <strong>
+                    {isDraft ? "Consultation draft" : "Consultation finalized"}
+                  </strong>
+                  <p>
+                    {entry.diagnosis ||
+                      entry.chief_complaint ||
+                      "Clinical notes recorded"}
+                  </p>
+                </div>
+                <time>{dateStr}</time>
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  onClick={() => go(isDraft ? "consultation" : "preview")}
+                >
+                  {isDraft ? "Resume" : "Review"}
+                </Button>
+              </div>
+            )
+          })
+        ) : hasHistory ? (
           [
             [
               "Today",
@@ -100,11 +185,11 @@ export function OverviewTab({
               "Clinical notes saved · Not finalized",
             ],
             [
-              "12 Mar 2025",
+              "12/03/2025",
               "Consultation finalized",
               "Prescription revision 1 · Delivered",
             ],
-            ["18 Nov 2024", "Consultation finalized", "Printed at clinic"],
+            ["18/11/2024", "Consultation finalized", "Printed at clinic"],
           ].map((entry, index) => (
             <div className="timeline-row" key={entry[0]}>
               <span className={cn("timeline-icon", index === 0 && "draft")}>
@@ -168,21 +253,34 @@ export function HistoryTab({ patient }: { patient: Patient }) {
       </div>
       <div className="history-block">
         <h2>Allergy record</h2>
-        <p>
-          {patient.allergies.length > 0
-            ? patient.allergies.map((allergy) => (
-                <StatusPill key={allergy} tone="danger">
-                  {allergy}
-                </StatusPill>
-              ))
-            : "No known allergies recorded."}
-        </p>
-        {patient.allergies.length > 0 && (
-          <small>
-            Reaction details not recorded. Confirm with patient before
-            prescribing.
-          </small>
-        )}
+        {(() => {
+          const allergyAnalysis = analyzeAllergies(patient.allergies)
+          return (
+            <>
+              <p>
+                {allergyAnalysis.hasGenuineAllergies ? (
+                  allergyAnalysis.genuineAllergies.map((allergy) => (
+                    <StatusPill key={allergy} tone="danger">
+                      {allergy}
+                    </StatusPill>
+                  ))
+                ) : allergyAnalysis.isNoKnownAllergies ? (
+                  <StatusPill tone="success">No known allergies</StatusPill>
+                ) : allergyAnalysis.isUnknown ? (
+                  <StatusPill tone="warning">Unknown (not allergy-free)</StatusPill>
+                ) : (
+                  "No known allergies recorded."
+                )}
+              </p>
+              {allergyAnalysis.hasGenuineAllergies && (
+                <small>
+                  Reaction details not recorded. Confirm with patient before
+                  prescribing.
+                </small>
+              )}
+            </>
+          )
+        })()}
       </div>
     </section>
   )
@@ -190,11 +288,17 @@ export function HistoryTab({ patient }: { patient: Patient }) {
 
 export function ConsultationsTab({
   go,
+  patient,
   hasHistory,
+  consultations = [],
+  loading = false,
   desktopSession,
 }: {
   go: (page: Page) => void
-  hasHistory: boolean
+  patient?: Patient
+  hasHistory?: boolean
+  consultations?: LocalConsultationRecord[]
+  loading?: boolean
   desktopSession?: DesktopSessionContext | null
 }) {
   return (
@@ -202,17 +306,49 @@ export function ConsultationsTab({
       <div className="panel-head">
         <div>
           <h2>Consultation history</h2>
-          <p>Finalized visits cannot be overwritten</p>
         </div>
         <Button size="sm" onClick={() => go("consultation")} icon={Plus}>
           New consultation
         </Button>
       </div>
-      {hasHistory ? (
+      {loading ? (
+        <div className="p-8 text-center text-slate-500 dark:text-slate-400">
+          <p className="text-sm">Loading encrypted consultation records...</p>
+        </div>
+      ) : consultations.length > 0 ? (
+        consultations.map((c) => {
+          const dateStr =
+            formatDateDDMMYYYY(c.consultation_date || c.updated_at) ||
+            "Recorded"
+          const isDraft = c.status === "DRAFT"
+          return (
+            <button
+              key={c.id}
+              onClick={() => go(isDraft ? "consultation" : "preview")}
+            >
+              <span className="record-icon">
+                <ClipboardList size={18} />
+              </span>
+              <span>
+                <strong>
+                  {c.diagnosis || c.chief_complaint || "Clinical consultation"}
+                </strong>
+                <small>
+                  {desktopSession?.doctor_name || "Doctor"} · {dateStr}
+                </small>
+              </span>
+              <StatusPill tone={isDraft ? "warning" : "success"}>
+                {isDraft ? "Draft" : "Finalized"}
+              </StatusPill>
+              <ChevronRight size={17} />
+            </button>
+          )
+        })
+      ) : hasHistory ? (
         [
           ["Today", "Draft", "Follow-up visit"],
-          ["12 Mar 2025", "Finalized", "New consultation"],
-          ["18 Nov 2024", "Finalized", "Routine consultation"],
+          ["12/03/2025", "Finalized", "New consultation"],
+          ["18/11/2024", "Routine consultation", "Routine consultation"],
         ].map((r) => (
           <button
             key={r[0]}
@@ -223,7 +359,9 @@ export function ConsultationsTab({
             </span>
             <span>
               <strong>{r[2]}</strong>
-              <small>{desktopSession?.doctor_name || "Doctor"} · {r[0]}</small>
+              <small>
+                {desktopSession?.doctor_name || "Doctor"} · {r[0]}
+              </small>
             </span>
             <StatusPill tone={r[1] === "Draft" ? "warning" : "success"}>
               {r[1]}
@@ -244,24 +382,71 @@ export function ConsultationsTab({
 
 export function PrescriptionsTab({
   go,
+  patient,
   hasHistory,
+  prescriptions = [],
+  loading = false,
+  desktopSession,
 }: {
   go: (page: Page) => void
-  hasHistory: boolean
+  patient?: Patient
+  hasHistory?: boolean
+  prescriptions?: LocalPrescriptionRecord[]
+  loading?: boolean
+  desktopSession?: DesktopSessionContext | null
 }) {
   return (
     <section className="panel record-list">
       <div className="panel-head">
         <div>
           <h2>Prescription history</h2>
-          <p>Finalized records and tracked revisions</p>
         </div>
       </div>
-      {hasHistory ? (
+      {loading ? (
+        <div className="p-8 text-center text-slate-500 dark:text-slate-400">
+          <p className="text-sm">Loading encrypted prescription records...</p>
+        </div>
+      ) : prescriptions.length > 0 ? (
+        prescriptions.map((r) => {
+          const dateStr = r.created_at
+            ? formatDateDDMMYYYY(r.created_at)
+            : "Finalized"
+          const revLabel =
+            r.revision_number > 1 ? `Revision ${r.revision_number}` : "Original"
+          let itemCount = 0
+          try {
+            if (r.items_json) {
+              const parsed = JSON.parse(r.items_json)
+              itemCount = Array.isArray(parsed) ? parsed.length : 0
+            }
+          } catch {}
+
+          return (
+            <button key={r.id} onClick={() => go("preview")}>
+              <span className="record-icon">
+                <FileText size={18} />
+              </span>
+              <span>
+                <strong>
+                  {r.prescription_number} · {revLabel}
+                </strong>
+                <small>
+                  Finalized {dateStr} · {itemCount}{" "}
+                  {itemCount === 1 ? "medicine" : "medicines"}
+                </small>
+              </span>
+              <StatusPill tone="success">
+                {r.status === "ACTIVE" ? "Finalized" : r.status}
+              </StatusPill>
+              <ChevronRight size={17} />
+            </button>
+          )
+        })
+      ) : hasHistory ? (
         [
-          ["12 Mar 2025", "Revision 1", "Delivered"],
-          ["18 Nov 2024", "Original", "Printed"],
-          ["03 Jul 2024", "Original", "Delivered"],
+          ["12/03/2025", "Revision 1", "Delivered"],
+          ["18/11/2024", "Original", "Printed"],
+          ["03/07/2024", "Original", "Delivered"],
         ].map((r) => (
           <button key={r[0]} onClick={() => go("preview")}>
             <span className="record-icon">

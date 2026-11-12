@@ -1,6 +1,7 @@
-import { useState } from "react"
+import { useCallback, useEffect, useState } from "react"
 import { Button, ConfirmDialog, IconButton } from "../common"
 import { AppHeader } from "../layout"
+import { analyzeAllergies } from "../../utils/allergy"
 import { InvoicesTab } from "./InvoicesTab"
 import {
   OverviewTab,
@@ -8,10 +9,23 @@ import {
   ConsultationsTab,
   PrescriptionsTab,
 } from "./tabs"
-import type { Page, Patient } from "../../types"
-import type {
-  DesktopSessionContext,
-  LocalInvoiceRecord,
+import {
+  formatDateDDMMYYYY,
+  formatDateTimeDDMMYYYY,
+  formatIndiaDateTime,
+  formatPatientAgeGender,
+  getPublicPatientId,
+  type Page,
+  type Patient,
+} from "../../types"
+import {
+  isTauriDesktop,
+  getLocalConsultations,
+  getLocalPrescriptions,
+  type DesktopSessionContext,
+  type LocalConsultationRecord,
+  type LocalInvoiceRecord,
+  type LocalPrescriptionRecord,
 } from "../../desktop/desktop-bridge"
 import {
   AlertCircle,
@@ -34,6 +48,7 @@ export function PatientProfile({
   onOpenConflictResolution,
   desktopSession,
   onStartBill,
+  onStartConsultation,
 }: {
   go: (page: Page) => void
   patient: Patient
@@ -42,13 +57,71 @@ export function PatientProfile({
   onOpenConflictResolution?: (patientId: string) => void
   desktopSession?: DesktopSessionContext | null
   onStartBill?: (patient: Patient, invoice?: LocalInvoiceRecord) => void
+  onStartConsultation?: (patient: Patient) => void
 }) {
   const [tab, setTab] = useState("Overview")
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
   const [isDeleting, setIsDeleting] = useState(false)
+  const [consultations, setConsultations] = useState<LocalConsultationRecord[]>(
+    [],
+  )
+  const [prescriptions, setPrescriptions] = useState<LocalPrescriptionRecord[]>(
+    [],
+  )
+  const [loadingHistory, setLoadingHistory] = useState(false)
 
-  const allergyLabel = patient.allergies.join(", ")
-  const hasHistory = patient.lastVisit !== "No visits yet"
+  const allergyAnalysis = analyzeAllergies(patient.allergies)
+  const allergyLabel = allergyAnalysis.displayLabel
+
+  const loadHistory = useCallback(async () => {
+    if (isTauriDesktop() && desktopSession?.clinic_id) {
+      setLoadingHistory(true)
+      try {
+        const [cList, rxList] = await Promise.all([
+          getLocalConsultations(desktopSession.clinic_id, patient.id).catch(
+            () => [],
+          ),
+          getLocalPrescriptions(desktopSession.clinic_id, patient.id).catch(
+            () => [],
+          ),
+        ])
+        const matchedC = (cList || []).filter(
+          (c) =>
+            c.patient_id === patient.id ||
+            c.patient_id === patient.displayId ||
+            c.patient_id === patient.patientCode,
+        )
+        const matchedRx = (rxList || []).filter(
+          (r) =>
+            r.patient_id === patient.id ||
+            r.patient_id === patient.displayId ||
+            r.patient_id === patient.patientCode,
+        )
+        setConsultations(matchedC)
+        setPrescriptions(matchedRx)
+      } catch (err) {
+        console.error("Failed to load patient history:", err)
+      } finally {
+        setLoadingHistory(false)
+      }
+    }
+  }, [
+    desktopSession?.clinic_id,
+    patient.id,
+    patient.displayId,
+    patient.patientCode,
+  ])
+
+  useEffect(() => {
+    loadHistory()
+  }, [loadHistory])
+
+  const hasHistory =
+    consultations.length > 0 ||
+    prescriptions.length > 0 ||
+    patient.lastVisit !== "No visits yet"
+
+  const publicPatientId = getPublicPatientId(patient)
 
   const handleDelete = async () => {
     if (!onDeletePatient) return
@@ -65,7 +138,10 @@ export function PatientProfile({
 
   return (
     <>
-      <AppHeader title="Patient profile" subtitle={`Patient ID ${patient.displayId || patient.id}`}>
+      <AppHeader
+        title="Patient profile"
+        subtitle={`Patient ID ${publicPatientId}`}
+      >
         <IconButton
           className="topbar-back"
           label="Back to patients"
@@ -76,6 +152,7 @@ export function PatientProfile({
         <Button
           variant="secondary"
           icon={Edit3}
+          title="Edit patient (Ctrl+E)"
           onClick={() => go("patient-form")}
         >
           Edit patient
@@ -83,11 +160,26 @@ export function PatientProfile({
         <Button
           variant="secondary"
           icon={ReceiptIndianRupee}
+          title="Open billing (Ctrl+Shift+B)"
           onClick={() => onStartBill?.(patient)}
         >
           Create bill
         </Button>
-        <Button icon={Stethoscope} onClick={() => go("consultation")}>
+        <Button
+          icon={Stethoscope}
+          title="Start consultation (Ctrl+Shift+C)"
+          onClick={() => {
+            if (!patient || !patient.id || patient.id === "PT-INIT") {
+              alert("No valid patient selected for consultation.")
+              return
+            }
+            if (onStartConsultation) {
+              onStartConsultation(patient)
+            } else {
+              go("consultation")
+            }
+          }}
+        >
           Start consultation
         </Button>
         {onDeletePatient && (
@@ -156,13 +248,14 @@ export function PatientProfile({
             <div>
               <h2>{patient.name}</h2>
               <p>
-                {patient.age} years · {patient.gender} · {patient.displayId || patient.id}
+                {formatPatientAgeGender(patient.age, patient.gender, "years")} ·{" "}
+                {publicPatientId}
               </p>
               <span className="last-seen">
                 <CalendarDays size={14} />{" "}
                 {patient.lastVisit === "No visits yet"
                   ? "No consultations yet"
-                  : `Last visit ${patient.lastVisit.toLowerCase()}`}
+                  : `Last visit ${formatDateTimeDDMMYYYY(patient.lastVisit, true) || patient.lastVisit}`}
               </span>
             </div>
           </div>
@@ -170,17 +263,24 @@ export function PatientProfile({
             <span>
               <Phone size={16} />
               <small>Mobile</small>
-              <strong>{patient.phone}</strong>
+              <strong>{patient.phone || "Not provided"}</strong>
             </span>
             <span>
               <UserRound size={16} />
               <small>Patient ID</small>
-              <strong>{patient.displayId || patient.id}</strong>
+              <strong>{publicPatientId}</strong>
             </span>
+            {patient.registeredAt && (
+              <span>
+                <CalendarDays size={16} />
+                <small>Registered</small>
+                <strong>{formatIndiaDateTime(patient.registeredAt)}</strong>
+              </span>
+            )}
           </div>
         </section>
 
-        {patient.allergies.length > 0 && (
+        {allergyAnalysis.hasGenuineAllergies && (
           <div className="allergy-alert" role="alert">
             <AlertCircle size={20} />
             <div>
@@ -206,25 +306,41 @@ export function PatientProfile({
               onClick={() => setTab(item)}
             >
               {item}
-              {item === "Consultations" && <span>{hasHistory ? 8 : 0}</span>}
-              {item === "Prescriptions" && <span>{hasHistory ? 7 : 0}</span>}
+              {item === "Consultations" && <span>{consultations.length}</span>}
+              {item === "Prescriptions" && <span>{prescriptions.length}</span>}
             </button>
           ))}
         </div>
 
         {tab === "Overview" && (
-          <OverviewTab go={go} patient={patient} hasHistory={hasHistory} />
+          <OverviewTab
+            go={go}
+            patient={patient}
+            hasHistory={hasHistory}
+            consultations={consultations}
+            prescriptions={prescriptions}
+          />
         )}
         {tab === "Medical History" && <HistoryTab patient={patient} />}
         {tab === "Consultations" && (
           <ConsultationsTab
             go={go}
+            patient={patient}
             hasHistory={hasHistory}
+            consultations={consultations}
+            loading={loadingHistory}
             desktopSession={desktopSession}
           />
         )}
         {tab === "Prescriptions" && (
-          <PrescriptionsTab go={go} hasHistory={hasHistory} />
+          <PrescriptionsTab
+            go={go}
+            patient={patient}
+            hasHistory={hasHistory}
+            prescriptions={prescriptions}
+            loading={loadingHistory}
+            desktopSession={desktopSession}
+          />
         )}
         {tab === "Invoices" && (
           <InvoicesTab
@@ -238,7 +354,7 @@ export function PatientProfile({
       <ConfirmDialog
         isOpen={showDeleteConfirm}
         title={`Delete patient ${patient.name}?`}
-        description={`Are you sure you want to delete patient ${patient.name} (${patient.id})? This will permanently delete local records for this patient.`}
+        description={`Are you sure you want to delete patient ${patient.name} (${publicPatientId})? This will permanently delete local records for this patient.`}
         confirmText="Delete patient"
         cancelText="Cancel"
         isDangerous

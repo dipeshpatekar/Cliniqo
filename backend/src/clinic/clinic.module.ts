@@ -1,29 +1,29 @@
-import { Module } from '@nestjs/common';
-import { MongooseModule } from '@nestjs/mongoose';
-import { AuthModule } from '../auth/auth.module.js';
-import { Clinic, ClinicSchema } from './schemas/clinic.schema.js';
+import { Module } from "@nestjs/common"
+import { MongooseModule } from "@nestjs/mongoose"
+import { AuthModule } from "../auth/auth.module.js"
+import { Clinic, ClinicSchema } from "./schemas/clinic.schema.js"
 import {
   ClinicMembership,
   ClinicMembershipSchema,
-} from './schemas/clinic-membership.schema.js';
+} from "./schemas/clinic-membership.schema.js"
 import {
   ClinicInvitation,
   ClinicInvitationSchema,
-} from './schemas/clinic-invitation.schema.js';
+} from "./schemas/clinic-invitation.schema.js"
 import {
   InvitationOutbox,
   InvitationOutboxSchema,
-} from './schemas/invitation-outbox.schema.js';
+} from "./schemas/invitation-outbox.schema.js"
 import {
   ClinicAuditLog,
   ClinicAuditLogSchema,
-} from './schemas/clinic-audit-log.schema.js';
-import { ClinicService } from './clinic.service.js';
-import { ClinicAuditService } from './clinic-audit.service.js';
-import { ClinicOutboxService } from './clinic-outbox.service.js';
-import { ClinicScopeGuard } from './guards/clinic-scope.guard.js';
-import { ClinicPermissionsGuard } from './guards/clinic-permissions.guard.js';
-import { ClinicController } from './clinic.controller.js';
+} from "./schemas/clinic-audit-log.schema.js"
+import { ClinicService } from "./clinic.service.js"
+import { ClinicAuditService } from "./clinic-audit.service.js"
+import { ClinicOutboxService } from "./clinic-outbox.service.js"
+import { ClinicScopeGuard } from "./guards/clinic-scope.guard.js"
+import { ClinicPermissionsGuard } from "./guards/clinic-permissions.guard.js"
+import { ClinicController } from "./clinic.controller.js"
 
 @Module({
   imports: [

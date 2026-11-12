@@ -684,7 +684,7 @@ mod tests {
         MigrationRunner::run_migrations(&mut conn, &dek).expect("Migrations run successfully");
 
         let max_version: i32 = conn.query_row("SELECT MAX(version) FROM schema_migrations", [], |r| r.get(0)).unwrap();
-        assert_eq!(max_version, 11, "All migrations up to V11 must be applied");
+        assert!(max_version >= 11, "All migrations up to V11+ must be applied");
 
         // Confirm local_catalogue_cache_v1 table does not exist
         let table_exists: bool = conn.query_row(
@@ -780,7 +780,7 @@ mod tests {
             Some(r#"{"vitals":{"heartRate":"76"}}"#),
         ).unwrap();
 
-        let consults = DbOperations::get_consultations(&conn, &dek, clinic_id).unwrap();
+        let consults = DbOperations::get_consultations(&conn, &dek, clinic_id, None).unwrap();
         assert_eq!(consults.len(), 1);
         assert_eq!(consults[0].diagnosis, "Acute Bronchitis");
 

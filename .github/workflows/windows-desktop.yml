@@ -2,13 +2,13 @@ name: Windows Desktop CI & Security Verification
 
 on:
   push:
-    branches: [main]
+    branches: [main, "release/**"]
   pull_request:
     branches: [main]
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build-and-verify-windows:
@@ -97,18 +97,103 @@ jobs:
 
       - name: Build Tauri Windows Desktop Shell & NSIS Installer
         # Generates production NSIS setup installer (.exe) for Windows distribution.
+        # Fails immediately if TAURI_SIGNING_PRIVATE_KEY is missing on release branch or tag.
         env:
           VITE_API_BASE_URL: https://cliniqo-api.onrender.com
           CLINIQO_BACKEND_URL: https://cliniqo-api.onrender.com
-        run: pnpm tauri build --bundles nsis
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        shell: bash
+        run: |
+          IS_RELEASE=false
+          if [[ "${{ github.ref }}" == refs/heads/release/* ]] || [[ "${{ github.ref }}" == refs/tags/* ]] || [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
+            IS_RELEASE=true
+          fi
 
-      - name: Archive Windows NSIS Installer Artifact
+          if [ -n "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+            echo "Building with Minisign updater code signing and updater artifacts enabled..."
+            pnpm tauri build --bundles nsis
+          elif [ "$IS_RELEASE" = "true" ]; then
+            echo "::error::TAURI_SIGNING_PRIVATE_KEY secret is required for production/release builds but was not found."
+            exit 1
+          else
+            echo "TAURI_SIGNING_PRIVATE_KEY secret not detected on non-release branch. Building NSIS installer without updater signatures..."
+            pnpm tauri build --bundles nsis --no-sign --config '{"bundle":{"createUpdaterArtifacts":false}}'
+          fi
+
+      - name: Generate latest.json Manifest for Auto-Updater
+        shell: bash
+        run: |
+          node -e "
+            const fs = require('fs');
+            const path = require('path');
+
+            const bundleDir = path.resolve('src-tauri/target/release/bundle/nsis');
+            if (!fs.existsSync(bundleDir)) {
+              console.log('NSIS bundle directory does not exist. Skipping latest.json generation.');
+              process.exit(0);
+            }
+
+            const files = fs.readdirSync(bundleDir);
+            const exeFile = files.find(f => f.endsWith('.exe') && !f.endsWith('.exe.sig'));
+            const sigFile = files.find(f => f.endsWith('.exe.sig') || f.endsWith('.sig'));
+
+            if (!exeFile || !sigFile) {
+              console.log('Setup executable or signature file not found in bundle dir. Skipping latest.json generation.');
+              process.exit(0);
+            }
+
+            const signatureContent = fs.readFileSync(path.join(bundleDir, sigFile), 'utf8').trim();
+            const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+            const version = pkg.version;
+            const repo = process.env.GITHUB_REPOSITORY || 'dipeshpatekar/Cliniqo';
+            const tag = process.env.GITHUB_REF_NAME || ('v' + version);
+            const downloadUrl = 'https://github.com/' + repo + '/releases/download/' + tag + '/' + exeFile;
+
+            const manifest = {
+              version: version,
+              notes: 'Production release for Cliniqo Clinic Management System v' + version,
+              pub_date: new Date().toISOString(),
+              platforms: {
+                'windows-x86_64': {
+                  signature: signatureContent,
+                  url: downloadUrl
+                }
+              }
+            };
+
+            const outPath = path.join(bundleDir, 'latest.json');
+            fs.writeFileSync(outPath, JSON.stringify(manifest, null, 2), 'utf8');
+            console.log('Successfully generated latest.json at ' + outPath + ' pointing to ' + downloadUrl);
+          "
+
+      - name: Archive Windows NSIS Installer & Updater Artifacts
         uses: actions/upload-artifact@v6
         with:
           name: Cliniqo-Windows-Setup-x64
-          path: src-tauri/target/**/bundle/nsis/*.exe
+          path: |
+            src-tauri/target/**/bundle/nsis/*.exe*
+            src-tauri/target/**/bundle/nsis/*.sig*
+            src-tauri/target/**/bundle/nsis/latest.json
+            src-tauri/target/**/bundle/updater/latest.json
+            resources/Medicine_Import_Template.xlsx
+            resources/Medicine_Import_Template.csv
+            resources/README.txt
           retention-days: 14
           if-no-files-found: error
+
+      - name: Publish Release Assets & Updater Manifest to GitHub Releases
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            src-tauri/target/**/bundle/nsis/*.exe
+            src-tauri/target/**/bundle/nsis/*.sig
+            src-tauri/target/**/bundle/nsis/latest.json
+          fail_on_unmatched_files: false
+          draft: false
+          prerelease: false
+          generate_release_notes: true
 
 # ---------------------------------------------------------------------------
 # MANUAL VS CI TEST DISTINCTION:

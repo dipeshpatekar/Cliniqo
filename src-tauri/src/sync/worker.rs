@@ -293,7 +293,7 @@ async fn run_sync_loop(
                 let now_sec = chrono::Utc::now().timestamp();
                 if session.expires_at - now_sec < 120 {
                     log::info!("Access token expiring soon ({}s), refreshing session via coordinator...", session.expires_at - now_sec);
-                    match crate::commands::execute_refresh_session(&key_mgr, &session_mgr, &refresh_coordinator).await {
+                    match crate::commands::execute_refresh_session_with_db(&key_mgr, &session_mgr, &refresh_coordinator, None, Some(&db)).await {
                         Ok(_) => {
                             session_mgr.get_access_token().unwrap_or(token)
                         }
@@ -314,10 +314,31 @@ async fn run_sync_loop(
                 }
             }
             _ => {
-                log::warn!("No active session token available for sync worker, waiting...");
-                tokio::select! {
-                    _ = tokio::time::sleep(Duration::from_secs(3)) => continue,
-                    _ = cancel_rx.changed() => break,
+                // If offline with no access token, attempt refresh via coordinator if refresh token exists
+                if key_mgr.load_refresh_token().ok().flatten().is_some() {
+                    match crate::commands::execute_refresh_session_with_db(&key_mgr, &session_mgr, &refresh_coordinator, None, Some(&db)).await {
+                        Ok(_) => match session_mgr.get_access_token() {
+                            Some(tok) => tok,
+                            None => {
+                                tokio::select! {
+                                    _ = tokio::time::sleep(Duration::from_secs(3)) => continue,
+                                    _ = cancel_rx.changed() => break,
+                                }
+                            }
+                        },
+                        Err(_) => {
+                            tokio::select! {
+                                _ = tokio::time::sleep(Duration::from_secs(3)) => continue,
+                                _ = cancel_rx.changed() => break,
+                            }
+                        }
+                    }
+                } else {
+                    log::warn!("No active session token available for sync worker, waiting...");
+                    tokio::select! {
+                        _ = tokio::time::sleep(Duration::from_secs(3)) => continue,
+                        _ = cancel_rx.changed() => break,
+                    }
                 }
             }
         };

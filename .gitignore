@@ -70,3 +70,6 @@ data/cdci/*.zip
 data/cdci/*.tsv
 backend/data/catalogue_backup/
 *.jsonl
+
+# Temporary Issue & Discussion Assets
+issues/

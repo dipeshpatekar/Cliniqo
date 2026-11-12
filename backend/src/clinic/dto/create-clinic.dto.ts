@@ -7,53 +7,69 @@ import {
   ValidateNested,
   IsOptional,
   Matches,
-} from 'class-validator';
-import { Type } from 'class-transformer';
+} from "class-validator"
+import { Type } from "class-transformer"
 
 export class ClinicAddressDto {
   @IsString()
   @IsNotEmpty()
-  street: string;
+  street: string
 
   @IsString()
   @IsNotEmpty()
-  city: string;
+  city: string
 
   @IsString()
   @IsNotEmpty()
-  state: string;
+  state: string
 
   @IsString()
   @IsNotEmpty()
-  postalCode: string;
+  postalCode: string
 
   @IsString()
   @IsNotEmpty()
-  country: string;
+  country: string
 }
 
 export class CreateClinicDto {
   @IsString()
   @IsNotEmpty()
   @MaxLength(100)
-  name: string;
+  name: string
 
   @IsOptional()
   @IsString()
   @Matches(/^[a-z0-9-]+$/, {
-    message: 'Slug must contain only lowercase letters, numbers, and hyphens',
+    message: "Slug must contain only lowercase letters, numbers, and hyphens",
   })
-  slug?: string;
+  slug?: string
 
   @IsString()
   @IsNotEmpty()
-  phone: string;
+  phone: string
 
   @IsEmail()
-  email: string;
+  email: string
 
   @IsObject()
   @ValidateNested()
   @Type(() => ClinicAddressDto)
-  address: ClinicAddressDto;
+  address: ClinicAddressDto
+
+  @IsOptional()
+  @IsString({ message: "location_link must be a string." })
+  @MaxLength(500, { message: "location_link cannot exceed 500 characters." })
+  @Matches(/^(https?:\/\/[^\s]+)?$/, {
+    message: "location_link must be a valid HTTP or HTTPS URL or empty",
+  })
+  location_link?: string
+
+  @IsOptional()
+  @IsString({ message: "locationLink must be a string." })
+  @MaxLength(500, { message: "locationLink cannot exceed 500 characters." })
+  @Matches(/^(https?:\/\/[^\s]+)?$/, {
+    message: "locationLink must be a valid HTTP or HTTPS URL or empty",
+  })
+  locationLink?: string
 }

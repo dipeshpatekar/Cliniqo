@@ -13,6 +13,7 @@ import {
   ChevronRight,
   LogOut,
   Check,
+  UserCheck,
 } from "lucide-react"
 import type {
   Page,
@@ -20,7 +21,9 @@ import type {
   ClinicalLibraryCategory,
   ClinicalMedicineDefinition,
   BillLayoutPreferences,
+  PatientFormFieldPreferences,
 } from "../../types"
+import { defaultPatientFormFieldPreferences } from "../../types"
 import { Button, IconButton } from "../common"
 import { AppHeader } from "../layout"
 import { SettingsProfile } from "./SettingsProfile"
@@ -31,6 +34,7 @@ import { AppearanceSettings } from "./AppearanceSettings"
 import { WhatsAppSettings } from "./WhatsAppSettings"
 import { SecuritySettings } from "./SecuritySettings"
 import { SyncSettings } from "./SyncSettings"
+import { PatientFormSettings } from "./PatientFormSettings"
 import type { DesktopSessionContext } from "../../desktop/desktop-bridge"
 
 export interface SettingsPageProps {
@@ -55,6 +59,10 @@ export interface SettingsPageProps {
   onShowAllergyWarningChange: (visible: boolean) => void
   billLayout: BillLayoutPreferences
   onBillLayoutChange: (layout: BillLayoutPreferences) => void
+  patientFormFieldPreferences?: PatientFormFieldPreferences
+  onPatientFormFieldPreferencesChange?: (
+    prefs: PatientFormFieldPreferences,
+  ) => void
   initialTab: string
   desktopSession?: DesktopSessionContext | null
   onOpenConflictModal?: () => void
@@ -82,6 +90,8 @@ export function SettingsPage({
   onShowAllergyWarningChange,
   billLayout,
   onBillLayoutChange,
+  patientFormFieldPreferences = defaultPatientFormFieldPreferences,
+  onPatientFormFieldPreferencesChange,
   initialTab,
   desktopSession,
   onOpenConflictModal,
@@ -98,6 +108,7 @@ export function SettingsPage({
   const sections = [
     { label: "Doctor profile", icon: UserRound },
     { label: "Clinic profile", icon: Building2 },
+    { label: "Patient form", icon: UserCheck },
     { label: "Prescription layout", icon: FileText },
     { label: "Bill layout", icon: ReceiptIndianRupee },
     { label: "Clinical library", icon: Pill },
@@ -109,10 +120,7 @@ export function SettingsPage({
 
   return (
     <>
-      <AppHeader
-        title="Settings"
-        subtitle="Manage your profile, clinic, and workspace preferences"
-      >
+      <AppHeader title="Settings">
         <IconButton
           className="topbar-back"
           label="Back to dashboard"
@@ -145,7 +153,6 @@ export function SettingsPage({
           {tab === "Doctor profile" && (
             <SettingsProfile
               title="Doctor profile"
-              description="Details shown on prescriptions and clinic records."
               clinic={false}
               desktopSession={desktopSession}
               onSave={(handler) => {
@@ -156,12 +163,19 @@ export function SettingsPage({
           {tab === "Clinic profile" && (
             <SettingsProfile
               title="Clinic profile"
-              description="Contact information visible to your patients."
               clinic
               desktopSession={desktopSession}
               onSave={(handler) => {
                 saveClinicProfileHandlerRef.current = handler
               }}
+            />
+          )}
+          {tab === "Patient form" && (
+            <PatientFormSettings
+              preferences={patientFormFieldPreferences}
+              onChange={(updated) =>
+                onPatientFormFieldPreferencesChange?.(updated)
+              }
             />
           )}
           {tab === "Prescription layout" && (

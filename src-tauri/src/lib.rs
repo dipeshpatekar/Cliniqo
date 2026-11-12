@@ -4,6 +4,7 @@ pub mod config;
 pub mod crypto;
 pub mod db;
 pub mod sync;
+pub mod updater;
 
 use std::sync::Arc;
 use tauri::Manager;
@@ -100,6 +101,7 @@ pub fn run() {
             commands::has_persisted_refresh_token,
             commands::get_sync_status,
             commands::switch_active_clinic,
+            commands::get_next_patient_code,
             commands::save_local_patient,
             commands::delete_local_patient,
             commands::get_local_patients,
@@ -138,6 +140,10 @@ pub fn run() {
             commands::save_clinic_profile,
             commands::get_doctor_profile,
             commands::save_doctor_profile,
+            commands::export_encrypted_backup,
+            commands::restore_encrypted_backup,
+            commands::check_app_update,
+            commands::download_and_launch_update,
         ])
         .run(tauri::generate_context!())
         .expect("error while building tauri application");

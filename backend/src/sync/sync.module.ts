@@ -1,57 +1,48 @@
-import { Module } from '@nestjs/common';
-import { MongooseModule } from '@nestjs/mongoose';
-import { ClinicModule } from '../clinic/clinic.module.js';
-import { AuthModule } from '../auth/auth.module.js';
+import { Module } from "@nestjs/common"
+import { MongooseModule } from "@nestjs/mongoose"
+import { ClinicModule } from "../clinic/clinic.module.js"
+import { AuthModule } from "../auth/auth.module.js"
 import {
   SyncChangeFeed,
   SyncChangeFeedSchema,
-} from './schemas/sync-change-feed.schema.js';
+} from "./schemas/sync-change-feed.schema.js"
 import {
   ClinicSyncCounter,
   ClinicSyncCounterSchema,
-} from './schemas/clinic-sync-counter.schema.js';
+} from "./schemas/clinic-sync-counter.schema.js"
 import {
   SyncConflict,
   SyncConflictSchema,
-} from './schemas/sync-conflict.schema.js';
+} from "./schemas/sync-conflict.schema.js"
 import {
   IdempotencyRecord,
   IdempotencyRecordSchema,
-} from '../common/schemas/idempotency-record.schema.js';
-import {
-  Patient,
-  PatientSchema,
-} from '../patient/schemas/patient.schema.js';
+} from "../common/schemas/idempotency-record.schema.js"
+import { Patient, PatientSchema } from "../patient/schemas/patient.schema.js"
 import {
   Consultation,
   ConsultationSchema,
-} from '../consultation/schemas/consultation.schema.js';
+} from "../consultation/schemas/consultation.schema.js"
 import {
   Prescription,
   PrescriptionSchema,
-} from '../prescription/schemas/prescription.schema.js';
+} from "../prescription/schemas/prescription.schema.js"
 import {
   PrescriptionRevision,
   PrescriptionRevisionSchema,
-} from '../prescription/schemas/prescription-revision.schema.js';
+} from "../prescription/schemas/prescription-revision.schema.js"
 import {
   ClinicSequenceCounter,
   ClinicSequenceCounterSchema,
-} from '../patient/schemas/clinic-sequence-counter.schema.js';
+} from "../patient/schemas/clinic-sequence-counter.schema.js"
 import {
   ClinicMembership,
   ClinicMembershipSchema,
-} from '../clinic/schemas/clinic-membership.schema.js';
-import {
-  Clinic,
-  ClinicSchema,
-} from '../clinic/schemas/clinic.schema.js';
-import {
-  Invoice,
-  InvoiceSchema,
-} from '../billing/schemas/invoice.schema.js';
-import { SyncService } from './sync.service.js';
-import { SyncController } from './sync.controller.js';
+} from "../clinic/schemas/clinic-membership.schema.js"
+import { Clinic, ClinicSchema } from "../clinic/schemas/clinic.schema.js"
+import { Invoice, InvoiceSchema } from "../billing/schemas/invoice.schema.js"
+import { SyncService } from "./sync.service.js"
+import { SyncController } from "./sync.controller.js"
 
 @Module({
   imports: [

@@ -1,48 +1,48 @@
-import { IsString, IsNotEmpty, IsOptional, MaxLength } from 'class-validator';
+import { IsString, IsNotEmpty, IsOptional, MaxLength } from "class-validator"
 
 export class ProvisionalMedicineDto {
   @IsString()
-  @IsNotEmpty({ message: 'Medicine name is required' })
+  @IsNotEmpty({ message: "Medicine name is required" })
   @MaxLength(200)
-  name: string;
+  name: string
 
   @IsString()
-  @IsNotEmpty({ message: 'Formulation is required' })
+  @IsNotEmpty({ message: "Formulation is required" })
   @MaxLength(100)
-  formulation: string;
-
-  @IsOptional()
-  @IsString()
-  @MaxLength(100)
-  strength?: string;
+  formulation: string
 
   @IsOptional()
   @IsString()
   @MaxLength(100)
-  dose?: string;
+  strength?: string
 
   @IsOptional()
   @IsString()
   @MaxLength(100)
-  frequency?: string;
+  dose?: string
 
   @IsOptional()
   @IsString()
   @MaxLength(100)
-  duration?: string;
+  frequency?: string
 
   @IsOptional()
   @IsString()
   @MaxLength(100)
-  route?: string;
+  duration?: string
 
   @IsOptional()
   @IsString()
   @MaxLength(100)
-  foodInstruction?: string;
+  route?: string
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  foodInstruction?: string
 
   @IsOptional()
   @IsString()
   @MaxLength(500)
-  directions?: string;
+  directions?: string
 }

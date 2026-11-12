@@ -505,6 +505,25 @@ impl SessionManager {
         Ok(context)
     }
 
+    /// Establishes a permitted offline session context when backend is unreachable but valid persisted credentials exist
+    pub fn set_offline_session(&self, context: SessionContext) {
+        let mut lock = self.current_session.write().unwrap();
+        *lock = Some(context.clone());
+        log::info!(
+            "Permitted offline desktop session established for doctor '{}' in clinic '{}'",
+            context.doctor_id,
+            context.clinic_id
+        );
+    }
+
+    /// Dynamically updates the doctor name in the active session context
+    pub fn update_doctor_name(&self, new_name: &str) {
+        let mut lock = self.current_session.write().unwrap();
+        if let Some(ref mut session) = *lock {
+            session.doctor_name = new_name.trim().to_string();
+        }
+    }
+
     #[cfg(test)]
     pub fn set_test_session(&self, clinic_id: &str, doctor_id: &str, token: &str) {
         let now = SystemTime::now()

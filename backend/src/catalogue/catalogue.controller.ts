@@ -7,18 +7,18 @@ import {
   UseGuards,
   HttpCode,
   HttpStatus,
-} from '@nestjs/common';
-import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard.js';
-import { CatalogueService } from './catalogue.service.js';
-import { CatalogueImportService } from './catalogue-import.service.js';
+} from "@nestjs/common"
+import { JwtAuthGuard } from "../auth/guards/jwt-auth.guard.js"
+import { CatalogueService } from "./catalogue.service.js"
+import { CatalogueImportService } from "./catalogue-import.service.js"
 import {
   SearchCatalogueDto,
   GetStrengthsQueryDto,
   CatalogueFeedQueryDto,
-} from './dto/search-catalogue.dto.js';
-import { TriggerImportDto } from './dto/import-catalogue.dto.js';
+} from "./dto/search-catalogue.dto.js"
+import { TriggerImportDto } from "./dto/import-catalogue.dto.js"
 
-@Controller('catalogue')
+@Controller("catalogue")
 @UseGuards(JwtAuthGuard)
 export class CatalogueController {
   constructor(
@@ -26,32 +26,32 @@ export class CatalogueController {
     private readonly importService: CatalogueImportService,
   ) {}
 
-  @Get('search')
+  @Get("search")
   async search(@Query() query: SearchCatalogueDto) {
-    return this.catalogueService.search(query);
+    return this.catalogueService.search(query)
   }
 
-  @Get('strengths')
+  @Get("strengths")
   async getStrengths(@Query() query: GetStrengthsQueryDto) {
-    return this.catalogueService.getStrengthsForMedicine(query);
+    return this.catalogueService.getStrengthsForMedicine(query)
   }
 
-  @Get('feed')
+  @Get("feed")
   async getFeed(@Query() query: CatalogueFeedQueryDto) {
-    return this.catalogueService.getFeed(query.cursor, query.limit);
+    return this.catalogueService.getFeed(query.cursor, query.limit)
   }
 
-  @Post('import')
+  @Post("import")
   @HttpCode(HttpStatus.OK)
   async triggerImport(@Body() body: TriggerImportDto) {
     return this.importService.runImport({
       sourcePath: body?.sourcePath,
       dryRun: body?.dryRun ?? false,
-    });
+    })
   }
 
-  @Get('import/history')
+  @Get("import/history")
   async getImportHistory() {
-    return this.importService.getImportHistory();
+    return this.importService.getImportHistory()
   }
 }

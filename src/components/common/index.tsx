@@ -1,6 +1,13 @@
-import { useEffect, useRef, useState, type ComponentType, type ReactNode } from "react"
+import {
+  useEffect,
+  useRef,
+  useState,
+  type ComponentType,
+  type ReactNode,
+} from "react"
 import { cn } from "../../utils/cn"
-import cliniqoLogo from "../../assets/logo.png"
+import cliniqoLogo from "../../assets/logo.svg"
+export { cliniqoLogo }
 import {
   Check,
   ChevronDown,
@@ -127,6 +134,7 @@ export function SearchableOptionSelect({
   placeholder,
   ariaLabel,
   emptyMessage,
+  numericShortcuts,
 }: {
   id: string
   value: string
@@ -136,6 +144,7 @@ export function SearchableOptionSelect({
   placeholder: string
   ariaLabel: string
   emptyMessage: string
+  numericShortcuts?: Record<string, string>
 }) {
   const [open, setOpen] = useState(false)
   const [highlightedIndex, setHighlightedIndex] = useState(-1)
@@ -152,11 +161,22 @@ export function SearchableOptionSelect({
     new Map(normalizedOptions.map((item) => [item.value, item])).values(),
   )
 
-  const lowerVal = value.toLowerCase()
-  const filteredOptions = uniqueOptions.filter((option) =>
-    (option.label || option.value).toLowerCase().includes(lowerVal) ||
-    (option.subtitle && option.subtitle.toLowerCase().includes(lowerVal)),
-  )
+  const lowerVal = (value || "").toLowerCase()
+  const isExactSelectedOption =
+    Boolean(lowerVal) &&
+    uniqueOptions.some(
+      (o) =>
+        o.value.toLowerCase() === lowerVal ||
+        (o.label && o.label.toLowerCase() === lowerVal),
+    )
+
+  const filteredOptions = isExactSelectedOption
+    ? uniqueOptions
+    : uniqueOptions.filter(
+        (option) =>
+          (option.label || option.value).toLowerCase().includes(lowerVal) ||
+          (option.subtitle && option.subtitle.toLowerCase().includes(lowerVal)),
+      )
 
   // Ensure highlighted index stays in bounds when filteredOptions change
   useEffect(() => {
@@ -169,12 +189,25 @@ export function SearchableOptionSelect({
     }
   }, [open, filteredOptions.length])
 
-  // Auto-scroll highlighted option into view
+  // Scroll highlighted option into view cleanly without page jump
   useEffect(() => {
-    if (open && highlightedIndex >= 0 && listRef.current) {
-      const activeEl = listRef.current.children[highlightedIndex] as HTMLElement
-      if (activeEl && typeof activeEl.scrollIntoView === "function") {
-        activeEl.scrollIntoView({ block: "nearest" })
+    if (open && listRef.current) {
+      const container = listRef.current
+      if (highlightedIndex <= 0) {
+        container.scrollTop = 0
+      } else {
+        const activeEl = container.children[
+          highlightedIndex
+        ] as HTMLElement | undefined
+        if (activeEl) {
+          const elTop = activeEl.offsetTop
+          const elBottom = elTop + activeEl.offsetHeight
+          if (elTop < container.scrollTop) {
+            container.scrollTop = elTop
+          } else if (elBottom > container.scrollTop + container.clientHeight) {
+            container.scrollTop = elBottom - container.clientHeight
+          }
+        }
       }
     }
   }, [highlightedIndex, open])
@@ -190,6 +223,30 @@ export function SearchableOptionSelect({
   }
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (
+      numericShortcuts &&
+      !e.ctrlKey &&
+      !e.altKey &&
+      !e.metaKey &&
+      numericShortcuts[e.key]
+    ) {
+      e.preventDefault()
+      const targetVal = numericShortcuts[e.key]
+      const matched = uniqueOptions.find(
+        (o) =>
+          o.value.toLowerCase() === targetVal.toLowerCase() ||
+          (o.label && o.label.toLowerCase() === targetVal.toLowerCase()),
+      )
+      if (matched) {
+        selectOption(matched)
+      } else {
+        onChange(targetVal)
+        setOpen(false)
+        setHighlightedIndex(-1)
+      }
+      return
+    }
+
     if (e.key === "ArrowDown") {
       e.preventDefault()
       if (!open) {
@@ -208,7 +265,11 @@ export function SearchableOptionSelect({
         )
       }
     } else if (e.key === "Enter") {
-      if (open && highlightedIndex >= 0 && highlightedIndex < filteredOptions.length) {
+      if (
+        open &&
+        highlightedIndex >= 0 &&
+        highlightedIndex < filteredOptions.length
+      ) {
         e.preventDefault()
         selectOption(filteredOptions[highlightedIndex])
       }
@@ -222,7 +283,12 @@ export function SearchableOptionSelect({
   }
 
   return (
-    <div className="medicine-combobox">
+    <div
+      className={cn(
+        "medicine-combobox",
+        open && "medicine-combobox-open option-menu-open",
+      )}
+    >
       <div className="medicine-search-input">
         <Search size={15} />
         <input
@@ -240,8 +306,11 @@ export function SearchableOptionSelect({
           }
           autoComplete="off"
           placeholder={placeholder}
-          onFocus={() => {
+          onFocus={(e) => {
             setOpen(true)
+            try {
+              e.currentTarget.select()
+            } catch {}
             const matchIdx = filteredOptions.findIndex(
               (o) =>
                 o.value.toLowerCase() === lowerVal ||
@@ -252,7 +321,29 @@ export function SearchableOptionSelect({
           onBlur={() => window.setTimeout(() => setOpen(false), 150)}
           onKeyDown={handleKeyDown}
           onChange={(event) => {
-            onChange(event.target.value)
+            const rawVal = event.target.value
+            if (
+              numericShortcuts &&
+              rawVal.trim().length === 1 &&
+              numericShortcuts[rawVal.trim()]
+            ) {
+              const targetVal = numericShortcuts[rawVal.trim()]
+              const matched = uniqueOptions.find(
+                (o) =>
+                  o.value.toLowerCase() === targetVal.toLowerCase() ||
+                  (o.label &&
+                    o.label.toLowerCase() === targetVal.toLowerCase()),
+              )
+              if (matched) {
+                selectOption(matched)
+              } else {
+                onChange(targetVal)
+                setOpen(false)
+                setHighlightedIndex(-1)
+              }
+              return
+            }
+            onChange(rawVal)
             setOpen(true)
             setHighlightedIndex(0)
           }}
@@ -260,7 +351,12 @@ export function SearchableOptionSelect({
         <ChevronDown size={15} />
       </div>
       {open && (
-        <div ref={listRef} className="medicine-options" id={listId} role="listbox">
+        <div
+          ref={listRef}
+          className="medicine-options"
+          id={listId}
+          role="listbox"
+        >
           {filteredOptions.length > 0 ? (
             filteredOptions.map((option, idx) => {
               const isHighlighted = idx === highlightedIndex
@@ -286,38 +382,71 @@ export function SearchableOptionSelect({
                     width: "100%",
                   }}
                 >
-                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", width: "100%" }}>
-                    <span style={{ fontWeight: 500 }}>{option.label || option.value}</span>
-                    <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                  <div
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                      width: "100%",
+                      gap: "8px",
+                    }}
+                  >
+                    <span
+                      style={{
+                        fontWeight: 500,
+                        minWidth: 0,
+                        wordBreak: "break-word",
+                      }}
+                    >
+                      {option.label || option.value}
+                    </span>
+                    <div
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: "6px",
+                        flexShrink: 0,
+                      }}
+                    >
                       {option.badge && (
                         <span
                           style={{
-                            fontSize: "11px",
+                            fontSize: "12px",
                             fontWeight: 600,
-                            padding: "1px 6px",
+                            padding: "2px 7px",
                             borderRadius: "4px",
+                            whiteSpace: "nowrap",
+                            flexShrink: 0,
                             backgroundColor:
                               option.badge === "Clinic Library"
                                 ? "#ccfbf1"
                                 : option.badge === "Pharmacy Stock"
-                                ? "#dbeafe"
-                                : "#e0f2fe",
+                                  ? "#dbeafe"
+                                  : "#e0f2fe",
                             color:
                               option.badge === "Clinic Library"
                                 ? "#0f766e"
                                 : option.badge === "Pharmacy Stock"
-                                ? "#1e40af"
-                                : "#0369a1",
+                                  ? "#1e40af"
+                                  : "#0369a1",
                           }}
                         >
                           {option.badge}
                         </span>
                       )}
-                      {isSelected && <Check size={15} />}
+                      {isSelected && (
+                        <Check size={15} style={{ flexShrink: 0 }} />
+                      )}
                     </div>
                   </div>
                   {option.subtitle && (
-                    <span style={{ fontSize: "11px", color: "#64748b" }}>
+                    <span
+                      style={{
+                        fontSize: "12px",
+                        color: "#64748b",
+                        wordBreak: "break-word",
+                      }}
+                    >
                       {option.subtitle}
                     </span>
                   )}
@@ -332,7 +461,6 @@ export function SearchableOptionSelect({
     </div>
   )
 }
-
 
 export function TextArea(
   props: React.TextareaHTMLAttributes<HTMLTextAreaElement>,
@@ -398,17 +526,81 @@ export function Modal({
   )
 }
 
+export function CliniqoLogoIcon({
+  size = 36,
+  className,
+}: {
+  size?: number
+  className?: string
+}) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 1296 1296"
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+      className={className}
+      aria-label="Cliniqo"
+      role="img"
+    >
+      <defs>
+        <linearGradient
+          id="cliniqo-linear-gradient"
+          x1="171.46"
+          y1="1124.54"
+          x2="1124.54"
+          y2="171.46"
+          gradientUnits="userSpaceOnUse"
+        >
+          <stop offset="0" stopColor="#036c70" />
+          <stop offset="1" stopColor="#00a69a" />
+        </linearGradient>
+      </defs>
+      <rect
+        fill="url(#cliniqo-linear-gradient)"
+        x="21"
+        y="21"
+        width="1254"
+        height="1254"
+        rx="513.7"
+        ry="513.7"
+      />
+      <g>
+        <path
+          fill="#d7fffc"
+          d="M795.32,262.64v112.28c0,47.17-18.74,92.41-52.09,125.76h0s-242.54,0-242.54,0v-238.04c0-31.25,25.34-56.59,56.59-56.59h181.45c31.25,0,56.59,25.34,56.59,56.59Z"
+        />
+        <path
+          fill="#d7fffc"
+          d="M795.32,795.32v238.04c0,31.25-25.34,56.59-56.59,56.59h-181.45c-31.25,0-56.59-25.34-56.59-56.59v-112.31c0-47.16,18.73-92.38,52.08-125.73h0s242.55,0,242.55,0Z"
+        />
+        <path
+          fill="#aefffd"
+          d="M500.68,500.68v242.54h0c-33.35,33.35-78.59,52.09-125.76,52.09h-112.28c-31.25,0-56.59-25.34-56.59-56.59v-181.45c0-31.25,25.34-56.59,56.59-56.59h238.04Z"
+        />
+        <polygon
+          fill="#2dcbca"
+          points="743.22 500.68 500.68 743.22 500.68 500.68 743.22 500.68"
+        />
+        <polygon
+          fill="#2dcbca"
+          points="795.32 552.75 795.32 795.32 552.76 795.32 795.32 552.75"
+        />
+        <path
+          fill="#aefffd"
+          d="M1089.95,557.27v181.45c0,31.25-25.34,56.59-56.59,56.59h-238.04v-242.57h0c33.34-33.34,78.55-52.07,125.7-52.07h112.35c31.25,0,56.59,25.34,56.59,56.59Z"
+        />
+      </g>
+    </svg>
+  )
+}
+
 export function Logo({ large = false }: { large?: boolean }) {
   return (
     <div className={cn("logo-lockup", large && "logo-large")}>
       <span className="logo-mark">
-        <img
-          src={cliniqoLogo}
-          alt="Cliniqo"
-          className="logo-img"
-          width={large ? 44 : 36}
-          height={large ? 44 : 36}
-        />
+        <CliniqoLogoIcon size={large ? 44 : 36} className="logo-img" />
       </span>
       <span>
         <strong>Cliniqo</strong>
@@ -426,7 +618,7 @@ export function FormSection({
 }: {
   icon: ComponentType<{ size?: number }>
   title: string
-  description: string
+  description?: string
   children: ReactNode
 }) {
   return (
@@ -437,7 +629,7 @@ export function FormSection({
         </span>
         <div>
           <h2>{title}</h2>
-          <p>{description}</p>
+          {description && <p>{description}</p>}
         </div>
       </div>
       {children}
@@ -507,3 +699,7 @@ export function ConfirmDialog({
     </Modal>
   )
 }
+
+export { ShortcutGuideModal } from "./ShortcutGuideModal"
+export { GlobalSearchModal, GlobalPatientSearch } from "./GlobalSearchModal"
+export type { GlobalPatientSearchProps } from "./GlobalSearchModal"

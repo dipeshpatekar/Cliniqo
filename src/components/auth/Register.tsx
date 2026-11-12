@@ -174,25 +174,18 @@ export function Register({ go, onRegisterSuccess }: RegisterProps) {
             <br />
             set up with care.
           </h1>
-          <p>
-            Create the doctor profile used for your workspace, then add the
-            clinic details shown on patient documents.
-          </p>
           <div className="auth-feature-grid">
             <span>
               <ShieldCheck size={18} />
               <strong>Doctor-first</strong>
-              <small>Built around clinical workflows</small>
             </span>
             <span>
               <LockKeyhole size={18} />
               <strong>Private workspace</strong>
-              <small>Clinic access stays separated</small>
             </span>
             <span>
               <FileText size={18} />
               <strong>Ready to configure</strong>
-              <small>Continue into profile setup</small>
             </span>
           </div>
         </div>
@@ -201,7 +194,7 @@ export function Register({ go, onRegisterSuccess }: RegisterProps) {
             <ShieldCheck size={16} /> Secure account interface
           </span>
           <span>
-            <LockKeyhole size={16} /> Frontend demo only
+            <LockKeyhole size={16} /> Live authentication
           </span>
         </div>
       </section>
@@ -215,10 +208,9 @@ export function Register({ go, onRegisterSuccess }: RegisterProps) {
               <span>
                 <Check size={26} />
               </span>
-              <h2>Registration UI complete</h2>
+              <h2>Account created successfully</h2>
               <p>
-                Your details passed the local demo validation. No account was
-                created and no email or SMS verification occurred.
+                Your doctor account has been registered. Proceed to set up your clinic profile.
               </p>
               <Button
                 className="auth-success-button"
@@ -236,12 +228,7 @@ export function Register({ go, onRegisterSuccess }: RegisterProps) {
             </div>
           ) : (
             <>
-              <span className="eyebrow">Register new user</span>
               <h2>Create your account</h2>
-              <p>
-                Enter your professional details to continue to doctor and clinic
-                setup.
-              </p>
               {(status === "duplicate" || status === "failure") && (
                 <div className="auth-error" role="alert">
                   <AlertCircle size={16} />

@@ -1,51 +1,51 @@
-import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
+import { Prop, Schema, SchemaFactory } from "@nestjs/mongoose"
 import {
   Schema as MongooseSchema,
   type HydratedDocument,
   type Types,
-} from 'mongoose';
+} from "mongoose"
 
-export type RefreshSessionDocument = HydratedDocument<RefreshSession>;
+export type RefreshSessionDocument = HydratedDocument<RefreshSession>
 
 @Schema({
-  collection: 'refresh_sessions',
+  collection: "refresh_sessions",
   timestamps: true,
 })
 export class RefreshSession {
   @Prop({
     type: MongooseSchema.Types.ObjectId,
-    ref: 'Doctor',
+    ref: "Doctor",
     required: true,
   })
-  doctorId!: Types.ObjectId;
+  doctorId: Types.ObjectId
 
   @Prop({
     required: true,
   })
-  tokenHash!: string;
+  tokenHash: string
 
   @Prop({
     required: true,
   })
-  familyId!: string;
+  familyId: string
 
   @Prop({
     type: Boolean,
     default: false,
   })
-  isRevoked!: boolean;
+  isRevoked: boolean
 
   @Prop({
     type: Date,
     default: null,
   })
-  revokedAt?: Date | null;
+  revokedAt?: Date | null
 
   @Prop({
     type: Date,
     required: true,
   })
-  expiresAt!: Date;
+  expiresAt: Date
 
   @Prop({
     type: String,
@@ -53,7 +53,7 @@ export class RefreshSession {
     maxlength: 255,
     default: null,
   })
-  userAgent?: string | null;
+  userAgent?: string | null
 
   @Prop({
     type: String,
@@ -61,17 +61,16 @@ export class RefreshSession {
     maxlength: 45,
     default: null,
   })
-  ipAddress?: string | null;
+  ipAddress?: string | null
 
-  createdAt?: Date;
-  updatedAt?: Date;
+  createdAt?: Date
+  updatedAt?: Date
 }
 
-export const RefreshSessionSchema =
-  SchemaFactory.createForClass(RefreshSession);
+export const RefreshSessionSchema = SchemaFactory.createForClass(RefreshSession)
 
 // Explicit database indexes
-RefreshSessionSchema.index({ tokenHash: 1 }, { unique: true });
-RefreshSessionSchema.index({ doctorId: 1, isRevoked: 1 });
-RefreshSessionSchema.index({ familyId: 1 });
-RefreshSessionSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
+RefreshSessionSchema.index({ tokenHash: 1 }, { unique: true })
+RefreshSessionSchema.index({ doctorId: 1, isRevoked: 1 })
+RefreshSessionSchema.index({ familyId: 1 })
+RefreshSessionSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 })

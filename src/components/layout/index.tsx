@@ -15,6 +15,7 @@ import type { Page } from "../../types"
 import {
   type DesktopSessionContext,
   getClinicProfile,
+  getDoctorProfile,
 } from "../../desktop/desktop-bridge"
 
 export function Sidebar({
@@ -37,6 +38,20 @@ export function Sidebar({
   onOpenConflicts?: () => void
 }) {
   const [clinicName, setClinicName] = useState<string | null>(null)
+  const [doctorName, setDoctorName] = useState<string>(() => {
+    return desktopSession?.doctor_name || "Doctor"
+  })
+  const [doctorPhoto, setDoctorPhoto] = useState<string | null>(() => {
+    if (typeof window === "undefined" || !window.localStorage) return null
+    return (
+      (desktopSession?.doctor_id &&
+        window.localStorage.getItem(
+          `cliniqo_doctor_photo_${desktopSession.doctor_id}`,
+        )) ||
+      window.localStorage.getItem("cliniqo_doctor_photo") ||
+      null
+    )
+  })
 
   useEffect(() => {
     if (!desktopSession?.clinic_id) {
@@ -49,6 +64,51 @@ export function Sidebar({
       }
     })
   }, [desktopSession?.clinic_id])
+
+  useEffect(() => {
+    if (desktopSession?.doctor_id) {
+      getDoctorProfile(desktopSession.doctor_id).then((profile) => {
+        if (profile?.full_name) {
+          setDoctorName(profile.full_name)
+        }
+      })
+    } else if (desktopSession?.doctor_name) {
+      setDoctorName(desktopSession.doctor_name)
+    }
+  }, [desktopSession?.doctor_id, desktopSession?.doctor_name])
+
+  useEffect(() => {
+    if (typeof window === "undefined" || !window.localStorage) return
+    const stored =
+      (desktopSession?.doctor_id &&
+        window.localStorage.getItem(
+          `cliniqo_doctor_photo_${desktopSession.doctor_id}`,
+        )) ||
+      window.localStorage.getItem("cliniqo_doctor_photo")
+    setDoctorPhoto(stored || null)
+  }, [desktopSession?.doctor_id])
+
+  // Global profile live synchronization listener
+  useEffect(() => {
+    if (typeof window === "undefined") return
+    const handleProfileUpdate = (e: Event) => {
+      const customEvent = e as CustomEvent
+      const detail = customEvent.detail
+      if (!detail) return
+      if (detail.type === "doctor" && detail.profile?.full_name) {
+        setDoctorName(detail.profile.full_name)
+      } else if (detail.type === "clinic" && detail.profile?.name) {
+        setClinicName(detail.profile.name)
+      } else if (detail.type === "doctor-photo") {
+        setDoctorPhoto(detail.photo ?? null)
+      }
+    }
+
+    window.addEventListener("cliniqo:profile-updated", handleProfileUpdate)
+    return () => {
+      window.removeEventListener("cliniqo:profile-updated", handleProfileUpdate)
+    }
+  }, [])
 
   const nav = [
     { id: "dashboard" as Page, label: "Dashboard", icon: LayoutDashboard },
@@ -114,25 +174,46 @@ export function Sidebar({
       )}
       <div className="sidebar-bottom">
         <div className="doctor-card">
-          <span className="avatar">
-            {desktopSession?.doctor_name
-              ? desktopSession.doctor_name
-                  .split(" ")
-                  .filter(Boolean)
-                  .map((n) => n[0])
-                  .slice(0, 2)
-                  .join("")
-                  .toUpperCase()
-              : "DR"}
+          <span
+            className="avatar"
+            style={{
+              overflow: "hidden",
+              display: "inline-flex",
+              alignItems: "center",
+              justifyContent: "center",
+            }}
+          >
+            {doctorPhoto ? (
+              <img
+                src={doctorPhoto}
+                alt={doctorName}
+                style={{
+                  width: "100%",
+                  height: "100%",
+                  borderRadius: "50%",
+                  objectFit: "cover",
+                }}
+              />
+            ) : doctorName ? (
+              doctorName
+                .split(" ")
+                .filter(Boolean)
+                .map((n) => n[0])
+                .slice(0, 2)
+                .join("")
+                .toUpperCase()
+            ) : (
+              "DR"
+            )}
           </span>
           <button onClick={onDoctorProfile}>
-            <strong>
-              {desktopSession?.doctor_name || "Doctor"}
-            </strong>
+            <strong>{doctorName || "Doctor"}</strong>
             <small>
               {clinicName ||
                 (desktopSession?.clinic_id
-                  ? `Clinic: ${desktopSession.clinic_id}`
+                  ? /^[0-9a-fA-F]{24}$/.test(desktopSession.clinic_id)
+                    ? "Medical Clinic"
+                    : `Clinic: ${desktopSession.clinic_id}`
                   : "No active clinic")}
             </small>
           </button>

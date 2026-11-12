@@ -5,53 +5,53 @@ import {
   ConflictException,
   NotFoundException,
   ForbiddenException,
-} from '@nestjs/common';
-import { InjectModel, InjectConnection } from '@nestjs/mongoose';
-import type { Connection } from 'mongoose';
-import { Model, Types } from 'mongoose';
-import crypto from 'node:crypto';
+} from "@nestjs/common"
+import { InjectModel, InjectConnection } from "@nestjs/mongoose"
+import type { Connection } from "mongoose"
+import { Model, Types } from "mongoose"
+import crypto from "node:crypto"
 import {
   Clinic,
   type ClinicDocument,
   ClinicStatus,
-} from './schemas/clinic.schema.js';
+} from "./schemas/clinic.schema.js"
 import {
   ClinicMembership,
   type ClinicMembershipDocument,
   ClinicRole,
   ClinicMembershipStatus,
-} from './schemas/clinic-membership.schema.js';
+} from "./schemas/clinic-membership.schema.js"
 import {
   ClinicInvitation,
   type ClinicInvitationDocument,
   ClinicInvitationStatus,
-} from './schemas/clinic-invitation.schema.js';
+} from "./schemas/clinic-invitation.schema.js"
 import {
   InvitationOutbox,
   type InvitationOutboxDocument,
   OutboxStatus,
-} from './schemas/invitation-outbox.schema.js';
-import { ClinicAuditAction } from './schemas/clinic-audit-log.schema.js';
-import { ClinicAuditService } from './clinic-audit.service.js';
-import { ClinicOutboxService } from './clinic-outbox.service.js';
-import { executeInTransaction } from '../database/transaction.helper.js';
-import { CreateClinicDto } from './dto/create-clinic.dto.js';
-import { UpdateClinicDto } from './dto/update-clinic.dto.js';
-import { InviteMemberDto } from './dto/invite-member.dto.js';
-import { Doctor, type DoctorDocument } from '../auth/schemas/doctor.schema.js';
+} from "./schemas/invitation-outbox.schema.js"
+import { ClinicAuditAction } from "./schemas/clinic-audit-log.schema.js"
+import { ClinicAuditService } from "./clinic-audit.service.js"
+import { ClinicOutboxService } from "./clinic-outbox.service.js"
+import { executeInTransaction } from "../database/transaction.helper.js"
+import { CreateClinicDto } from "./dto/create-clinic.dto.js"
+import { UpdateClinicDto } from "./dto/update-clinic.dto.js"
+import { InviteMemberDto } from "./dto/invite-member.dto.js"
+import { Doctor, type DoctorDocument } from "../auth/schemas/doctor.schema.js"
 
 function slugify(text: string): string {
   return text
     .toLowerCase()
     .trim()
-    .replace(/[^\w\s-]/g, '')
-    .replace(/[\s_-]+/g, '-')
-    .replace(/^-+|-+$/g, '');
+    .replace(/[^\w\s-]/g, "")
+    .replace(/[\s_-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
 }
 
 @Injectable()
 export class ClinicService {
-  private readonly logger = new Logger(ClinicService.name);
+  private readonly logger = new Logger(ClinicService.name)
 
   constructor(
     @InjectConnection()
@@ -77,21 +77,24 @@ export class ClinicService {
     creator: DoctorDocument,
     dto: CreateClinicDto,
   ): Promise<{ clinic: ClinicDocument; membership: ClinicMembershipDocument }> {
-    const candidateSlug = dto.slug ? slugify(dto.slug) : slugify(dto.name);
+    const candidateSlug = dto.slug ? slugify(dto.slug) : slugify(dto.name)
     if (!candidateSlug) {
-      throw new BadRequestException('A valid clinic name or slug is required.');
+      throw new BadRequestException("A valid clinic name or slug is required.")
     }
 
     return executeInTransaction(this.connection, async (session) => {
       const existing = await this.clinicModel
         .findOne({ slug: candidateSlug })
-        .session(session);
+        .session(session)
 
       if (existing) {
         throw new ConflictException(
-          'A clinic with this unique slug already exists. Please choose another name.',
-        );
+          "A clinic with this unique slug already exists. Please choose another name.",
+        )
       }
+
+      const locationLinkValue =
+        (dto.location_link !== undefined ? dto.location_link : dto.locationLink)?.trim() || ""
 
       const clinics = await this.clinicModel.create(
         [
@@ -101,14 +104,15 @@ export class ClinicService {
             phone: dto.phone.trim(),
             email: dto.email.toLowerCase().trim(),
             address: dto.address,
+            location_link: locationLinkValue,
             status: ClinicStatus.ACTIVE,
             ownerDoctorId: creator._id,
             createdBy: creator._id,
           },
         ],
         { session },
-      );
-      const clinic = clinics[0];
+      )
+      const clinic = clinics[0]
 
       const memberships = await this.membershipModel.create(
         [
@@ -121,8 +125,8 @@ export class ClinicService {
           },
         ],
         { session },
-      );
-      const membership = memberships[0];
+      )
+      const membership = memberships[0]
 
       await this.auditService.logEvent(
         {
@@ -135,10 +139,10 @@ export class ClinicService {
           },
         },
         session,
-      );
+      )
 
-      return { clinic, membership };
-    });
+      return { clinic, membership }
+    })
   }
 
   /**
@@ -150,8 +154,8 @@ export class ClinicService {
         doctorId,
         status: ClinicMembershipStatus.ACTIVE,
       })
-      .populate('clinicId')
-      .lean();
+      .populate("clinicId")
+      .lean()
 
     return memberships
       .filter((m) => m.clinicId != null)
@@ -162,21 +166,22 @@ export class ClinicService {
         phone: m.clinicId.phone,
         email: m.clinicId.email,
         address: m.clinicId.address,
+        location_link: m.clinicId.location_link || "",
         status: m.clinicId.status,
         role: m.role,
         joinedAt: m.joinedAt,
-      }));
+      }))
   }
 
   /**
    * Retrieves profile details for a validated clinic context.
    */
   async getClinicProfile(clinicId: Types.ObjectId): Promise<ClinicDocument> {
-    const clinic = await this.clinicModel.findById(clinicId);
+    const clinic = await this.clinicModel.findById(clinicId)
     if (!clinic) {
-      throw new NotFoundException('Clinic not found.');
+      throw new NotFoundException("Clinic not found.")
     }
-    return clinic;
+    return clinic
   }
 
   /**
@@ -187,25 +192,29 @@ export class ClinicService {
     dto: UpdateClinicDto,
     _actorId: Types.ObjectId,
   ): Promise<ClinicDocument> {
-    const updatePayload: Record<string, any> = {};
-    if (dto.name) updatePayload.name = dto.name.trim();
-    if (dto.phone) updatePayload.phone = dto.phone.trim();
-    if (dto.email) updatePayload.email = dto.email.toLowerCase().trim();
-    if (dto.address) updatePayload.address = dto.address;
+    const updatePayload: Record<string, any> = {}
+    if (dto.name) updatePayload.name = dto.name.trim()
+    if (dto.phone) updatePayload.phone = dto.phone.trim()
+    if (dto.email) updatePayload.email = dto.email.toLowerCase().trim()
+    if (dto.address) updatePayload.address = dto.address
+    if (dto.location_link !== undefined || dto.locationLink !== undefined) {
+      updatePayload.location_link =
+        (dto.location_link !== undefined ? dto.location_link : dto.locationLink)?.trim() || ""
+    }
 
     return executeInTransaction(this.connection, async (session) => {
       const updated = await this.clinicModel.findOneAndUpdate(
         { _id: clinicId, status: ClinicStatus.ACTIVE },
         { $set: updatePayload },
         { session, new: true },
-      );
+      )
 
       if (!updated) {
-        throw new NotFoundException('Active clinic not found for update.');
+        throw new NotFoundException("Active clinic not found for update.")
       }
 
-      return updated;
-    });
+      return updated
+    })
   }
 
   /**
@@ -221,12 +230,12 @@ export class ClinicService {
         { _id: clinicId, status: ClinicStatus.ACTIVE },
         { $set: { status: ClinicStatus.SUSPENDED } },
         { session, new: true },
-      );
+      )
 
       if (!updated) {
         throw new ConflictException(
-          'Clinic cannot be suspended; it may not be in active state.',
-        );
+          "Clinic cannot be suspended; it may not be in active state.",
+        )
       }
 
       await this.auditService.logEvent(
@@ -237,10 +246,10 @@ export class ClinicService {
           reason,
         },
         session,
-      );
+      )
 
-      return updated;
-    });
+      return updated
+    })
   }
 
   /**
@@ -256,12 +265,12 @@ export class ClinicService {
         { _id: clinicId, status: ClinicStatus.SUSPENDED },
         { $set: { status: ClinicStatus.ACTIVE } },
         { session, new: true },
-      );
+      )
 
       if (!updated) {
         throw new ConflictException(
-          'Clinic cannot be reactivated; it is not currently suspended.',
-        );
+          "Clinic cannot be reactivated; it is not currently suspended.",
+        )
       }
 
       await this.auditService.logEvent(
@@ -272,10 +281,10 @@ export class ClinicService {
           reason,
         },
         session,
-      );
+      )
 
-      return updated;
-    });
+      return updated
+    })
   }
 
   /**
@@ -286,8 +295,8 @@ export class ClinicService {
     reason: string,
     actorId: Types.ObjectId,
   ): Promise<ClinicDocument> {
-    const now = new Date();
-    const retentionExpiry = new Date(now.getTime() + 90 * 24 * 60 * 60 * 1000);
+    const now = new Date()
+    const retentionExpiry = new Date(now.getTime() + 90 * 24 * 60 * 60 * 1000)
 
     return executeInTransaction(this.connection, async (session) => {
       const updated = await this.clinicModel.findOneAndUpdate(
@@ -297,12 +306,12 @@ export class ClinicService {
         },
         { $set: { status: ClinicStatus.ARCHIVED } },
         { session, new: true },
-      );
+      )
 
       if (!updated) {
         throw new ConflictException(
-          'Clinic cannot be archived; it may already be archived.',
-        );
+          "Clinic cannot be archived; it may already be archived.",
+        )
       }
 
       // Cancel all pending invitations
@@ -316,7 +325,7 @@ export class ClinicService {
           },
         },
         { session },
-      );
+      )
 
       // Cancel all pending or processing outbox jobs
       await this.outboxModel.updateMany(
@@ -330,11 +339,11 @@ export class ClinicService {
             encryptedPayload: null,
             iv: null,
             authTag: null,
-            errorSummary: 'Clinic archived; delivery cancelled',
+            errorSummary: "Clinic archived; delivery cancelled",
           },
         },
         { session },
-      );
+      )
 
       await this.auditService.logEvent(
         {
@@ -347,10 +356,10 @@ export class ClinicService {
           },
         },
         session,
-      );
+      )
 
-      return updated;
-    });
+      return updated
+    })
   }
 
   /**
@@ -362,8 +371,8 @@ export class ClinicService {
         clinicId,
         status: ClinicMembershipStatus.ACTIVE,
       })
-      .populate('doctorId', 'firstName lastName email phone')
-      .lean();
+      .populate("doctorId", "firstName lastName email phone")
+      .lean()
 
     return members.map((m: any) => ({
       id: m._id.toString(),
@@ -378,7 +387,7 @@ export class ClinicService {
         : null,
       role: m.role,
       joinedAt: m.joinedAt,
-    }));
+    }))
   }
 
   /**
@@ -390,34 +399,37 @@ export class ClinicService {
     actor: DoctorDocument,
     dto: InviteMemberDto,
   ): Promise<any> {
-    if ((dto.role as any) === ClinicRole.OWNER || !['DOCTOR', 'STAFF'].includes(dto.role)) {
+    if (
+      dto.role as any === ClinicRole.OWNER ||
+      !["DOCTOR", "STAFF"].includes(dto.role)
+    ) {
       throw new BadRequestException(
-        'Invitations cannot grant OWNER privileges. Ownership can only be transferred.',
-      );
+        "Invitations cannot grant OWNER privileges. Ownership can only be transferred.",
+      )
     }
 
-    const inviteeEmail = dto.inviteeEmail.toLowerCase().trim();
-    const now = new Date();
+    const inviteeEmail = dto.inviteeEmail.toLowerCase().trim()
+    const now = new Date()
 
-    const clinic = await this.clinicModel.findById(clinicId);
+    const clinic = await this.clinicModel.findById(clinicId)
     if (!clinic || clinic.status !== ClinicStatus.ACTIVE) {
-      throw new BadRequestException('Clinic is not active for invitations.');
+      throw new BadRequestException("Clinic is not active for invitations.")
     }
 
     // Check if invitee is already an active member
     const existingDoctor = await this.doctorModel.findOne({
       email: inviteeEmail,
-    });
+    })
     if (existingDoctor) {
       const existingMembership = await this.membershipModel.findOne({
         clinicId,
         doctorId: existingDoctor._id,
         status: ClinicMembershipStatus.ACTIVE,
-      });
+      })
       if (existingMembership) {
         throw new ConflictException(
-          'Doctor is already an active member of this clinic.',
-        );
+          "Doctor is already an active member of this clinic.",
+        )
       }
     }
 
@@ -426,13 +438,13 @@ export class ClinicService {
       clinicId,
       inviteeEmail,
       status: ClinicInvitationStatus.PENDING,
-    });
+    })
 
     if (existingPending) {
       if (existingPending.expiresAt > now) {
         throw new ConflictException(
-          'An active invitation for this email is already pending.',
-        );
+          "An active invitation for this email is already pending.",
+        )
       }
       // Expired: atomically transition to EXPIRED
       await this.invitationModel.findOneAndUpdate(
@@ -448,13 +460,13 @@ export class ClinicService {
             retentionExpiresAt: new Date(now.getTime() + 90 * 86400 * 1000),
           },
         },
-      );
+      )
     }
 
     // Cryptographic token generation
-    const rawToken = crypto.randomBytes(32).toString('hex');
-    const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex');
-    const expiresAt = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000); // 7 days
+    const rawToken = crypto.randomBytes(32).toString("hex")
+    const tokenHash = crypto.createHash("sha256").update(rawToken).digest("hex")
+    const expiresAt = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000) // 7 days
 
     // Encrypt payload for Outbox
     const encrypted = this.outboxService.encryptPayload({
@@ -462,9 +474,9 @@ export class ClinicService {
       recipientEmail: inviteeEmail,
       clinicName: clinic.name,
       role: dto.role,
-    });
+    })
 
-    const correlationId = crypto.randomUUID();
+    const correlationId = crypto.randomUUID()
 
     // Atomic insert of Invitation, Outbox, and Audit Log
     const { invitation, outboxJob } = await executeInTransaction(
@@ -484,8 +496,8 @@ export class ClinicService {
             },
           ],
           { session },
-        );
-        const inv = invs[0];
+        )
+        const inv = invs[0]
 
         const outboxDocs = await this.outboxModel.create(
           [
@@ -504,8 +516,8 @@ export class ClinicService {
             },
           ],
           { session },
-        );
-        const outbox = outboxDocs[0];
+        )
+        const outbox = outboxDocs[0]
 
         await this.auditService.logEvent(
           {
@@ -519,18 +531,18 @@ export class ClinicService {
             },
           },
           session,
-        );
+        )
 
-        return { invitation: inv, outboxJob: outbox };
+        return { invitation: inv, outboxJob: outbox }
       },
-    );
+    )
 
     // Asynchronously dispatch the email delivery outside the transaction
     this.outboxService.dispatchJob(outboxJob._id).catch((err) => {
       this.logger.error(
         `[${correlationId}] Background outbox dispatch encountered error: ${err?.message}`,
-      );
-    });
+      )
+    })
 
     // Sanitized response (zero tokens or hashes exposed)
     return {
@@ -541,7 +553,7 @@ export class ClinicService {
       status: invitation.status,
       expiresAt: invitation.expiresAt,
       createdAt: invitation.createdAt,
-    };
+    }
   }
 
   /**
@@ -549,17 +561,17 @@ export class ClinicService {
    * Zero raw tokens or token hashes are ever returned.
    */
   async listDoctorInvitations(doctorEmail: string): Promise<any[]> {
-    const normalizedEmail = doctorEmail.toLowerCase().trim();
+    const normalizedEmail = doctorEmail.toLowerCase().trim()
     const invitations = await this.invitationModel
       .find({
         inviteeEmail: normalizedEmail,
         status: ClinicInvitationStatus.PENDING,
         expiresAt: { $gt: new Date() },
       })
-      .populate('clinicId', 'name slug email phone address')
-      .populate('invitedBy', 'firstName lastName email')
+      .populate("clinicId", "name slug email phone address")
+      .populate("invitedBy", "firstName lastName email")
       .sort({ createdAt: -1 })
-      .lean();
+      .lean()
 
     return invitations.map((inv: any) => ({
       id: inv._id.toString(),
@@ -581,7 +593,7 @@ export class ClinicService {
         : null,
       createdAt: inv.createdAt,
       expiresAt: inv.expiresAt,
-    }));
+    }))
   }
 
   /**
@@ -591,8 +603,8 @@ export class ClinicService {
     rawToken: string,
     authenticatedDoctor: DoctorDocument,
   ): Promise<any> {
-    const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex');
-    const now = new Date();
+    const tokenHash = crypto.createHash("sha256").update(rawToken).digest("hex")
+    const now = new Date()
 
     return executeInTransaction(this.connection, async (session) => {
       // 1. Atomically claim invitation
@@ -611,12 +623,12 @@ export class ClinicService {
           },
         },
         { session, new: true },
-      );
+      )
 
       if (!invitation) {
         throw new NotFoundException(
-          'Invitation is invalid, expired, or already used.',
-        );
+          "Invitation is invalid, expired, or already used.",
+        )
       }
 
       // 2. Strict recipient identity verification
@@ -625,17 +637,17 @@ export class ClinicService {
         invitation.inviteeEmail.toLowerCase().trim()
       ) {
         throw new ForbiddenException(
-          'This invitation was sent to a different email address.',
-        );
+          "This invitation was sent to a different email address.",
+        )
       }
 
       // 3. Verify target clinic status
       const clinic = await this.clinicModel
         .findById(invitation.clinicId)
-        .session(session);
+        .session(session)
 
       if (!clinic || clinic.status !== ClinicStatus.ACTIVE) {
-        throw new ForbiddenException('Clinic is not currently active.');
+        throw new ForbiddenException("Clinic is not currently active.")
       }
 
       // 4. Historical membership validation
@@ -644,18 +656,18 @@ export class ClinicService {
           clinicId: invitation.clinicId,
           doctorId: authenticatedDoctor._id,
         })
-        .session(session);
+        .session(session)
 
       if (existingMembership) {
         if (existingMembership.status === ClinicMembershipStatus.ACTIVE) {
           throw new ConflictException(
-            'Doctor is already an active member of this clinic.',
-          );
+            "Doctor is already an active member of this clinic.",
+          )
         }
         if (existingMembership.status === ClinicMembershipStatus.SUSPENDED) {
           throw new ForbiddenException(
-            'Doctor membership is suspended. Contact clinic owner for reactivation.',
-          );
+            "Doctor membership is suspended. Contact clinic owner for reactivation.",
+          )
         }
         if (existingMembership.status === ClinicMembershipStatus.REVOKED) {
           if (
@@ -664,8 +676,8 @@ export class ClinicService {
             invitation.createdAt <= existingMembership.revokedAt
           ) {
             throw new ForbiddenException(
-              'Invitation is invalid: membership was revoked after this invitation was issued.',
-            );
+              "Invitation is invalid: membership was revoked after this invitation was issued.",
+            )
           }
           // Valid re-authorization: reactivate membership
           await this.membershipModel.findOneAndUpdate(
@@ -680,7 +692,7 @@ export class ClinicService {
               },
             },
             { session, new: true },
-          );
+          )
         }
       } else {
         // Create brand new active membership
@@ -696,7 +708,7 @@ export class ClinicService {
             },
           ],
           { session },
-        );
+        )
       }
 
       // 5. Cancel any lingering outbox delivery jobs
@@ -711,11 +723,12 @@ export class ClinicService {
             encryptedPayload: null,
             iv: null,
             authTag: null,
-            errorSummary: 'Invitation accepted by recipient; delivery cancelled',
+            errorSummary:
+              "Invitation accepted by recipient; delivery cancelled",
           },
         },
         { session },
-      );
+      )
 
       // 6. Record audit log
       await this.auditService.logEvent(
@@ -729,14 +742,14 @@ export class ClinicService {
           },
         },
         session,
-      );
+      )
 
       return {
-        message: 'Invitation accepted successfully.',
+        message: "Invitation accepted successfully.",
         clinicId: invitation.clinicId.toString(),
         role: invitation.role,
-      };
-    });
+      }
+    })
   }
 
   /**
@@ -746,8 +759,8 @@ export class ClinicService {
     rawToken: string,
     authenticatedDoctor: DoctorDocument,
   ): Promise<any> {
-    const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex');
-    const now = new Date();
+    const tokenHash = crypto.createHash("sha256").update(rawToken).digest("hex")
+    const now = new Date()
 
     return executeInTransaction(this.connection, async (session) => {
       const invitation = await this.invitationModel
@@ -755,12 +768,12 @@ export class ClinicService {
           invitationTokenHash: tokenHash,
           expiresAt: { $gt: now },
         })
-        .session(session);
+        .session(session)
 
       if (!invitation) {
         throw new NotFoundException(
-          'Invitation is invalid, expired, or already used.',
-        );
+          "Invitation is invalid, expired, or already used.",
+        )
       }
 
       if (
@@ -768,8 +781,8 @@ export class ClinicService {
         invitation.inviteeEmail.toLowerCase().trim()
       ) {
         throw new ForbiddenException(
-          'This invitation was sent to a different email address.',
-        );
+          "This invitation was sent to a different email address.",
+        )
       }
 
       const declined = await this.invitationModel.findOneAndUpdate(
@@ -786,12 +799,12 @@ export class ClinicService {
           },
         },
         { session, new: true },
-      );
+      )
 
       if (!declined) {
         throw new NotFoundException(
-          'Invitation is no longer pending or has already been responded to.',
-        );
+          "Invitation is no longer pending or has already been responded to.",
+        )
       }
 
       await this.outboxModel.updateMany(
@@ -805,11 +818,12 @@ export class ClinicService {
             encryptedPayload: null,
             iv: null,
             authTag: null,
-            errorSummary: 'Invitation declined by recipient; delivery cancelled',
+            errorSummary:
+              "Invitation declined by recipient; delivery cancelled",
           },
         },
         { session },
-      );
+      )
 
       await this.auditService.logEvent(
         {
@@ -821,10 +835,10 @@ export class ClinicService {
           },
         },
         session,
-      );
+      )
 
-      return { message: 'Invitation declined successfully.' };
-    });
+      return { message: "Invitation declined successfully." }
+    })
   }
 
   /**
@@ -835,7 +849,7 @@ export class ClinicService {
     invitationId: Types.ObjectId,
     actorId: Types.ObjectId,
   ): Promise<any> {
-    const now = new Date();
+    const now = new Date()
 
     return executeInTransaction(this.connection, async (session) => {
       const invitation = await this.invitationModel.findOneAndUpdate(
@@ -852,10 +866,12 @@ export class ClinicService {
           },
         },
         { session, new: true },
-      );
+      )
 
       if (!invitation) {
-        throw new NotFoundException('Pending invitation not found for cancellation.');
+        throw new NotFoundException(
+          "Pending invitation not found for cancellation.",
+        )
       }
 
       await this.outboxModel.updateMany(
@@ -869,11 +885,11 @@ export class ClinicService {
             encryptedPayload: null,
             iv: null,
             authTag: null,
-            errorSummary: 'Invitation cancelled by clinic administrator',
+            errorSummary: "Invitation cancelled by clinic administrator",
           },
         },
         { session },
-      );
+      )
 
       await this.auditService.logEvent(
         {
@@ -886,10 +902,10 @@ export class ClinicService {
           },
         },
         session,
-      );
+      )
 
-      return { message: 'Invitation cancelled successfully.' };
-    });
+      return { message: "Invitation cancelled successfully." }
+    })
   }
 
   /**
@@ -900,7 +916,7 @@ export class ClinicService {
     targetDoctorId: Types.ObjectId,
     actorId: Types.ObjectId,
   ): Promise<any> {
-    const now = new Date();
+    const now = new Date()
 
     return executeInTransaction(this.connection, async (session) => {
       const membership = await this.membershipModel
@@ -909,22 +925,22 @@ export class ClinicService {
           doctorId: targetDoctorId,
           status: ClinicMembershipStatus.ACTIVE,
         })
-        .session(session);
+        .session(session)
 
       if (!membership) {
-        throw new NotFoundException('Active clinic membership not found.');
+        throw new NotFoundException("Active clinic membership not found.")
       }
 
       if (membership.role === ClinicRole.OWNER) {
         throw new BadRequestException(
-          'Cannot revoke clinic owner. Ownership must be transferred first.',
-        );
+          "Cannot revoke clinic owner. Ownership must be transferred first.",
+        )
       }
 
-      membership.status = ClinicMembershipStatus.REVOKED;
-      membership.revokedAt = now;
-      membership.revokedBy = actorId;
-      await membership.save({ session });
+      membership.status = ClinicMembershipStatus.REVOKED
+      membership.revokedAt = now
+      membership.revokedBy = actorId
+      await membership.save({ session })
 
       await this.auditService.logEvent(
         {
@@ -935,10 +951,10 @@ export class ClinicService {
           role: membership.role,
         },
         session,
-      );
+      )
 
-      return { message: 'Member revoked successfully.' };
-    });
+      return { message: "Member revoked successfully." }
+    })
   }
 
   /**
@@ -951,8 +967,8 @@ export class ClinicService {
   ): Promise<any> {
     if (currentOwnerDoctorId.toString() === newOwnerDoctorId.toString()) {
       throw new BadRequestException(
-        'Target doctor is already the current owner of this clinic.',
-      );
+        "Target doctor is already the current owner of this clinic.",
+      )
     }
 
     return executeInTransaction(this.connection, async (session) => {
@@ -963,12 +979,12 @@ export class ClinicService {
           doctorId: newOwnerDoctorId,
           status: ClinicMembershipStatus.ACTIVE,
         })
-        .session(session);
+        .session(session)
 
       if (!targetMembership) {
         throw new BadRequestException(
-          'Target doctor is not an active member of this clinic.',
-        );
+          "Target doctor is not an active member of this clinic.",
+        )
       }
 
       // 2. Conditional clinic owner update
@@ -980,12 +996,12 @@ export class ClinicService {
         },
         { $set: { ownerDoctorId: newOwnerDoctorId } },
         { session, new: true },
-      );
+      )
 
       if (!updatedClinic) {
         throw new ConflictException(
-          'Ownership transfer failed: Clinic status or current owner modified concurrently.',
-        );
+          "Ownership transfer failed: Clinic status or current owner modified concurrently.",
+        )
       }
 
       // 3. Demote current owner
@@ -998,12 +1014,12 @@ export class ClinicService {
         },
         { $set: { role: ClinicRole.DOCTOR } },
         { session, new: true },
-      );
+      )
 
       if (!demoted) {
         throw new ConflictException(
-          'Ownership transfer failed: Current owner membership could not be updated.',
-        );
+          "Ownership transfer failed: Current owner membership could not be updated.",
+        )
       }
 
       // 4. Promote target member
@@ -1015,12 +1031,12 @@ export class ClinicService {
         },
         { $set: { role: ClinicRole.OWNER } },
         { session, new: true },
-      );
+      )
 
       if (!promoted) {
         throw new ConflictException(
-          'Ownership transfer failed: Target member could not be promoted.',
-        );
+          "Ownership transfer failed: Target member could not be promoted.",
+        )
       }
 
       // 5. Append audit log
@@ -1036,13 +1052,13 @@ export class ClinicService {
           },
         },
         session,
-      );
+      )
 
       return {
-        message: 'Clinic ownership transferred successfully.',
+        message: "Clinic ownership transferred successfully.",
         clinicId: clinicId.toString(),
         newOwnerDoctorId: newOwnerDoctorId.toString(),
-      };
-    });
+      }
+    })
   }
 }

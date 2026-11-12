@@ -472,7 +472,9 @@ describe("Desktop Bridge (Tauri 2 Frontend Integration)", () => {
         return Promise.resolve({
           ok: false,
           status: 409,
-          json: async () => ({ message: "An account with this email address already exists." }),
+          json: async () => ({
+            message: "An account with this email address already exists.",
+          }),
         })
       }) as any)
 
@@ -491,7 +493,11 @@ describe("Desktop Bridge (Tauri 2 Frontend Integration)", () => {
       let callCount = 0
       const successResult = {
         accessToken: "retry-success-token",
-        doctor: { id: "doc-retry", fullName: "Dr. Retry", email: "retry@clinic.com" },
+        doctor: {
+          id: "doc-retry",
+          fullName: "Dr. Retry",
+          email: "retry@clinic.com",
+        },
       }
 
       globalThis.fetch = (vi.fn().mockImplementation((url: string) => {
@@ -954,6 +960,68 @@ describe("Desktop Bridge (Tauri 2 Frontend Integration)", () => {
       expect(loaded?.full_name).toBe("Dr. Web Test")
       expect(loaded?.registration_number).toBe("KMC 2024/555")
     })
+
+    it("dispatches cliniqo:profile-updated custom event when saving doctor profile and clinic profile", async () => {
+      delete win.__TAURI_INTERNALS__
+      const { saveDoctorProfile, saveClinicProfile } = await import(
+        "./desktop-bridge"
+      )
+
+      let receivedDoctorDetail: any = null
+      let receivedClinicDetail: any = null
+
+      const target = new EventTarget()
+      const prevWin = (globalThis as any).window
+      ;(globalThis as any).window = target
+      ;(target as any).localStorage = {
+        setItem: () => {},
+        getItem: () => null,
+        removeItem: () => {},
+      }
+
+      const handleUpdate = (e: Event) => {
+        const detail = (e as CustomEvent).detail
+        if (detail?.type === "doctor") receivedDoctorDetail = detail
+        if (detail?.type === "clinic") receivedClinicDetail = detail
+      }
+
+      target.addEventListener("cliniqo:profile-updated", handleUpdate)
+
+      await saveDoctorProfile({
+        doctor_id: "doc-sync-test",
+        full_name: "Dr. Bibi Dipesh",
+        email: "bibi@cliniqo.test",
+        phone: "+91 9123456789",
+        qualification: "MBBS, MS",
+        registration_number: "MMC 2026/777",
+        gender: "Male",
+      })
+
+      expect(receivedDoctorDetail).not.toBeNull()
+      expect(receivedDoctorDetail.type).toBe("doctor")
+      expect(receivedDoctorDetail.profile.full_name).toBe("Dr. Bibi Dipesh")
+
+      await saveClinicProfile({
+        clinic_id: "clinic-sync-test",
+        name: "Cutie Health Clinic",
+        slug: "cutie-clinic",
+        phone: "022-123456",
+        email: "clinic@cliniqo.test",
+        street: "123 Marine Drive",
+        city: "Mumbai",
+        state: "Maharashtra",
+        postal_code: "400001",
+        country: "India",
+        location_link: "https://maps.test/cutie",
+      })
+
+      expect(receivedClinicDetail).not.toBeNull()
+      expect(receivedClinicDetail.type).toBe("clinic")
+      expect(receivedClinicDetail.profile.name).toBe("Cutie Health Clinic")
+
+      target.removeEventListener("cliniqo:profile-updated", handleUpdate)
+      ;(globalThis as any).window = prevWin
+    })
   })
 
   describe("Inventory & Stock Management Bridge", () => {
@@ -1094,7 +1162,10 @@ describe("Desktop Bridge (Tauri 2 Frontend Integration)", () => {
       expect(batches[0].status).toBe("COMPLETED")
 
       // 5. Rollback
-      const rolledBack = await rollbackClinicalLibraryBatch(clinicId, summary1.batch_id)
+      const rolledBack = await rollbackClinicalLibraryBatch(
+        clinicId,
+        summary1.batch_id,
+      )
       expect(rolledBack).toBe(2)
 
       const activeAfterRollback = await getClinicalLibraryItems(clinicId)
@@ -1116,6 +1187,62 @@ describe("Desktop Bridge (Tauri 2 Frontend Integration)", () => {
       await archiveClinicalLibraryItem(clinicId, newId)
       const afterArchive = await getClinicalLibraryItems(clinicId)
       expect(afterArchive.length).toBe(0)
+    })
+  })
+
+  describe("Encrypted Backup & Restore Bridge", () => {
+    it("exportEncryptedBackup produces valid encrypted backup payload in demo mode", async () => {
+      const { exportEncryptedBackup } = await import("./desktop-bridge")
+      const result = await exportEncryptedBackup("clinic_bk_test", "Secret123!")
+
+      expect(result.success).toBe(true)
+      expect(result.backup_file_name).toContain("cliniqo_backup_clinic_bk_test")
+      expect(result.backup_bytes_base64).toBeDefined()
+      expect(result.manifest.clinic_id).toBe("clinic_bk_test")
+      expect(result.manifest.version).toBe(1)
+    })
+
+    it("restoreEncryptedBackup succeeds and validates payload presence", async () => {
+      const { restoreEncryptedBackup } = await import("./desktop-bridge")
+      const result = await restoreEncryptedBackup({
+        clinicId: "clinic_bk_test",
+        backupBytesBase64: "Q0xJTklRT19CQUNLVVA=",
+        passphrase: "Secret123!",
+      })
+
+      expect(result.success).toBe(true)
+      expect(result.clinic_id).toBe("clinic_bk_test")
+      expect(result.manifest.version).toBe(1)
+    })
+
+    it("restoreEncryptedBackup throws error if neither bytes nor path provided", async () => {
+      const { restoreEncryptedBackup } = await import("./desktop-bridge")
+      await expect(
+        restoreEncryptedBackup({ clinicId: "clinic_test" }),
+      ).rejects.toThrow("No backup data or file provided")
+    })
+  })
+
+  describe("Auto-Updater Bridge", () => {
+    it("checkAppUpdate returns structured update status", async () => {
+      const { checkAppUpdate } = await import("./desktop-bridge")
+      const result = await checkAppUpdate()
+
+      expect(result).toHaveProperty("available")
+      expect(result).toHaveProperty("current_version")
+      expect(result.endpoint).toContain("releases/latest/download/latest.json")
+    })
+
+    it("downloadAndLaunchUpdate simulates update execution in demo mode", async () => {
+      const { downloadAndLaunchUpdate } = await import("./desktop-bridge")
+      const result = await downloadAndLaunchUpdate(
+        "https://github.com/dipeshpatekar/Cliniqo/releases/download/v1.0.1/Cliniqo-Setup.exe",
+        "1.0.1",
+      )
+
+      expect(result.success).toBe(true)
+      expect(result.target_version).toBe("1.0.1")
+      expect(result.status_message).toContain("preserved")
     })
   })
 })

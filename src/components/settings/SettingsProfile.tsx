@@ -14,7 +14,7 @@ import {
 
 export interface SettingsProfileProps {
   title: string
-  description: string
+  description?: string
   clinic: boolean
   desktopSession?: DesktopSessionContext | null
   onSave?: (handler: () => Promise<boolean>) => void
@@ -138,6 +138,15 @@ export function SettingsProfile({
             )
           }
         }
+        if (typeof window !== "undefined") {
+          try {
+            window.dispatchEvent(
+              new CustomEvent("cliniqo:profile-updated", {
+                detail: { type: "clinic-logo", logo: dataUrl },
+              }),
+            )
+          } catch {}
+        }
       } else {
         setDoctorPhoto(dataUrl)
         if (typeof window !== "undefined" && window.localStorage) {
@@ -148,6 +157,15 @@ export function SettingsProfile({
               dataUrl,
             )
           }
+        }
+        if (typeof window !== "undefined") {
+          try {
+            window.dispatchEvent(
+              new CustomEvent("cliniqo:profile-updated", {
+                detail: { type: "doctor-photo", photo: dataUrl },
+              }),
+            )
+          } catch {}
         }
       }
       setFileError("")
@@ -168,6 +186,15 @@ export function SettingsProfile({
           )
         }
       }
+      if (typeof window !== "undefined") {
+        try {
+          window.dispatchEvent(
+            new CustomEvent("cliniqo:profile-updated", {
+              detail: { type: "clinic-logo", logo: null },
+            }),
+          )
+        } catch {}
+      }
     } else {
       setDoctorPhoto(null)
       if (typeof window !== "undefined" && window.localStorage) {
@@ -177,6 +204,15 @@ export function SettingsProfile({
             `cliniqo_doctor_photo_${desktopSession.doctor_id}`,
           )
         }
+      }
+      if (typeof window !== "undefined") {
+        try {
+          window.dispatchEvent(
+            new CustomEvent("cliniqo:profile-updated", {
+              detail: { type: "doctor-photo", photo: null },
+            }),
+          )
+        } catch {}
       }
     }
     setFileError("")
@@ -202,7 +238,7 @@ export function SettingsProfile({
     onSave(async () => {
       if (!desktopSession?.doctor_id) return true
       try {
-        await saveDoctorProfile({
+        const saved = await saveDoctorProfile({
           doctor_id: desktopSession.doctor_id,
           full_name: docFullName.trim() || desktopSession.doctor_name,
           email: docEmail.trim() || desktopSession.doctor_email,
@@ -211,7 +247,7 @@ export function SettingsProfile({
           registration_number: docRegistrationNumber.trim(),
           gender: docGender || "Male",
         })
-        return true
+        return saved !== null
       } catch (err) {
         console.error("Failed to save doctor profile:", err)
         return false
@@ -255,7 +291,7 @@ export function SettingsProfile({
     onSave(async () => {
       if (!desktopSession?.clinic_id) return true
       try {
-        await saveClinicProfile({
+        const saved = await saveClinicProfile({
           clinic_id: desktopSession.clinic_id,
           name:
             clinicName.trim() ||
@@ -272,7 +308,7 @@ export function SettingsProfile({
           country: countryVal.trim() || "India",
           location_link: locationLink.trim(),
         })
-        return true
+        return saved !== null
       } catch (err) {
         console.error("Failed to save clinic profile:", err)
         return false
@@ -299,7 +335,7 @@ export function SettingsProfile({
     <section className="settings-section">
       <div className="settings-title">
         <h2>{title}</h2>
-        <p>{description}</p>
+        {description && <p>{description}</p>}
       </div>
       <div className="photo-upload">
         <span

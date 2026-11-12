@@ -1,45 +1,39 @@
-import { Module } from '@nestjs/common';
-import { MongooseModule } from '@nestjs/mongoose';
-import { ClinicModule } from '../clinic/clinic.module.js';
-import { AuthModule } from '../auth/auth.module.js';
+import { Module } from "@nestjs/common"
+import { MongooseModule } from "@nestjs/mongoose"
+import { ClinicModule } from "../clinic/clinic.module.js"
+import { AuthModule } from "../auth/auth.module.js"
 import {
   Prescription,
   PrescriptionSchema,
-} from './schemas/prescription.schema.js';
+} from "./schemas/prescription.schema.js"
 import {
   PrescriptionRevision,
   PrescriptionRevisionSchema,
-} from './schemas/prescription-revision.schema.js';
+} from "./schemas/prescription-revision.schema.js"
 import {
   Consultation,
   ConsultationSchema,
-} from '../consultation/schemas/consultation.schema.js';
-import {
-  Patient,
-  PatientSchema,
-} from '../patient/schemas/patient.schema.js';
+} from "../consultation/schemas/consultation.schema.js"
+import { Patient, PatientSchema } from "../patient/schemas/patient.schema.js"
 import {
   ClinicSequenceCounter,
   ClinicSequenceCounterSchema,
-} from '../patient/schemas/clinic-sequence-counter.schema.js';
+} from "../patient/schemas/clinic-sequence-counter.schema.js"
 import {
   ClinicAuditLog,
   ClinicAuditLogSchema,
-} from '../clinic/schemas/clinic-audit-log.schema.js';
+} from "../clinic/schemas/clinic-audit-log.schema.js"
 import {
   IdempotencyRecord,
   IdempotencyRecordSchema,
-} from '../common/schemas/idempotency-record.schema.js';
+} from "../common/schemas/idempotency-record.schema.js"
 import {
   ClinicMembership,
   ClinicMembershipSchema,
-} from '../clinic/schemas/clinic-membership.schema.js';
-import {
-  Clinic,
-  ClinicSchema,
-} from '../clinic/schemas/clinic.schema.js';
-import { PrescriptionService } from './prescription.service.js';
-import { PrescriptionController } from './prescription.controller.js';
+} from "../clinic/schemas/clinic-membership.schema.js"
+import { Clinic, ClinicSchema } from "../clinic/schemas/clinic.schema.js"
+import { PrescriptionService } from "./prescription.service.js"
+import { PrescriptionController } from "./prescription.controller.js"
 
 @Module({
   imports: [

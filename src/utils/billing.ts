@@ -60,6 +60,7 @@ export function validateMedicineFormulation(
     f.includes("cream") ||
     f.includes("ointment") ||
     f.includes("gel") ||
+    f.includes("lotion") ||
     f.includes("topical")
   ) {
     if (!med.directions || !med.directions.trim()) {

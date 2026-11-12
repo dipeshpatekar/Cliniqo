@@ -12,9 +12,19 @@ import {
   Check,
   X,
 } from "lucide-react"
-import type { Page, Patient, Vitals, ConsultationData } from "../../types"
-import { formatMedicineDose } from "../../types"
+import {
+  formatDateDDMMYYYY,
+  formatMedicineDose,
+  formatPatientAgeGender,
+  formatPrescriptionDateWithTime,
+  getPublicPatientId,
+  type Page,
+  type Patient,
+  type Vitals,
+  type ConsultationData,
+} from "../../types"
 import { cn } from "../../utils/cn"
+import { analyzeAllergies } from "../../utils/allergy"
 import { Button, IconButton, Modal } from "../common"
 import { AppHeader } from "../layout"
 import {
@@ -69,8 +79,9 @@ export function PrescriptionPreview({
       })
       if (typeof window !== "undefined" && window.localStorage) {
         const storedLogo =
-          window.localStorage.getItem(`cliniqo_clinic_logo_${desktopSession.clinic_id}`) ||
-          window.localStorage.getItem("cliniqo_clinic_logo")
+          window.localStorage.getItem(
+            `cliniqo_clinic_logo_${desktopSession.clinic_id}`,
+          ) || window.localStorage.getItem("cliniqo_clinic_logo")
         if (storedLogo) setClinicLogo(storedLogo)
       }
     }
@@ -81,6 +92,34 @@ export function PrescriptionPreview({
     }
   }, [desktopSession?.clinic_id, desktopSession?.doctor_id])
 
+  useEffect(() => {
+    if (typeof window === "undefined") return
+    const handleProfileUpdate = (e: Event) => {
+      const customEvent = e as CustomEvent
+      const detail = customEvent.detail
+      if (!detail) return
+      if (detail.type === "doctor") {
+        setDoctorProfile(detail.profile)
+      } else if (detail.type === "clinic") {
+        setClinicProfile(detail.profile)
+      } else if (detail.type === "clinic-logo") {
+        setClinicLogo(detail.logo ?? null)
+      }
+    }
+
+    window.addEventListener("cliniqo:profile-updated", handleProfileUpdate)
+    return () => {
+      window.removeEventListener("cliniqo:profile-updated", handleProfileUpdate)
+    }
+  }, [])
+
+  const handlePrint = (e?: React.MouseEvent) => {
+    e?.preventDefault()
+    if (typeof window !== "undefined") {
+      window.print()
+    }
+  }
+
   const send = () => {
     setDelivery("sending")
     window.setTimeout(() => setDelivery("queued"), 1000)
@@ -89,8 +128,16 @@ export function PrescriptionPreview({
   return (
     <>
       <AppHeader
-        title="Prescription preview"
-        subtitle="Local session preview · Not persisted"
+        title={
+          returnPage === "settings"
+            ? "Prescription layout preview"
+            : "Prescription preview"
+        }
+        subtitle={
+          returnPage === "settings"
+            ? "Sample preview · Layout changes apply to all future prescriptions"
+            : "Local session preview · Not persisted"
+        }
       >
         <IconButton
           className="topbar-back"
@@ -104,9 +151,10 @@ export function PrescriptionPreview({
           <ArrowLeft size={18} />
         </IconButton>
         <Button
+          type="button"
           variant="secondary"
           icon={Printer}
-          onClick={() => window.print()}
+          onClick={handlePrint}
         >
           Print prescription
         </Button>
@@ -162,28 +210,53 @@ export function PrescriptionPreview({
                       <img
                         src={clinicLogo}
                         alt="Clinic logo"
-                        style={{ width: "100%", height: "100%", objectFit: "contain", borderRadius: "4px" }}
+                        style={{
+                          width: "100%",
+                          height: "100%",
+                          objectFit: "contain",
+                          borderRadius: "4px",
+                        }}
                       />
                     ) : (
                       <HeartPulse size={24} />
                     )}
                   </span>
                   <div>
-                    <h2>{clinicProfile?.name || (desktopSession?.clinic_id ? `Clinic ${desktopSession.clinic_id}` : "Medical Clinic")}</h2>
+                    <h2>
+                      {clinicProfile?.name ||
+                        (desktopSession?.clinic_id
+                          ? `Clinic ${desktopSession.clinic_id}`
+                          : "Medical Clinic")}
+                    </h2>
                     <p>
-                      {[clinicProfile?.street, clinicProfile?.city, clinicProfile?.state, clinicProfile?.postal_code]
+                      {[
+                        clinicProfile?.street,
+                        clinicProfile?.city,
+                        clinicProfile?.state,
+                        clinicProfile?.postal_code,
+                      ]
                         .filter(Boolean)
-                        .join(", ") || (desktopSession?.clinic_id ? "Registered Healthcare Facility" : "Local Clinic Workspace")}
+                        .join(", ") ||
+                        (desktopSession?.clinic_id
+                          ? "Registered Healthcare Facility"
+                          : "Local Clinic Workspace")}
                     </p>
                     {clinicProfile?.phone && (
-                      <p style={{ fontSize: "11px", color: "var(--text-muted, #64748b)" }}>
+                      <p
+                        style={{
+                          fontSize: "11px",
+                          color: "var(--text-muted, #64748b)",
+                        }}
+                      >
                         Ph: {clinicProfile.phone}
                       </p>
                     )}
                     {(clinicProfile?.email || desktopSession?.doctor_email) && (
                       <p>
                         <span
-                          className={cn(!showClinicEmail && "rx-content-hidden")}
+                          className={cn(
+                            !showClinicEmail && "rx-content-hidden",
+                          )}
                         >
                           {clinicProfile?.email || desktopSession?.doctor_email}
                         </span>
@@ -192,8 +265,15 @@ export function PrescriptionPreview({
                   </div>
                 </div>
                 <div className="rx-doctor">
-                  <strong>{desktopSession?.doctor_name || doctorProfile?.full_name || "Doctor"}</strong>
-                  <span>{doctorProfile?.qualification || "Registered Medical Practitioner"}</span>
+                  <strong>
+                    {doctorProfile?.full_name ||
+                      desktopSession?.doctor_name ||
+                      "Doctor"}
+                  </strong>
+                  <span>
+                    {doctorProfile?.qualification ||
+                      "Registered Medical Practitioner"}
+                  </span>
                   {doctorProfile?.registration_number && (
                     <span>Reg. No: {doctorProfile.registration_number}</span>
                   )}
@@ -210,16 +290,18 @@ export function PrescriptionPreview({
               <span>Patient</span>
               <strong>{patient.name}</strong>
               <small>
-                {patient.age} years · {patient.gender}
+                {formatPatientAgeGender(patient.age, patient.gender, "years")}
               </small>
             </div>
             <div>
               <span>Patient ID</span>
-              <strong>{patient.displayId || patient.id}</strong>
+              <strong>{getPublicPatientId(patient)}</strong>
             </div>
             <div>
               <span>Date</span>
-              <strong>{data.date || "—"}</strong>
+              <strong>
+                {formatPrescriptionDateWithTime(data.date, data.time)}
+              </strong>
             </div>
           </section>
 
@@ -352,38 +434,48 @@ export function PrescriptionPreview({
                 : ""}
             </p>
             <div>
-              <strong>Follow-up</strong>
+              <strong>Adv.</strong>
               <span>
-                {[data.followUpDate, data.followUpInstructions]
+                {[
+                  formatDateDDMMYYYY(data.followUpDate),
+                  data.followUpInstructions,
+                ]
                   .filter(Boolean)
-                  .join(" · ") || "No follow-up entered."}
+                  .join(" · ") || "No advice entered."}
               </span>
             </div>
           </section>
 
           <footer className="rx-footer">
             <div className={cn(!showAllergyWarning && "rx-content-hidden")}>
-              {patient.allergies.length > 0 ? (
-                <>
-                  <span>Allergy alert</span>
-                  <strong>{patient.allergies.join(", ")}</strong>
-                </>
-              ) : (
-                <>
-                  <span>Allergies</span>
-                  <strong>None recorded</strong>
-                </>
-              )}
+              {(() => {
+                const allergyAnalysis = analyzeAllergies(patient.allergies)
+                return allergyAnalysis.hasGenuineAllergies ? (
+                  <>
+                    <span>Allergy alert</span>
+                    <strong>{allergyAnalysis.displayLabel}</strong>
+                  </>
+                ) : (
+                  <>
+                    <span>Allergies</span>
+                    <strong>{allergyAnalysis.displayLabel}</strong>
+                  </>
+                )
+              })()}
             </div>
             <div className="signature">
               {signatureImage && (
                 <img
                   src={signatureImage.src}
-                  alt={`${desktopSession?.doctor_name || "Doctor"}’s signature`}
+                  alt={`${doctorProfile?.full_name || desktopSession?.doctor_name || "Doctor"}’s signature`}
                 />
               )}
               <span>Doctor’s signature</span>
-              <strong>{desktopSession?.doctor_name || "Doctor"}</strong>
+              <strong>
+                {doctorProfile?.full_name ||
+                  desktopSession?.doctor_name ||
+                  "Doctor"}
+              </strong>
             </div>
           </footer>
         </article>
@@ -418,7 +510,8 @@ export function PrescriptionPreview({
                 </span>
                 <div>
                   <strong>
-                    Prescription preview · {data.date || "No date"}
+                    Prescription preview ·{" "}
+                    {formatDateDDMMYYYY(data.date) || "No date"}
                   </strong>
                   <small>
                     No PDF or message will be generated in this frontend demo

@@ -21,6 +21,8 @@ import {
   UpdateDoctorProfileDto,
   RefreshTokenDto,
   ForgotPasswordDto,
+  VerifyOtpDto,
+  ResendOtpDto,
   ResetPasswordDto,
 } from "./dto/auth.dto.js"
 
@@ -97,6 +99,24 @@ export class AuthController {
       ipAddress: req.ip || req.socket?.remoteAddress,
     }
     return this.authService.forgotPassword(dto, meta)
+  }
+
+  @Post("verify-otp")
+  @HttpCode(HttpStatus.OK)
+  async verifyOtp(@Body() dto: VerifyOtpDto, @Req() req: Request) {
+    const meta = {
+      ipAddress: req.ip || req.socket?.remoteAddress,
+    }
+    return this.authService.verifyOtp(dto, meta)
+  }
+
+  @Post("resend-otp")
+  @HttpCode(HttpStatus.OK)
+  async resendOtp(@Body() dto: ResendOtpDto, @Req() req: Request) {
+    const meta = {
+      ipAddress: req.ip || req.socket?.remoteAddress,
+    }
+    return this.authService.resendOtp(dto, meta)
   }
 
   @Post("reset-password")

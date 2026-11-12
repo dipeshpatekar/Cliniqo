@@ -11,11 +11,14 @@ import {
   RefreshCw,
   Check,
 } from "lucide-react"
-import type {
-  Page,
-  Patient,
-  BillData,
-  BillLayoutPreferences,
+import {
+  formatDateDDMMYYYY,
+  formatPatientAgeGender,
+  getPublicPatientId,
+  type Page,
+  type Patient,
+  type BillData,
+  type BillLayoutPreferences,
 } from "../../types"
 import { computeBillTotals } from "../../utils/billing"
 import { cn } from "../../utils/cn"
@@ -66,8 +69,9 @@ export function BillPreview({
       })
       if (typeof window !== "undefined" && window.localStorage) {
         const storedLogo =
-          window.localStorage.getItem(`cliniqo_clinic_logo_${desktopSession.clinic_id}`) ||
-          window.localStorage.getItem("cliniqo_clinic_logo")
+          window.localStorage.getItem(
+            `cliniqo_clinic_logo_${desktopSession.clinic_id}`,
+          ) || window.localStorage.getItem("cliniqo_clinic_logo")
         if (storedLogo) setClinicLogo(storedLogo)
       }
     }
@@ -78,6 +82,27 @@ export function BillPreview({
     }
   }, [desktopSession?.clinic_id, desktopSession?.doctor_id])
 
+  useEffect(() => {
+    if (typeof window === "undefined") return
+    const handleProfileUpdate = (e: Event) => {
+      const customEvent = e as CustomEvent
+      const detail = customEvent.detail
+      if (!detail) return
+      if (detail.type === "doctor") {
+        setDoctorProfile(detail.profile)
+      } else if (detail.type === "clinic") {
+        setClinicProfile(detail.profile)
+      } else if (detail.type === "clinic-logo") {
+        setClinicLogo(detail.logo ?? null)
+      }
+    }
+
+    window.addEventListener("cliniqo:profile-updated", handleProfileUpdate)
+    return () => {
+      window.removeEventListener("cliniqo:profile-updated", handleProfileUpdate)
+    }
+  }, [])
+
   const {
     subtotalRupees,
     discountRupees,
@@ -86,16 +111,18 @@ export function BillPreview({
     totalRupees,
   } = computeBillTotals(bill.items, bill.discount, bill.taxRatePercent)
 
-  const formattedDate = bill.date
-    ? new Date(`${bill.date}T00:00:00`).toLocaleDateString("en-IN", {
-        day: "2-digit",
-        month: "long",
-        year: "numeric",
-      })
-    : "—"
+  const formattedDate = bill.date ? formatDateDDMMYYYY(bill.date) : "—"
 
   const isFinalized = bill.status === "FINALIZED"
-  const doctorName = desktopSession?.doctor_name || "Doctor"
+  const doctorName =
+    doctorProfile?.full_name || desktopSession?.doctor_name || "Doctor"
+
+  const handlePrint = (e?: React.MouseEvent) => {
+    e?.preventDefault()
+    if (typeof window !== "undefined") {
+      window.print()
+    }
+  }
 
   const sendBill = () => {
     setDelivery("sending")
@@ -105,10 +132,14 @@ export function BillPreview({
   return (
     <>
       <AppHeader
-        title="Bill preview"
-        subtitle={`${bill.invoiceNumber} · ${bill.paymentStatus} · ${
-          isFinalized ? "Finalized" : "Draft"
-        }`}
+        title={returnPage === "settings" ? "Bill layout preview" : "Bill preview"}
+        subtitle={
+          returnPage === "settings"
+            ? "Sample preview · Layout changes apply to all future bills"
+            : `${bill.invoiceNumber} · ${bill.paymentStatus} · ${
+                isFinalized ? "Finalized" : "Draft"
+              }`
+        }
       >
         <IconButton
           className="topbar-back"
@@ -120,9 +151,10 @@ export function BillPreview({
           <ArrowLeft size={18} />
         </IconButton>
         <Button
+          type="button"
           variant="secondary"
           icon={Printer}
-          onClick={() => window.print()}
+          onClick={handlePrint}
         >
           Print bill
         </Button>
@@ -179,21 +211,44 @@ export function BillPreview({
                       <img
                         src={clinicLogo}
                         alt="Clinic logo"
-                        style={{ width: "100%", height: "100%", objectFit: "contain", borderRadius: "4px" }}
+                        style={{
+                          width: "100%",
+                          height: "100%",
+                          objectFit: "contain",
+                          borderRadius: "4px",
+                        }}
                       />
                     ) : (
                       <HeartPulse size={24} />
                     )}
                   </span>
                   <div>
-                    <h2>{clinicProfile?.name || (desktopSession?.clinic_id ? `Clinic ${desktopSession.clinic_id}` : "Medical Clinic")}</h2>
+                    <h2>
+                      {clinicProfile?.name ||
+                        (desktopSession?.clinic_id
+                          ? `Clinic ${desktopSession.clinic_id}`
+                          : "Medical Clinic")}
+                    </h2>
                     <p>
-                      {[clinicProfile?.street, clinicProfile?.city, clinicProfile?.state, clinicProfile?.postal_code]
+                      {[
+                        clinicProfile?.street,
+                        clinicProfile?.city,
+                        clinicProfile?.state,
+                        clinicProfile?.postal_code,
+                      ]
                         .filter(Boolean)
-                        .join(", ") || (desktopSession?.clinic_id ? "Registered Healthcare Facility" : "Local Clinic Workspace")}
+                        .join(", ") ||
+                        (desktopSession?.clinic_id
+                          ? "Registered Healthcare Facility"
+                          : "Local Clinic Workspace")}
                     </p>
                     {clinicProfile?.phone && (
-                      <p style={{ fontSize: "11px", color: "var(--text-muted, #64748b)" }}>
+                      <p
+                        style={{
+                          fontSize: "11px",
+                          color: "var(--text-muted, #64748b)",
+                        }}
+                      >
                         Ph: {clinicProfile.phone}
                       </p>
                     )}
@@ -211,8 +266,13 @@ export function BillPreview({
                   </div>
                 </div>
                 <div className="rx-doctor">
-                  <strong>{desktopSession?.doctor_name || doctorProfile?.full_name || doctorName}</strong>
-                  <span>{doctorProfile?.qualification || (desktopSession ? "Authorized Medical Practitioner" : "Medical Practitioner")}</span>
+                  <strong>{doctorName}</strong>
+                  <span>
+                    {doctorProfile?.qualification ||
+                      (desktopSession
+                        ? "Authorized Medical Practitioner"
+                        : "Medical Practitioner")}
+                  </span>
                   {doctorProfile?.registration_number && (
                     <span>Reg. No: {doctorProfile.registration_number}</span>
                   )}
@@ -246,12 +306,13 @@ export function BillPreview({
               <span>Billed to</span>
               <strong>{patient.name}</strong>
               <small>
-                {patient.age} years · {patient.gender} · {patient.phone}
+                {formatPatientAgeGender(patient.age, patient.gender, "years")}{" "}
+                · {patient.phone || "—"}
               </small>
             </div>
             <div>
               <span>Patient ID</span>
-              <strong>{patient.displayId || patient.id}</strong>
+              <strong>{getPublicPatientId(patient)}</strong>
             </div>
             <div>
               <span>Invoice date</span>
@@ -282,13 +343,13 @@ export function BillPreview({
                       <td>{item.quantity}</td>
                       <td>
                         ₹
-                        {item.rate.toLocaleString("en-IN", {
+                        {(item.rate ?? 0).toLocaleString("en-IN", {
                           minimumFractionDigits: 2,
                         })}
                       </td>
                       <td>
                         ₹
-                        {(item.quantity * item.rate).toLocaleString("en-IN", {
+                        {((item.quantity ?? 1) * (item.rate ?? 0)).toLocaleString("en-IN", {
                           minimumFractionDigits: 2,
                         })}
                       </td>
@@ -363,8 +424,8 @@ export function BillPreview({
           >
             <strong>Payment status: {bill.paymentStatus}</strong>
             <span>
-              Thank you for choosing {clinicProfile?.name || "our clinic"}. Please retain this bill
-              for your records.
+              Thank you for choosing {clinicProfile?.name || "our clinic"}.
+              Please retain this bill for your records.
             </span>
           </section>
 

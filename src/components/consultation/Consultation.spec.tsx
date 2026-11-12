@@ -8,8 +8,10 @@ import type {
   Vitals,
   ConsultationData,
   ClinicalLibrary,
+  ClinicalMedicineDefinition,
+  Medicine,
 } from "../../types"
-import { loadClinicalLibrary } from "../../types"
+import { loadClinicalLibrary, defaultClinicalLibrary } from "../../types"
 import { validateMedicineFormulation } from "../../utils/billing"
 
 describe("Consultation Components & UX", () => {
@@ -105,11 +107,109 @@ describe("Consultation Components & UX", () => {
 
       expect(html).toContain("New consultation")
       expect(html).toContain("Aarav Sharma")
+      expect(html).toContain("patient-strip-name")
+      expect(html).toContain("patient-strip-details")
+      expect(html).toContain("45 years · Male · PC-1001")
       expect(html).toContain("Allergy: Amoxicillin")
       expect(html).toContain("Acute throat pain and fever")
       expect(html).toContain("Acute Pharyngitis")
       expect(html).toContain("Paracetamol")
       expect(html).toContain("Finalize prescription")
+      // Check Adv. terminology
+      expect(html).toContain("Adv.")
+      expect(html).toContain("Adv. date")
+      expect(html).toContain("Adv. instructions")
+      // Check Medical background on consultation
+      expect(html).toContain("Medical background")
+      expect(html).toContain("Known allergies")
+      expect(html).toContain("Medical conditions")
+    })
+
+    it("recognizes non-allergy entries as No Known Allergies and unknown entries as Unknown", () => {
+      // 1. Non-allergy entry: None / NKDA
+      const nonAllergyPatient: Patient = {
+        ...samplePatient,
+        allergies: ["NKDA"],
+      }
+      const rawHtml1 = renderToString(
+        <Consultation
+          go={() => {}}
+          patient={nonAllergyPatient}
+          clinicalLibrary={library}
+          vitals={sampleVitals}
+          onVitalsChange={() => {}}
+          data={{ ...sampleData, allergies: ["None"] }}
+          onDataChange={() => {}}
+        />,
+      )
+      const html1 = rawHtml1.replace(/<!-- -->/g, "")
+      expect(html1).toContain("No Known Allergies")
+      expect(html1).not.toContain("Allergy: None")
+
+      // 2. Unknown entry: Not specified
+      const unknownHtml = renderToString(
+        <Consultation
+          go={() => {}}
+          patient={samplePatient}
+          clinicalLibrary={library}
+          vitals={sampleVitals}
+          onVitalsChange={() => {}}
+          data={{ ...sampleData, allergies: ["Not specified"] }}
+          onDataChange={() => {}}
+        />,
+      ).replace(/<!-- -->/g, "")
+      expect(unknownHtml).toContain("Unknown (status unconfirmed, not allergy-free)")
+      expect(unknownHtml).not.toContain("No Known Allergies (non-allergy entry recognized)")
+
+      // 3. Genuine allergy: Penicillin
+      const genuineHtml = renderToString(
+        <Consultation
+          go={() => {}}
+          patient={samplePatient}
+          clinicalLibrary={library}
+          vitals={sampleVitals}
+          onVitalsChange={() => {}}
+          data={{ ...sampleData, allergies: ["Penicillin"] }}
+          onDataChange={() => {}}
+        />,
+      ).replace(/<!-- -->/g, "")
+      expect(genuineHtml).toContain("Allergy: Penicillin")
+    })
+
+    it("does not show premature medicine validation error during field interaction", () => {
+      const incompleteData: ConsultationData = {
+        ...sampleData,
+        medicines: [
+          {
+            id: 1,
+            name: "",
+            formulation: "Capsule",
+            strength: "",
+            dose: "",
+            route: "",
+            frequency: "",
+            duration: "",
+            food: "",
+            directions: "",
+          },
+        ],
+      }
+      const rawHtml = renderToString(
+        <Consultation
+          go={() => {}}
+          patient={samplePatient}
+          clinicalLibrary={library}
+          vitals={sampleVitals}
+          onVitalsChange={() => {}}
+          data={incompleteData}
+          onDataChange={() => {}}
+        />,
+      )
+      const html = rawHtml.replace(/<!-- -->/g, "")
+
+      // Premature validation banner should not appear before save/finalize attempt
+      expect(html).not.toContain("Medicine name is required")
+      expect(html).not.toContain("med-validation-warning")
     })
 
     it("confirms 'Additional directions' section is removed for oral formulations", () => {
@@ -120,7 +220,9 @@ describe("Consultation Components & UX", () => {
           clinicalLibrary={library}
           vitals={sampleVitals}
           onVitalsChange={() => {}}
-          data={sampleData} // medicine is Tablet
+          data={
+            sampleData // medicine is Tablet
+          }
           onDataChange={() => {}}
         />,
       )
@@ -370,6 +472,39 @@ describe("Consultation Components & UX", () => {
       expect(twoMedHtml).not.toContain("Paracetamol")
     })
 
+    it("confirms '+ Add another medicine' bottom button is removed while section '+ Add medicine' is preserved", () => {
+      const html = renderToString(
+        <Consultation
+          go={() => {}}
+          patient={samplePatient}
+          clinicalLibrary={library}
+          vitals={sampleVitals}
+          onVitalsChange={() => {}}
+          data={{
+            ...sampleData,
+            medicines: [
+              {
+                id: 1,
+                name: "Paracetamol",
+                formulation: "Tablet",
+                strength: "500 mg",
+                dose: "1",
+                route: "Oral",
+                frequency: "1-0-1",
+                duration: "5 days",
+                food: "After food",
+                directions: "Take after food",
+              },
+            ],
+          }}
+          onDataChange={() => {}}
+        />,
+      )
+      expect(html).toContain("Add medicine")
+      expect(html).not.toContain("Add another medicine")
+      expect(html).not.toContain("medicine-add-footer")
+    })
+
     it("verifies prescription validation and persistence roundtrip after saving and reopening", () => {
       // Create multi-formulation prescription (Oral, Topical, Injection)
       const prescriptionData: ConsultationData = {
@@ -458,7 +593,9 @@ describe("Consultation Components & UX", () => {
 
       expect(reopenedConsultationHtml).toContain("Fusidic Acid")
       expect(reopenedConsultationHtml).toContain("Cream")
-      expect(reopenedConsultationHtml).toContain("Clean skin before application")
+      expect(reopenedConsultationHtml).toContain(
+        "Clean skin before application",
+      )
 
       expect(reopenedConsultationHtml).toContain("Tramadol")
       expect(reopenedConsultationHtml).toContain("Injection")
@@ -517,6 +654,8 @@ describe("Consultation Components & UX", () => {
 
       expect(html).toContain("Prescription preview")
       expect(html).toContain("printable-prescription")
+      expect(html).toContain("28/10/2026")
+      expect(html).toContain("02/11/2026")
       expect(html).toContain("Dr. Sarah Jenkins")
       expect(html).toContain("Clinic clinic-apollo-99")
       expect(html).not.toContain("Dr. Nikhil Kanade")
@@ -554,8 +693,10 @@ describe("Consultation Components & UX", () => {
       expect(html).not.toContain("Nishti Hospital")
     })
 
-    it("verifies custom medicine appears in Clinical Formulary settings", async () => {
-      const { ClinicalLibrarySettings } = await import("../settings/ClinicalLibrarySettings")
+    it("renders Clinical Library settings without Medicine Catalogue section", async () => {
+      const { ClinicalLibrarySettings } = await import(
+        "../settings/ClinicalLibrarySettings"
+      )
       const lib = loadClinicalLibrary()
       lib.MedicineDefinitions.push({
         name: "CustomKuffex",
@@ -573,9 +714,150 @@ describe("Consultation Components & UX", () => {
       )
       const html = rawHtml.replace(/<!-- -->/g, "")
 
-      expect(html).toContain("CustomKuffex")
-      expect(html).toContain("Syrup · 100 ml")
-      expect(html).toContain("(Dextromethorphan + CPM)")
+      expect(html).toContain("Upload Excel / CSV")
+      expect(html).toContain("Import History")
+      expect(html).toContain("Standard Options")
+      expect(html).not.toContain("Medicine Catalogue")
+    })
+
+    it("verifies custom Frequencies and Food Instructions populate prescription options and Clinical Library tabs", async () => {
+      const { ClinicalLibrarySettings } = await import(
+        "../settings/ClinicalLibrarySettings"
+      )
+      const customLib: ClinicalLibrary = {
+        ...loadClinicalLibrary(),
+        Frequencies: [
+          ...defaultClinicalLibrary.Frequencies,
+          "Every 6 hours PRN",
+        ],
+        FoodInstructions: [
+          ...defaultClinicalLibrary.FoodInstructions,
+          "Take with cold milk",
+        ],
+      }
+
+      // 1. Verify Consultation dropdown uses custom frequencies and food instructions
+      const consultationHtml = renderToString(
+        <Consultation
+          go={() => {}}
+          patient={samplePatient}
+          clinicalLibrary={customLib}
+          vitals={sampleVitals}
+          onVitalsChange={() => {}}
+          data={{
+            ...sampleData,
+            medicines: [
+              {
+                id: 1,
+                name: "Amoxicillin",
+                formulation: "Capsule",
+                strength: "500 mg",
+                dose: "1",
+                route: "Oral",
+                frequency: "Every 6 hours PRN",
+                duration: "5 days",
+                food: "Take with cold milk",
+                directions: "Take with cold milk",
+              },
+            ],
+          }}
+          onDataChange={() => {}}
+        />,
+      )
+
+      expect(consultationHtml).toContain("Every 6 hours PRN")
+      expect(consultationHtml).toContain("Take with cold milk")
+
+      // 2. Verify ClinicalLibrarySettings renders Frequencies and Food Instructions tabs
+      const settingsHtml = renderToString(
+        <ClinicalLibrarySettings
+          library={customLib}
+          initialTab="options"
+          onAdd={() => {}}
+          onAddMedicine={() => {}}
+        />,
+      )
+      expect(settingsHtml).toContain("Frequencies")
+      expect(settingsHtml).toContain("Food Instructions")
+    })
+
+    it("ensures Food instruction is available for custom formulations and rendered in prescription preview", async () => {
+      const { PrescriptionPreview } = await import("./PrescriptionPreview")
+      const customLib: ClinicalLibrary = {
+        ...loadClinicalLibrary(),
+        Formulations: [...defaultClinicalLibrary.Formulations, "new form"],
+        FoodInstructions: [
+          ...defaultClinicalLibrary.FoodInstructions,
+          "With lukewarm water",
+        ],
+      }
+
+      // 1. Consultation form with custom formulation ("new form") renders Food instruction field
+      const consultationHtml = renderToString(
+        <Consultation
+          go={() => {}}
+          patient={samplePatient}
+          clinicalLibrary={customLib}
+          vitals={sampleVitals}
+          onVitalsChange={() => {}}
+          data={{
+            ...sampleData,
+            medicines: [
+              {
+                id: 1,
+                name: "Custom Herbal Cure",
+                formulation: "new form",
+                strength: "10 ml",
+                dose: "1",
+                route: "",
+                frequency: "Twice daily",
+                duration: "7 days",
+                food: "With lukewarm water",
+                directions: "",
+              },
+            ],
+          }}
+          onDataChange={() => {}}
+        />,
+      )
+
+      expect(consultationHtml).toContain("Food instruction")
+      expect(consultationHtml).toContain("With lukewarm water")
+
+      // 2. Prescription preview renders the food instruction along with the custom formulation
+      const previewHtml = renderToString(
+        <PrescriptionPreview
+          patient={samplePatient}
+          data={{
+            ...sampleData,
+            medicines: [
+              {
+                id: 1,
+                name: "Custom Herbal Cure",
+                formulation: "new form",
+                strength: "10 ml",
+                dose: "1",
+                route: "",
+                frequency: "Twice daily",
+                duration: "7 days",
+                food: "With lukewarm water",
+                directions: "",
+              },
+            ],
+          }}
+          vitals={sampleVitals}
+          bannerVisible={false}
+          bannerImage={null}
+          signatureImage={null}
+          showClinicLogo={false}
+          showClinicEmail={false}
+          showAllergyWarning={false}
+        />,
+      )
+
+      expect(previewHtml).toContain("Custom Herbal Cure")
+      expect(previewHtml).toContain("new form")
+      expect(previewHtml).toContain("With lukewarm water")
     })
   })
 
@@ -586,8 +868,10 @@ describe("Consultation Components & UX", () => {
       // 1. Search BODYPROOF
       const bodyproofResult = await searchCatalogue("BODYPROOF")
       expect(bodyproofResult.items.length).toBeGreaterThan(0)
-      const bodyproofItem = bodyproofResult.items.find((it) =>
-        it.productName?.includes("BODYPROOF") || it.name.includes("BODYPROOF"),
+      const bodyproofItem = bodyproofResult.items.find(
+        (it) =>
+          it.productName?.includes("BODYPROOF") ||
+          it.name.includes("BODYPROOF"),
       )
       expect(bodyproofItem).toBeDefined()
       expect(bodyproofItem?.productName).toBe("6D BODYPROOF")
@@ -599,8 +883,8 @@ describe("Consultation Components & UX", () => {
       // 2. Search ZYTEE
       const zyteeResult = await searchCatalogue("ZYTEE")
       expect(zyteeResult.items.length).toBeGreaterThan(0)
-      const zyteeItem = zyteeResult.items.find((it) =>
-        it.productName?.includes("ZYTEE") || it.name.includes("ZYTEE"),
+      const zyteeItem = zyteeResult.items.find(
+        (it) => it.productName?.includes("ZYTEE") || it.name.includes("ZYTEE"),
       )
       expect(zyteeItem).toBeDefined()
       expect(zyteeItem?.productName).toBe("ZYTEE GEL")
@@ -619,8 +903,12 @@ describe("Consultation Components & UX", () => {
           it.name.toLowerCase().includes("emrys"),
       )
       expect(allEmrys).toBe(true)
-      expect(emrysResult.items.some((it) => it.productName === "6D BODYPROOF")).toBe(true)
-      expect(emrysResult.items.some((it) => it.productName === "AAIBU SYP")).toBe(true)
+      expect(
+        emrysResult.items.some((it) => it.productName === "6D BODYPROOF"),
+      ).toBe(true)
+      expect(
+        emrysResult.items.some((it) => it.productName === "AAIBU SYP"),
+      ).toBe(true)
     })
 
     it("renders medicine name input and stationary topbar back button in Consultation", () => {
@@ -664,5 +952,325 @@ describe("Consultation Components & UX", () => {
       expect(html).toContain("med-col-name")
       expect(html).toContain("med-col-formulation")
     })
+
+    it("renders Chief complaints and Diagnosis as optional fields without required asterisks", () => {
+      const library = loadClinicalLibrary()
+      const rawHtml = renderToString(
+        <Consultation
+          go={() => {}}
+          patient={samplePatient}
+          clinicalLibrary={library}
+          vitals={sampleVitals}
+          onVitalsChange={() => {}}
+          data={{
+            ...sampleData,
+            chiefComplaint: "",
+            diagnosis: "",
+          }}
+          onDataChange={() => {}}
+        />,
+      )
+      const html = rawHtml.replace(/<!-- -->/g, "")
+
+      // Chief complaints & Diagnosis are rendered
+      expect(html).toContain("Chief complaints")
+      expect(html).toContain("Diagnosis")
+
+      // Neither field should contain the required asterisk indicator span
+      expect(html).not.toMatch(/Chief complaints\s*<span[^>]*class="[^"]*required[^"]*"/)
+      expect(html).not.toMatch(/Diagnosis\s*<span[^>]*class="[^"]*required[^"]*"/)
+    })
+
+    it("supports empty Chief complaints and Diagnosis in PrescriptionPreview", () => {
+      const rawHtml = renderToString(
+        <PrescriptionPreview
+          go={() => {}}
+          patient={samplePatient}
+          vitals={sampleVitals}
+          data={{
+            ...sampleData,
+            chiefComplaint: "",
+            diagnosis: "",
+          }}
+          bannerVisible={false}
+          bannerImage={null}
+          signatureImage={null}
+          showClinicLogo={false}
+          showClinicEmail={false}
+          showAllergyWarning={false}
+          returnPage="consultation"
+        />,
+      )
+      const html = rawHtml.replace(/<!-- -->/g, "")
+
+      expect(html).toContain("No chief complaint entered.")
+      expect(html).toContain("No diagnosis entered.")
+    })
+
+    it("renders formulation dropdown with formulation ID and focuses formulation first on every row", () => {
+      const dataWithMultipleRows: ConsultationData = {
+        ...sampleData,
+        medicines: [
+          {
+            id: 1,
+            name: "Paracetamol",
+            formulation: "Tablet",
+            strength: "650 mg",
+            dose: "1",
+            route: "Oral",
+            frequency: "Three times daily",
+            duration: "5 days",
+            food: "After food",
+            directions: "Take with water",
+            activeIngredient: "Paracetamol",
+          },
+          {
+            id: 2,
+            name: "",
+            formulation: "",
+            strength: "",
+            dose: "",
+            route: "",
+            frequency: "",
+            duration: "",
+            food: "",
+            directions: "",
+            activeIngredient: "",
+          },
+        ],
+      }
+
+      const rawHtml = renderToString(
+        <Consultation
+          go={() => {}}
+          patient={samplePatient}
+          clinicalLibrary={library}
+          vitals={sampleVitals}
+          onVitalsChange={() => {}}
+          data={dataWithMultipleRows}
+          onDataChange={() => {}}
+        />,
+      )
+      const html = rawHtml.replace(/<!-- -->/g, "")
+
+      // Verify each medicine row renders its distinct formulation dropdown ID
+      expect(html).toContain('id="formulation-1"')
+      expect(html).toContain('id="formulation-2"')
+      expect(html).toContain('id="medicine-1"')
+      expect(html).toContain('id="medicine-2"')
+    })
+
+    it("filters compatible medicines strictly matching the selected formulation", () => {
+      const customDefs: ClinicalMedicineDefinition[] = [
+        {
+          name: "Paracetamol",
+          formulation: "Tablet",
+          strength: "650 mg",
+          defaultDosage: "1",
+          defaultFrequency: "Three times daily",
+          defaultDuration: "5 days",
+          defaultInstructions: "Take with water",
+          activeIngredient: "Paracetamol",
+        },
+        {
+          name: "Amoxicillin",
+          formulation: "Capsule",
+          strength: "500 mg",
+          defaultDosage: "1",
+          defaultFrequency: "Twice daily",
+          defaultDuration: "7 days",
+          defaultInstructions: "Take with water",
+          activeIngredient: "Amoxicillin",
+        },
+        {
+          name: "Cetirizine Syrup",
+          formulation: "Syrup",
+          strength: "5 mg/5ml",
+          defaultDosage: "5 ml",
+          defaultFrequency: "Once daily",
+          defaultDuration: "3 days",
+          defaultInstructions: "Shake well",
+          activeIngredient: "Cetirizine",
+        },
+      ]
+
+      const tabletFormulation = "Tablet"
+      const syrupFormulation = "Syrup"
+
+      const tabletMedicines = customDefs.filter(
+        (m) =>
+          m.formulation.trim().toLowerCase() === tabletFormulation.toLowerCase(),
+      )
+      const syrupMedicines = customDefs.filter(
+        (m) =>
+          m.formulation.trim().toLowerCase() === syrupFormulation.toLowerCase(),
+      )
+
+      expect(tabletMedicines.length).toBe(1)
+      expect(tabletMedicines[0].name).toBe("Paracetamol")
+      expect(tabletMedicines[0].formulation).toBe("Tablet")
+
+      expect(syrupMedicines.length).toBe(1)
+      expect(syrupMedicines[0].name).toBe("Cetirizine Syrup")
+      expect(syrupMedicines[0].formulation).toBe("Syrup")
+    })
+
+    it("resets selected medicine and incompatible dependent fields on formulation change while preserving other rows", () => {
+      const initialMedicines: Medicine[] = [
+        {
+          id: 1,
+          name: "Paracetamol",
+          formulation: "Tablet",
+          strength: "650 mg",
+          dose: "1",
+          route: "Oral",
+          frequency: "Three times daily",
+          duration: "5 days",
+          food: "After food",
+          directions: "",
+          activeIngredient: "Paracetamol",
+        },
+        {
+          id: 2,
+          name: "Amoxicillin",
+          formulation: "Capsule",
+          strength: "500 mg",
+          dose: "1",
+          route: "Oral",
+          frequency: "Twice daily",
+          duration: "7 days",
+          food: "Before food",
+          directions: "",
+          activeIngredient: "Amoxicillin",
+        },
+      ]
+
+      const simulateFormulationChange = (
+        meds: Medicine[],
+        medicineId: number,
+        newFormulation: string,
+      ): Medicine[] => {
+        const isNewOral = ["Tablet", "Capsule", "Syrup", "Suspension"].includes(
+          newFormulation,
+        )
+        const isNewInjection = newFormulation === "Injection"
+        const isNewTopical = ["Cream", "Ointment"].includes(newFormulation)
+
+        return meds.map((row) => {
+          if (row.id !== medicineId) return row
+
+          return {
+            id: row.id,
+            formulation: newFormulation,
+            name: "",
+            strength: "",
+            dose: "",
+            frequency: row.frequency,
+            duration: row.duration,
+            food: isNewOral ? row.food : "",
+            route: isNewInjection ? row.route : "",
+            directions: isNewTopical ? row.directions : "",
+            activeIngredient: "",
+          }
+        })
+      }
+
+      // 1. Change Row 1 from Tablet to Syrup (both oral)
+      const afterSyrup = simulateFormulationChange(initialMedicines, 1, "Syrup")
+      expect(afterSyrup[0].formulation).toBe("Syrup")
+      expect(afterSyrup[0].name).toBe("") // Reset
+      expect(afterSyrup[0].strength).toBe("") // Reset
+      expect(afterSyrup[0].dose).toBe("") // Reset
+      expect(afterSyrup[0].frequency).toBe("Three times daily") // Preserved
+      expect(afterSyrup[0].duration).toBe("5 days") // Preserved
+      expect(afterSyrup[0].food).toBe("After food") // Preserved for oral
+      // Row 2 must remain completely intact
+      expect(afterSyrup[1].name).toBe("Amoxicillin")
+      expect(afterSyrup[1].formulation).toBe("Capsule")
+      expect(afterSyrup[1].strength).toBe("500 mg")
+
+      // 2. Change Row 1 from Syrup to Ointment (topical)
+      const afterOintment = simulateFormulationChange(
+        afterSyrup,
+        1,
+        "Ointment",
+      )
+      expect(afterOintment[0].formulation).toBe("Ointment")
+      expect(afterOintment[0].name).toBe("") // Reset
+      expect(afterOintment[0].strength).toBe("") // Reset
+      expect(afterOintment[0].dose).toBe("") // Reset
+      expect(afterOintment[0].food).toBe("") // Incompatible: food cleared for ointment
+      expect(afterOintment[0].frequency).toBe("Three times daily") // Preserved
+      expect(afterOintment[0].duration).toBe("5 days") // Preserved
+      // Row 2 remains intact
+      expect(afterOintment[1].name).toBe("Amoxicillin")
+
+      // 3. Change Row 1 from Ointment to Injection
+      const afterInjection = simulateFormulationChange(
+        afterOintment,
+        1,
+        "Injection",
+      )
+      expect(afterInjection[0].formulation).toBe("Injection")
+      expect(afterInjection[0].food).toBe("") // Incompatible: cleared
+      expect(afterInjection[0].directions).toBe("") // Incompatible: cleared
+      expect(afterInjection[0].frequency).toBe("Three times daily") // Preserved
+      expect(afterInjection[0].duration).toBe("5 days") // Preserved
+      expect(afterInjection[1].name).toBe("Amoxicillin")
+    })
+
+    it(
+      "renders all 16 formulations with letter shortcuts in consultation dropdown",
+      () => {
+        const consultationData: ConsultationData = {
+          ...sampleData,
+          medicines: [
+            {
+              id: 1,
+              name: "Paracetamol",
+              formulation: "Tablet",
+              strength: "500 mg",
+              dose: "1",
+              frequency: "Three times daily",
+              duration: "5 days",
+              food: "After food",
+              route: "",
+              directions: "",
+            },
+          ],
+        }
+
+        const html = renderToString(
+          <Consultation
+            patient={samplePatient}
+            go={() => {}}
+            vitals={sampleVitals}
+            onVitalsChange={() => {}}
+            data={consultationData}
+            onDataChange={() => {}}
+            clinicalLibrary={defaultClinicalLibrary}
+          />,
+        )
+
+        // Verified: all 16 formulations with shortcuts are present in dropdown options
+        expect(html).toContain("Tablet (T)")
+        expect(html).toContain("Capsule (C)")
+        expect(html).toContain("Syrup (S)")
+        expect(html).toContain("Drops (D)")
+        expect(html).toContain("Injection (I)")
+        expect(html).toContain("Ointment (O)")
+        expect(html).toContain("Cream (R)")
+        expect(html).toContain("Gel (G)")
+        expect(html).toContain("Powder (P)")
+        expect(html).toContain("Lotion (L)")
+        expect(html).toContain("Suspension (N)")
+        expect(html).toContain("Mouthwash (M)")
+        expect(html).toContain("Inhaler (H)")
+        expect(html).toContain("Eye Drops (E)")
+        expect(html).toContain("Ear Drops (U)")
+        expect(html).toContain("Suppository (B)")
+      },
+      15000,
+    )
   })
 })

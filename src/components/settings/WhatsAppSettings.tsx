@@ -1,18 +1,12 @@
-import { useState } from "react"
-import { MessageCircle, AlertCircle } from "lucide-react"
-import { Button, StatusPill } from "../common"
+import { MessageCircle } from "lucide-react"
+import { StatusPill } from "../common"
 
 export function WhatsAppSettings() {
-  const [tested, setTested] = useState(false)
-
   return (
     <section className="settings-section">
       <div className="settings-title with-status">
         <div>
           <h2>WhatsApp configuration</h2>
-          <p>
-            Provider credentials and delivery webhooks are backend-dependent.
-          </p>
         </div>
         <StatusPill tone="warning">Not connected</StatusPill>
       </div>
@@ -22,23 +16,13 @@ export function WhatsAppSettings() {
         </span>
         <div>
           <strong>WhatsApp Business provider</strong>
-          <p>
-            {tested
-              ? "Frontend check complete · No provider request sent"
-              : "No provider is connected in this UI build"}
-          </p>
         </div>
-        <Button size="sm" variant="secondary" onClick={() => setTested(true)}>
-          {tested ? "UI checked" : "Check UI state"}
-        </Button>
-      </div>
-      <div className="info-callout">
-        <AlertCircle size={17} />
-        <p>
-          Real queued, sent, delivered, and failed statuses must come from
-          provider API responses and webhooks. This frontend does not send
-          messages.
-        </p>
+        <span
+          className="btn btn-sm btn-secondary cursor-default select-none pointer-events-none opacity-85"
+          aria-disabled="true"
+        >
+          UI checked
+        </span>
       </div>
       <h3 className="subsection-title">Delivery history</h3>
       <div className="empty-state compact">

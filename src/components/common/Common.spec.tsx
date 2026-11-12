@@ -10,6 +10,9 @@ import {
   Modal,
   ConfirmDialog,
   SearchableOptionSelect,
+  GlobalPatientSearch,
+  Logo,
+  CliniqoLogoIcon,
 } from "./index"
 import { User } from "lucide-react"
 
@@ -192,8 +195,18 @@ describe("Common Components", () => {
           id="strength-sel"
           value="500 mg"
           options={[
-            { value: "500 mg", label: "500 mg", badge: "Verified", subtitle: "Tablet" },
-            { value: "650 mg", label: "650 mg", badge: "Verified", subtitle: "Tablet" },
+            {
+              value: "500 mg",
+              label: "500 mg",
+              badge: "Verified",
+              subtitle: "Tablet",
+            },
+            {
+              value: "650 mg",
+              label: "650 mg",
+              badge: "Verified",
+              subtitle: "Tablet",
+            },
           ]}
           onChange={() => {}}
           placeholder="Select strength"
@@ -203,6 +216,144 @@ describe("Common Components", () => {
       )
       expect(html).toContain('id="strength-sel"')
       expect(html).toContain('value="500 mg"')
+    })
+  })
+
+  describe("GlobalPatientSearch", () => {
+    const samplePatients = [
+      {
+        id: "PC-1048",
+        displayId: "PC-1048",
+        name: "Ananya Iyer",
+        initials: "AI",
+        age: 34,
+        gender: "Female",
+        phone: "+91 98765 43210",
+        lastVisit: "Today",
+        allergies: [],
+        conditions: [],
+      },
+      {
+        id: "PC-1047",
+        displayId: "PC-1047",
+        name: "Vikram Mehta",
+        initials: "VM",
+        age: 52,
+        gender: "Male",
+        phone: "+91 98204 11882",
+        lastVisit: "Yesterday",
+        allergies: [],
+        conditions: [],
+      },
+    ]
+
+    it("renders visible search input with id and Ctrl+K badge", () => {
+      const html = renderToString(
+        <GlobalPatientSearch
+          patients={samplePatients}
+          onSelectPatient={() => {}}
+        />,
+      )
+
+      expect(html).toContain('id="global-patient-search"')
+      expect(html).toContain("Search patient")
+      expect(html).toContain("Ctrl+K")
+      expect(html).toContain("global-patient-search-container")
+      expect(html).toContain("global-patient-search-bar")
+    })
+
+    it("filters and matches patients across name, patient ID, and mobile number", () => {
+      // Test search filtering logic
+      const q = "Ananya"
+      const matched = samplePatients.filter(
+        (p) =>
+          p.name.toLowerCase().includes(q.toLowerCase()) ||
+          p.id.toLowerCase().includes(q.toLowerCase()) ||
+          p.phone.includes(q),
+      )
+      expect(matched.length).toBe(1)
+      expect(matched[0].name).toBe("Ananya Iyer")
+      expect(matched[0].id).toBe("PC-1048")
+      expect(matched[0].age).toBe(34)
+      expect(matched[0].phone).toBe("+91 98765 43210")
+    })
+
+    it("renders simplified dropdown results showing only name and patient ID without age, gender, phone, or footer", () => {
+      const html = renderToString(
+        <GlobalPatientSearch
+          patients={samplePatients}
+          onSelectPatient={() => {}}
+          initialOpen={true}
+        />,
+      )
+
+      // Verified: contains patient name and ID with semantic styling classes
+      expect(html).toContain("Ananya Iyer")
+      expect(html).toContain("PC-1048")
+      expect(html).toContain("Vikram Mehta")
+      expect(html).toContain("PC-1047")
+      expect(html).toContain("global-patient-search-dropdown")
+      expect(html).toContain("global-patient-search-item")
+      expect(html).toContain("global-patient-search-avatar")
+      expect(html).toContain("global-patient-search-name")
+      expect(html).toContain("global-patient-search-badge")
+      expect(html).toContain("global-patient-search-arrow")
+
+      // Verified: removed age, gender, mobile number and extra patient details from result display
+      expect(html).not.toContain("yrs")
+      expect(html).not.toContain("Female")
+      expect(html).not.toContain("Male")
+      expect(html).not.toContain("+91 98765 43210")
+      expect(html).not.toContain("+91 98204 11882")
+
+      // Verified: removed bottom footer containing keyboard instructions and patient count
+      expect(html).not.toContain("Use ↑ and ↓ to navigate")
+      expect(html).not.toContain("patient(s)")
+    })
+
+    it("renders empty state with semantic class when no patients match", () => {
+      const html = renderToString(
+        <GlobalPatientSearch
+          patients={[]}
+          onSelectPatient={() => {}}
+          initialOpen={true}
+        />,
+      )
+      expect(html).toContain("global-patient-search-empty")
+      expect(html).toContain("No patients found")
+    })
+  })
+
+  describe("Logo and Branding", () => {
+    it("renders official Cliniqo logo with vector SVG and brand colors", () => {
+      const html = renderToString(<Logo />)
+      expect(html).toContain("logo-lockup")
+      expect(html).toContain("Cliniqo")
+      expect(html).toContain("Doctor workspace")
+      expect(html).toContain("<svg")
+      expect(html).toContain('width="36"')
+      expect(html).toContain('height="36"')
+      expect(html).toContain("cliniqo-linear-gradient")
+      expect(html).toContain("#036c70")
+      expect(html).toContain("#00a69a")
+      expect(html).toContain("#d7fffc")
+      expect(html).toContain("#aefffd")
+      expect(html).toContain("#2dcbca")
+    })
+
+    it("renders large logo variant with proper dimensions", () => {
+      const html = renderToString(<Logo large />)
+      expect(html).toContain("logo-large")
+      expect(html).toContain('width="44"')
+      expect(html).toContain('height="44"')
+    })
+
+    it("renders standalone CliniqoLogoIcon with customizable dimensions", () => {
+      const html = renderToString(<CliniqoLogoIcon size={64} className="custom-logo" />)
+      expect(html).toContain('width="64"')
+      expect(html).toContain('height="64"')
+      expect(html).toContain("custom-logo")
+      expect(html).toContain('viewBox="0 0 1296 1296"')
     })
   })
 })

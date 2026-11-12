@@ -92,17 +92,11 @@ export function PrescriptionSettings({
     <section className="settings-section">
       <div className="settings-title">
         <h2>Prescription layout</h2>
-        <p>
-          Configure how finalized prescriptions appear when printed or shared.
-        </p>
       </div>
       <div className="option-list">
         <label>
           <span>
             <strong>Show prescription banner</strong>
-            <small>
-              Display the clinic and doctor banner at the top of prescriptions
-            </small>
           </span>
           <input
             type="checkbox"
@@ -113,7 +107,6 @@ export function PrescriptionSettings({
         <label>
           <span>
             <strong>Show clinic logo</strong>
-            <small>Display your uploaded logo in the prescription header</small>
           </span>
           <input
             type="checkbox"
@@ -124,7 +117,6 @@ export function PrescriptionSettings({
         <label>
           <span>
             <strong>Show clinic email</strong>
-            <small>Include the clinic email with contact details</small>
           </span>
           <input
             type="checkbox"
@@ -135,7 +127,6 @@ export function PrescriptionSettings({
         <label>
           <span>
             <strong>Include allergy warning</strong>
-            <small>Display recorded allergies prominently in the footer</small>
           </span>
           <input
             type="checkbox"
@@ -269,14 +260,6 @@ export function PrescriptionSettings({
         <FileText size={28} />
         <div>
           <strong>A4 clinical prescription</strong>
-          <p>
-            {bannerVisible
-              ? bannerImage
-                ? "Custom banner"
-                : "Default clinic banner"
-              : "Banner hidden"}{" "}
-            · Structured medicines · Signature footer
-          </p>
         </div>
         <Button
           size="sm"

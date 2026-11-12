@@ -4,6 +4,7 @@ import {
   IsOptional,
   IsString,
   Length,
+  Matches,
   MaxLength,
   MinLength,
   registerDecorator,
@@ -141,6 +142,30 @@ export class RefreshTokenDto {
 }
 
 export class ForgotPasswordDto {
+  @IsEmail({}, { message: "Invalid email address format." })
+  @IsString({ message: "Email must be a string." })
+  @IsNotEmpty({ message: "Email cannot be empty." })
+  @MaxLength(254, { message: "Email cannot exceed 254 characters." })
+  email: string
+}
+
+export class VerifyOtpDto {
+  @IsEmail({}, { message: "Invalid email address format." })
+  @IsString({ message: "Email must be a string." })
+  @IsNotEmpty({ message: "Email cannot be empty." })
+  @MaxLength(254, { message: "Email cannot exceed 254 characters." })
+  email: string
+
+  @IsString({ message: "Verification code must be a string." })
+  @IsNotEmpty({ message: "Verification code cannot be empty." })
+  @Length(6, 6, { message: "Verification code must be exactly 6 digits." })
+  @Matches(/^\d{6}$/, {
+    message: "Verification code must contain only 6 digits.",
+  })
+  otp: string
+}
+
+export class ResendOtpDto {
   @IsEmail({}, { message: "Invalid email address format." })
   @IsString({ message: "Email must be a string." })
   @IsNotEmpty({ message: "Email cannot be empty." })

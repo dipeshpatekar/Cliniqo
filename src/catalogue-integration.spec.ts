@@ -1,9 +1,5 @@
 import { describe, it, expect } from "vitest"
-import type {
-  Medicine,
-  CatalogueItem,
-  CatalogueSearchResult,
-} from "./types"
+import type { Medicine, CatalogueItem, CatalogueSearchResult } from "./types"
 
 describe("Medicine Catalogue & Auto-Strength Selection Integration", () => {
   describe("Automatic Strength Selection Rules", () => {
@@ -91,8 +87,18 @@ describe("Medicine Catalogue & Auto-Strength Selection Integration", () => {
         dosageForm: "Tablet",
         route: "Oral",
         strengths: [
-          { ingredient: "Amoxicillin", rawStrength: "500 mg", value: 500, unit: "mg" },
-          { ingredient: "Clavulanic Acid", rawStrength: "125 mg", value: 125, unit: "mg" },
+          {
+            ingredient: "Amoxicillin",
+            rawStrength: "500 mg",
+            value: 500,
+            unit: "mg",
+          },
+          {
+            ingredient: "Clavulanic Acid",
+            rawStrength: "125 mg",
+            value: 125,
+            unit: "mg",
+          },
         ],
         rawStrengthSummary: "500 mg + 125 mg",
         isCombination: true,

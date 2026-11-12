@@ -14,7 +14,6 @@ export function AppearanceSettings({
     <section className="settings-section">
       <div className="settings-title">
         <h2>Appearance</h2>
-        <p>Choose how the clinic workspace appears on this device.</p>
       </div>
       <div className="appearance-card">
         <span className="appearance-icon">
@@ -22,9 +21,6 @@ export function AppearanceSettings({
         </span>
         <div>
           <strong>Dark mode</strong>
-          <p>
-            Use a darker interface to reduce glare in low-light environments.
-          </p>
         </div>
         <button
           className={cn("theme-switch", darkMode && "active")}

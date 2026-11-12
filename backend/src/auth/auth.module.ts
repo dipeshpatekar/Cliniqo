@@ -1,24 +1,24 @@
-import { Module } from '@nestjs/common';
-import { MongooseModule } from '@nestjs/mongoose';
-import { JwtModule } from '@nestjs/jwt';
-import { Doctor, DoctorSchema } from './schemas/doctor.schema.js';
+import { Module } from "@nestjs/common"
+import { MongooseModule } from "@nestjs/mongoose"
+import { JwtModule } from "@nestjs/jwt"
+import { Doctor, DoctorSchema } from "./schemas/doctor.schema.js"
 import {
   RefreshSession,
   RefreshSessionSchema,
-} from './schemas/refresh-session.schema.js';
+} from "./schemas/refresh-session.schema.js"
 import {
   PasswordResetToken,
   PasswordResetTokenSchema,
-} from './schemas/password-reset.schema.js';
-import { RateLimit, RateLimitSchema } from './schemas/rate-limit.schema.js';
-import { PasswordService } from './password.service.js';
-import { TokenService } from './token.service.js';
-import { MailService } from './mail.service.js';
-import { RateLimiterService } from './rate-limiter.service.js';
-import { AuthService } from './auth.service.js';
-import { AuthController } from './auth.controller.js';
+} from "./schemas/password-reset.schema.js"
+import { RateLimit, RateLimitSchema } from "./schemas/rate-limit.schema.js"
+import { PasswordService } from "./password.service.js"
+import { TokenService } from "./token.service.js"
+import { MailService } from "./mail.service.js"
+import { RateLimiterService } from "./rate-limiter.service.js"
+import { AuthService } from "./auth.service.js"
+import { AuthController } from "./auth.controller.js"
 
-import { JwtAuthGuard } from './guards/jwt-auth.guard.js';
+import { JwtAuthGuard } from "./guards/jwt-auth.guard.js"
 
 @Module({
   imports: [

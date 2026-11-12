@@ -1,11 +1,11 @@
-import { IsString, IsOptional, IsBoolean } from 'class-validator';
+import { IsString, IsOptional, IsBoolean } from "class-validator"
 
 export class TriggerImportDto {
   @IsOptional()
   @IsString()
-  sourcePath?: string;
+  sourcePath?: string
 
   @IsOptional()
   @IsBoolean()
-  dryRun?: boolean;
+  dryRun?: boolean
 }

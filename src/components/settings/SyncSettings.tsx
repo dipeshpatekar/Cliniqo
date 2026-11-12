@@ -215,6 +215,7 @@ export function SyncSettings({ onOpenConflictModal }: SyncSettingsProps) {
       const res = await downloadAndLaunchUpdate(
         updateResult.download_url,
         updateResult.target_version,
+        updateResult.signature,
       )
       setUpdateStatusMessage(res.status_message)
     } catch (err: unknown) {

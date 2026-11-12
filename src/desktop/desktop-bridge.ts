@@ -2285,11 +2285,13 @@ export async function checkAppUpdate(endpoint?: string): Promise<UpdateCheckResu
 export async function downloadAndLaunchUpdate(
   downloadUrl: string,
   targetVersion: string,
+  signature?: string | null,
 ): Promise<UpdateInstallResult> {
   if (isTauriDesktop()) {
     const res = await invokeTauri<UpdateInstallResult>("download_and_launch_update", {
       downloadUrl,
       targetVersion,
+      signature: signature ?? null,
     })
     if (res) return res
     throw new Error("Download and install failed: desktop invocation returned no result")

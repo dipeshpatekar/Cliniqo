@@ -2337,10 +2337,16 @@ pub async fn check_app_update(
 pub async fn download_and_launch_update(
     download_url: String,
     target_version: String,
+    signature: Option<String>,
 ) -> Result<crate::updater::UpdateInstallResult, String> {
-    let installer_path = crate::updater::AppUpdater::download_update_package(&download_url, &target_version)
-        .await
-        .map_err(|e| e.to_string())?;
+    let installer_path = crate::updater::AppUpdater::download_and_verify_update(
+        &download_url,
+        &target_version,
+        signature.as_deref(),
+        None,
+    )
+    .await
+    .map_err(|e| e.to_string())?;
 
     crate::updater::AppUpdater::launch_installer_non_destructive(&installer_path)
         .map_err(|e| e.to_string())?;
@@ -2349,7 +2355,7 @@ pub async fn download_and_launch_update(
         success: true,
         target_version,
         installer_path: installer_path.to_string_lossy().to_string(),
-        status_message: "Update downloaded and installer launched. Your local clinical database and encryption keys are safely preserved.".to_string(),
+        status_message: "Update verified and installer launched. Your local clinical database and encryption keys are safely preserved.".to_string(),
     })
 }
 

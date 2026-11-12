@@ -2,6 +2,8 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 use std::time::Duration;
+use base64::Engine;
+use minisign_verify::{PublicKey, Signature};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -123,6 +125,36 @@ impl AppUpdater {
         return "unknown";
     }
 
+    /// Parses the configured Minisign public key.
+    pub fn get_public_key() -> Result<PublicKey, UpdaterError> {
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(UPDATER_PUBLIC_KEY)
+            .map_err(|e| UpdaterError::VerificationFailed(format!("Invalid public key base64: {}", e)))?;
+        let key_str = String::from_utf8(decoded)
+            .map_err(|e| UpdaterError::VerificationFailed(format!("Invalid public key utf8: {}", e)))?;
+        PublicKey::decode(&key_str)
+            .map_err(|e| UpdaterError::VerificationFailed(format!("Failed to parse Minisign public key: {:?}", e)))
+    }
+
+    /// Cryptographically verifies the downloaded package bytes against the Minisign signature.
+    /// Supports both standard and pre-hashed Minisign signatures.
+    pub fn verify_installer_signature(bytes: &[u8], signature_str: &str) -> Result<(), UpdaterError> {
+        if signature_str.trim().is_empty() {
+            return Err(UpdaterError::VerificationFailed(
+                "Signature is missing or empty. Unsigned updates are strictly rejected.".to_string(),
+            ));
+        }
+
+        let signature = Signature::decode(signature_str).map_err(|e| {
+            UpdaterError::VerificationFailed(format!("Invalid Minisign signature format: {:?}", e))
+        })?;
+
+        let public_key = Self::get_public_key()?;
+        public_key
+            .verify(bytes, &signature, true)
+            .map_err(|e| UpdaterError::VerificationFailed(format!("Cryptographic signature verification failed: {:?}", e)))
+    }
+
     /// Queries the update endpoint over secure HTTPS and determines update availability.
     pub async fn check_for_updates(
         custom_endpoint: Option<&str>,
@@ -176,16 +208,48 @@ impl AppUpdater {
         })
     }
 
-    /// Downloads the signed update binary over HTTPS into a secure temporary location.
-    pub async fn download_update_package(
+    /// Resolves and securely verifies the update against the manifest and signature before downloading and staging.
+    /// Returns the verified installer PathBuf.
+    pub async fn download_and_verify_update(
         download_url: &str,
         target_version: &str,
+        signature: Option<&str>,
+        custom_endpoint: Option<&str>,
     ) -> Result<PathBuf, UpdaterError> {
         if !download_url.starts_with("https://") {
             return Err(UpdaterError::InsecureUrl);
         }
 
-        let client = create_secure_http_client(Duration::from_secs(60)).map_err(UpdaterError::ClientInit)?;
+        // 1. If signature was not directly provided, verify against the latest manifest at the official/trusted endpoint
+        let expected_signature = if let Some(sig) = signature {
+            sig.to_string()
+        } else {
+            let check = Self::check_for_updates(custom_endpoint).await?;
+            if let Some(target_ver) = &check.target_version {
+                if target_ver != target_version {
+                    return Err(UpdaterError::VerificationFailed(format!(
+                        "Target version '{}' does not match manifest version '{}'",
+                        target_version, target_ver
+                    )));
+                }
+            }
+            if let Some(url) = &check.download_url {
+                if url != download_url {
+                    return Err(UpdaterError::VerificationFailed(format!(
+                        "Download URL '{}' does not match verified manifest download URL '{}'",
+                        download_url, url
+                    )));
+                }
+            }
+            check.signature.ok_or_else(|| {
+                UpdaterError::VerificationFailed(
+                    "Verified update manifest does not contain a signature for this platform".to_string(),
+                )
+            })?
+        };
+
+        // 2. Download package bytes over HTTPS
+        let client = create_secure_http_client(Duration::from_secs(120)).map_err(UpdaterError::ClientInit)?;
         let resp = client.get(download_url).send().await?;
 
         if !resp.status().is_success() {
@@ -196,6 +260,11 @@ impl AppUpdater {
         }
 
         let bytes = resp.bytes().await?;
+
+        // 3. Cryptographically verify signature with Minisign before writing to disk
+        Self::verify_installer_signature(&bytes, &expected_signature)?;
+
+        // 4. Write verified package to secure temp directory
         let temp_dir = std::env::temp_dir().join("cliniqo_updates");
         fs::create_dir_all(&temp_dir)?;
 
@@ -208,8 +277,16 @@ impl AppUpdater {
         let target_file = temp_dir.join(filename);
         fs::write(&target_file, &bytes)?;
 
-        log::info!("Update package downloaded successfully to: {:?}", target_file);
+        log::info!("Verified update package staged securely to: {:?}", target_file);
         Ok(target_file)
+    }
+
+    /// Downloads the update binary and verifies cryptographic signature before staging.
+    pub async fn download_update_package(
+        download_url: &str,
+        target_version: &str,
+    ) -> Result<PathBuf, UpdaterError> {
+        Self::download_and_verify_update(download_url, target_version, None, None).await
     }
 
     /// Prepares and executes the NSIS upgrade installer while preserving existing local SQLite data and DPAPI keys.
@@ -238,6 +315,42 @@ impl AppUpdater {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_parse_public_key() {
+        let pk = AppUpdater::get_public_key();
+        assert!(pk.is_ok(), "Failed to get public key: {:?}", pk.err());
+    }
+
+    #[test]
+    fn test_rejects_empty_or_missing_signature() {
+        let dummy_bytes = b"MZ\x90\x00\x03\x00\x00\x00TestInstallerBinaryBytes";
+        let res = AppUpdater::verify_installer_signature(dummy_bytes, "");
+        assert!(matches!(res, Err(UpdaterError::VerificationFailed(_))));
+
+        let res_ws = AppUpdater::verify_installer_signature(dummy_bytes, "   \n\t ");
+        assert!(matches!(res_ws, Err(UpdaterError::VerificationFailed(_))));
+    }
+
+    #[test]
+    fn test_rejects_invalid_signature_format() {
+        let dummy_bytes = b"MZ\x90\x00\x03\x00\x00\x00TestInstallerBinaryBytes";
+        let res = AppUpdater::verify_installer_signature(dummy_bytes, "not-a-valid-minisign-signature");
+        assert!(matches!(res, Err(UpdaterError::VerificationFailed(_))));
+    }
+
+    #[test]
+    fn test_rejects_tampered_binary_or_mismatched_signature() {
+        let dummy_bytes = b"MZ\x90\x00\x03\x00\x00\x00TamperedInstallerBinaryBytes";
+        // A syntactically valid Minisign signature for another payload/key
+        let mock_sig = "untrusted comment: signature from minisign secret key\n\
+RUQf6LRCGA9i559r3g7V1qNyJDApGip8MfqcadIgT9CuhV3EMhHoN1mGTkUidF/z7SrlQgXdy8ofjb7bNJJylDOocrCo8KLzZwo=\n\
+trusted comment: timestamp:1633700835\tfile:test\n\
+wLMDjy9FLAuxZ3q4NlEvkgtyhrr0gtTu6KC4KBJdITbbOeAi1zBIYo0v4iTgt8jJpIidRJnp94ABQkJAgAooBQ==";
+
+        let res = AppUpdater::verify_installer_signature(dummy_bytes, mock_sig);
+        assert!(matches!(res, Err(UpdaterError::VerificationFailed(_))));
+    }
 
     #[test]
     fn test_version_comparison_logic() {

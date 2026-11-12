@@ -88,8 +88,8 @@ jobs:
 
       - name: Build Web Application
         env:
-          VITE_API_BASE_URL: https://cliniqo-api.onrender.com
-          CLINIQO_BACKEND_URL: https://cliniqo-api.onrender.com
+          VITE_API_BASE_URL: https://cliniqo-backend-68x3.onrender.com
+          CLINIQO_BACKEND_URL: https://cliniqo-backend-68x3.onrender.com
         run: pnpm build
 
       - name: Build Backend Application
@@ -99,8 +99,8 @@ jobs:
         # Generates production NSIS setup installer (.exe) for Windows distribution.
         # Fails immediately if TAURI_SIGNING_PRIVATE_KEY is missing on release branch or tag.
         env:
-          VITE_API_BASE_URL: https://cliniqo-api.onrender.com
-          CLINIQO_BACKEND_URL: https://cliniqo-api.onrender.com
+          VITE_API_BASE_URL: https://cliniqo-backend-68x3.onrender.com
+          CLINIQO_BACKEND_URL: https://cliniqo-backend-68x3.onrender.com
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         shell: bash

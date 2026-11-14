@@ -945,7 +945,35 @@ export class SyncService {
     session: ClientSession,
   ): Promise<SyncMutationResult> {
     if (mutation.action === SyncActionType.CREATE) {
-      const consultationId = new Types.ObjectId(mutation.payload.consultationId)
+      let consultationIdStr = mutation.payload?.consultationId
+      if (!consultationIdStr || !Types.ObjectId.isValid(consultationIdStr)) {
+        if (consultationIdStr) {
+          const feed = await this.changeFeedModel.findOne(
+            {
+              clinicId,
+              entityType: SyncEntityType.CONSULTATION,
+              clientEntityId: consultationIdStr,
+            },
+            null,
+            { session },
+          )
+          if (feed && Types.ObjectId.isValid(feed.entityId)) {
+            consultationIdStr = feed.entityId
+          }
+        }
+      }
+
+      if (!consultationIdStr || !Types.ObjectId.isValid(consultationIdStr)) {
+        return {
+          outboxId: mutation.outboxId,
+          status: "REJECTED",
+          entityType: mutation.entityType,
+          entityId: mutation.entityId,
+          error: "Consultation not found for prescription.",
+        }
+      }
+
+      const consultationId = new Types.ObjectId(consultationIdStr)
       const consultation = await this.consultationModel.findOne(
         { clinicId, _id: consultationId },
         null,
@@ -987,13 +1015,28 @@ export class SyncService {
         }
       }
 
-      // Allocate canonical sequential prescription number: RX-XXXXX
-      const counter = await this.seqCounterModel.findOneAndUpdate(
-        { clinicId, sequenceName: "prescription" },
-        { $inc: { seq: 1 } },
-        { upsert: true, returnDocument: "after", session },
-      )
-      const prescriptionNumber = `RX-${counter.seq.toString().padStart(5, "0")}`
+      // Allocate or preserve canonical sequential prescription number: RX-XXXXX
+      let prescriptionNumber = mutation.payload?.prescriptionNumber
+      if (!prescriptionNumber) {
+        const counter = await this.seqCounterModel.findOneAndUpdate(
+          { clinicId, sequenceName: "prescription" },
+          { $inc: { seq: 1 } },
+          { upsert: true, returnDocument: "after", session },
+        )
+        prescriptionNumber = `RX-${counter.seq.toString().padStart(5, "0")}`
+      } else {
+        const match = prescriptionNumber.match(/^RX-(\d+)$/)
+        if (match) {
+          const parsedSeq = parseInt(match[1], 10)
+          if (!isNaN(parsedSeq)) {
+            await this.seqCounterModel.findOneAndUpdate(
+              { clinicId, sequenceName: "prescription" },
+              { $max: { seq: parsedSeq } },
+              { upsert: true, session },
+            )
+          }
+        }
+      }
 
       const [newPrescription] = await this.prescriptionModel.create(
         [
@@ -1013,10 +1056,15 @@ export class SyncService {
       )
 
       // Create Revision 1 (IMMUTABLE)
-      const items = Array.isArray(mutation.payload.items)
+      let items = Array.isArray(mutation.payload?.items)
         ? mutation.payload.items
         : []
-      if (items.length === 0) {
+      if (items.length === 0 && typeof mutation.payload?.itemsJson === "string") {
+        try {
+          items = JSON.parse(mutation.payload.itemsJson)
+        } catch {}
+      }
+      if (!Array.isArray(items) || items.length === 0) {
         throw new BadRequestException(
           "Prescription must contain at least one item.",
         )
@@ -1149,10 +1197,15 @@ export class SyncService {
         }
       }
 
-      const items = Array.isArray(mutation.payload.items)
+      let items = Array.isArray(mutation.payload?.items)
         ? mutation.payload.items
         : []
-      if (items.length === 0) {
+      if (items.length === 0 && typeof mutation.payload?.itemsJson === "string") {
+        try {
+          items = JSON.parse(mutation.payload.itemsJson)
+        } catch {}
+      }
+      if (!Array.isArray(items) || items.length === 0) {
         throw new BadRequestException(
           "Prescription revision must contain at least one item.",
         )
@@ -1853,18 +1906,86 @@ export class SyncService {
     mutation: SyncMutationDto,
     session: ClientSession,
   ): Promise<PrescriptionDocument | null> {
-    const targetId = mutation.serverId || mutation.entityId
-    if (Types.ObjectId.isValid(targetId)) {
+    // 1. Direct serverId check from mutation or payload
+    const candidateServerId = mutation.serverId || mutation.payload?.serverId
+    if (candidateServerId && Types.ObjectId.isValid(candidateServerId)) {
+      const p = await this.prescriptionModel.findOne(
+        { clinicId, _id: new Types.ObjectId(candidateServerId) },
+        null,
+        { session },
+      )
+      if (p) return p
+    }
+
+    // 2. Direct entityId if it is a valid ObjectId
+    if (Types.ObjectId.isValid(mutation.entityId)) {
+      const p = await this.prescriptionModel.findOne(
+        { clinicId, _id: new Types.ObjectId(mutation.entityId) },
+        null,
+        { session },
+      )
+      if (p) return p
+    }
+
+    // 3. payload.prescriptionId
+    if (mutation.payload?.prescriptionId) {
+      if (Types.ObjectId.isValid(mutation.payload.prescriptionId)) {
+        const p = await this.prescriptionModel.findOne(
+          { clinicId, _id: new Types.ObjectId(mutation.payload.prescriptionId) },
+          null,
+          { session },
+        )
+        if (p) return p
+      }
+      // Or clientEntityId from changeFeed
+      const feed = await this.changeFeedModel.findOne(
+        {
+          clinicId,
+          entityType: SyncEntityType.PRESCRIPTION,
+          clientEntityId: mutation.payload.prescriptionId,
+        },
+        null,
+        { session },
+      )
+      if (feed && Types.ObjectId.isValid(feed.entityId)) {
+        const p = await this.prescriptionModel.findOne(
+          { clinicId, _id: new Types.ObjectId(feed.entityId) },
+          null,
+          { session },
+        )
+        if (p) return p
+      }
+    }
+
+    // 4. prescriptionNumber lookup from payload or entityId
+    const rxNumber = mutation.payload?.prescriptionNumber || mutation.entityId
+    if (rxNumber && typeof rxNumber === "string") {
+      const p = await this.prescriptionModel.findOne(
+        { clinicId, prescriptionNumber: rxNumber },
+        null,
+        { session },
+      )
+      if (p) return p
+    }
+
+    // 5. Look up clientEntityId in changeFeed for mutation.entityId
+    const feed = await this.changeFeedModel.findOne(
+      {
+        clinicId,
+        entityType: SyncEntityType.PRESCRIPTION,
+        clientEntityId: mutation.entityId,
+      },
+      null,
+      { session },
+    )
+    if (feed && Types.ObjectId.isValid(feed.entityId)) {
       return this.prescriptionModel.findOne(
-        { clinicId, _id: new Types.ObjectId(targetId) },
+        { clinicId, _id: new Types.ObjectId(feed.entityId) },
         null,
         { session },
       )
     }
-    return this.prescriptionModel.findOne(
-      { clinicId, prescriptionNumber: mutation.entityId },
-      null,
-      { session },
-    )
+
+    return null
   }
 }

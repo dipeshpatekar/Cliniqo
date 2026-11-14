@@ -716,12 +716,16 @@ impl DbOperations {
 
         let (encrypted_items, nonce) = encrypt_payload(&dek.key, items_json.as_bytes())?;
 
+        let parsed_items: serde_json::Value = serde_json::from_str(items_json)
+            .unwrap_or_else(|_| serde_json::json!([]));
+
         let outbox_payload = json!({
             "consultationId": consultation_id,
             "patientId": patient_id,
             "doctorId": doctor_id,
             "prescriptionNumber": prescription_number,
             "itemsJson": items_json,
+            "items": parsed_items,
         })
         .to_string();
 
@@ -790,9 +794,9 @@ impl DbOperations {
         );
 
         if patient_id.is_some() {
-            sql.push_str(" AND (patient_id = ?2 OR patient_id IN (SELECT patient_code FROM local_patients WHERE clinic_id = ?1 AND id = ?2)) ORDER BY created_at DESC");
+            sql.push_str(" AND (patient_id = ?2 OR patient_id IN (SELECT patient_code FROM local_patients WHERE clinic_id = ?1 AND id = ?2)) ORDER BY created_at DESC, revision_number DESC");
         } else {
-            sql.push_str(" ORDER BY created_at DESC");
+            sql.push_str(" ORDER BY created_at DESC, revision_number DESC");
         }
 
         let mut stmt = conn.prepare(&sql)?;
@@ -888,7 +892,172 @@ impl DbOperations {
         Ok(results)
     }
 
-    /// Aggregates sync outbox counts by state.
+    /// Appends an immutable revision to an active prescription.
+    /// Preserves existing prescription records, creates a new immutable revision row
+    /// with an incremented revision_number and local_version, and records an outbox mutation.
+    pub fn revise_prescription(
+        conn: &mut Connection,
+        dek: &DatabaseEncryptionKey,
+        clinic_id: &str,
+        prescription_id: &str,
+        expected_revision_number: i32,
+        items_json: &str,
+        reason_for_revision: &str,
+        verified_doctor_id: &str,
+    ) -> Result<String, DatabaseOpError> {
+        if reason_for_revision.trim().is_empty() {
+            return Err(DatabaseOpError::ConflictResolution(
+                "Reason for revision is required".to_string(),
+            ));
+        }
+
+        // Validate items JSON format and at least 1 item
+        let parsed_items: serde_json::Value = serde_json::from_str(items_json)
+            .map_err(|e| DatabaseOpError::ConflictResolution(format!("Invalid items JSON: {e}")))?;
+        let items_arr = parsed_items
+            .as_array()
+            .ok_or_else(|| DatabaseOpError::ConflictResolution("Prescription items must be an array".to_string()))?;
+        if items_arr.is_empty() {
+            return Err(DatabaseOpError::ConflictResolution(
+                "Revised prescription must contain at least one medicine item".to_string(),
+            ));
+        }
+
+        let tx = conn.transaction()?;
+
+        // Look up parent prescription row
+        let (
+            current_rev,
+            status,
+            patient_id,
+            consultation_id,
+            prescription_number,
+            server_id,
+            local_ver,
+            server_ver,
+        ): (i32, String, String, String, String, Option<String>, i32, i32) = tx
+            .query_row(
+                r#"
+                SELECT revision_number, status, patient_id, consultation_id,
+                       prescription_number, server_id, local_version, server_version
+                FROM local_prescriptions
+                WHERE clinic_id = ?1 AND id = ?2
+                "#,
+                params![clinic_id, prescription_id],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                        row.get(6)?,
+                        row.get(7)?,
+                    ))
+                },
+            )
+            .optional()?
+            .ok_or_else(|| {
+                DatabaseOpError::ConflictResolution("Prescription not found in clinic".to_string())
+            })?;
+
+        if status == "DISCONTINUED" {
+            return Err(DatabaseOpError::ConflictResolution(
+                "Cannot revise a discontinued prescription. Issue a replacement instead.".to_string(),
+            ));
+        }
+        if status == "CANCELLED" {
+            return Err(DatabaseOpError::ConflictResolution(
+                "Cannot revise a cancelled prescription.".to_string(),
+            ));
+        }
+
+        // Optimistic concurrency check
+        if current_rev != expected_revision_number {
+            return Err(DatabaseOpError::ConflictResolution(format!(
+                "Optimistic lock conflict: Prescription revision sequence was modified (expected: {expected_revision_number}, current: {current_rev})."
+            )));
+        }
+
+        let next_revision_number = current_rev + 1;
+        let new_local_version = local_ver + 1;
+        let new_prescription_id = Uuid::new_v4().to_string();
+
+        let (encrypted_items, nonce) = encrypt_payload(&dek.key, items_json.as_bytes())?;
+
+        // 1. Mark the previous revision status as SUPERSEDED so it remains an immutable historical record
+        tx.execute(
+            r#"
+            UPDATE local_prescriptions
+            SET status = 'SUPERSEDED',
+                updated_at = CURRENT_TIMESTAMP
+            WHERE clinic_id = ?1 AND id = ?2 AND status = 'ACTIVE'
+            "#,
+            params![clinic_id, prescription_id],
+        )?;
+
+        // 2. Insert new immutable revision row with ACTIVE status
+        tx.execute(
+            r#"
+            INSERT INTO local_prescriptions (
+                id, server_id, clinic_id, consultation_id, patient_id, doctor_id,
+                prescription_number, revision_number, status, encrypted_items, nonce,
+                sync_status, server_version, local_version, created_at, updated_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'ACTIVE', ?9, ?10, 'PENDING', ?11, ?12, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            "#,
+            params![
+                new_prescription_id,
+                server_id,
+                clinic_id,
+                consultation_id,
+                patient_id,
+                verified_doctor_id,
+                prescription_number,
+                next_revision_number,
+                encrypted_items,
+                nonce,
+                server_ver,
+                new_local_version,
+            ],
+        )?;
+
+        // 3. Queue outbox REVISE mutation
+        let outbox_payload = json!({
+            "prescriptionId": prescription_id,
+            "prescriptionNumber": prescription_number,
+            "serverId": server_id,
+            "expectedRevisionNumber": expected_revision_number,
+            "expectedVersion": server_ver,
+            "reasonForRevision": reason_for_revision.trim(),
+            "items": parsed_items,
+        })
+        .to_string();
+
+        let (encrypted_outbox, outbox_nonce) =
+            encrypt_payload(&dek.key, outbox_payload.as_bytes())?;
+        let outbox_id = Uuid::new_v4().to_string();
+        let idempotency_key = format!("prescription-revise-{new_prescription_id}-r{next_revision_number}");
+
+        tx.execute(
+            r#"
+            INSERT INTO local_sync_outbox (
+                id, clinic_id, entity_type, entity_id, action, idempotency_key, encrypted_payload, nonce, sync_status
+            ) VALUES (?1, ?2, 'PRESCRIPTION', ?3, 'REVISE', ?4, ?5, ?6, 'PENDING')
+            "#,
+            params![
+                outbox_id,
+                clinic_id,
+                new_prescription_id,
+                idempotency_key,
+                encrypted_outbox,
+                outbox_nonce,
+            ],
+        )?;
+
+        tx.commit()?;
+        Ok(new_prescription_id)
+    }
     pub fn get_outbox_summary(
         conn: &Connection,
         clinic_id: &str,
@@ -1828,56 +1997,99 @@ impl DbOperations {
             let payload: serde_json::Value = serde_json::from_slice(&plaintext)
                 .map_err(DatabaseOpError::Serialization)?;
 
-            let server_id: Option<String> = match item.entity_type.as_str() {
+            let (server_id, client_version): (Option<String>, i64) = match item.entity_type.as_str() {
                 "PATIENT" => {
-                    let from_db: Option<String> = tx.query_row(
-                        "SELECT server_id FROM local_patients WHERE id = ?1",
+                    let from_db: Option<(Option<String>, i32)> = tx.query_row(
+                        "SELECT server_id, COALESCE(server_version, local_version) FROM local_patients WHERE id = ?1",
                         params![item.entity_id],
-                        |r| r.get(0),
-                    ).ok().flatten();
+                        |r| Ok((r.get(0)?, r.get(1)?)),
+                    ).ok();
 
-                    from_db.or_else(|| {
+                    let s_id = from_db.as_ref().and_then(|(s, _)| s.clone()).or_else(|| {
                         payload
                             .get("serverId")
                             .or_else(|| payload.get("server_id"))
                             .and_then(|v| v.as_str())
                             .filter(|s| !s.is_empty())
                             .map(|s| s.to_string())
-                    })
+                    });
+                    let ver = from_db.map(|(_, v)| v as i64).unwrap_or(1);
+                    (s_id, ver)
                 }
                 "CONSULTATION" => {
-                    let from_db: Option<String> = tx.query_row(
-                        "SELECT server_id FROM local_consultations WHERE id = ?1",
+                    let from_db: Option<(Option<String>, i32)> = tx.query_row(
+                        "SELECT server_id, COALESCE(server_version, local_version) FROM local_consultations WHERE id = ?1",
                         params![item.entity_id],
-                        |r| r.get(0),
-                    ).ok().flatten();
+                        |r| Ok((r.get(0)?, r.get(1)?)),
+                    ).ok();
 
-                    from_db.or_else(|| {
+                    let s_id = from_db.as_ref().and_then(|(s, _)| s.clone()).or_else(|| {
                         payload
                             .get("serverId")
                             .or_else(|| payload.get("server_id"))
                             .and_then(|v| v.as_str())
                             .filter(|s| !s.is_empty())
                             .map(|s| s.to_string())
-                    })
+                    });
+                    let ver = from_db.map(|(_, v)| v as i64).unwrap_or(1);
+                    (s_id, ver)
                 }
                 "PRESCRIPTION" | "PRESCRIPTION_REVISION" => {
-                    let from_db: Option<String> = tx.query_row(
-                        "SELECT server_id FROM local_prescriptions WHERE id = ?1",
+                    let from_db: Option<(Option<String>, i32, String)> = tx.query_row(
+                        "SELECT server_id, COALESCE(server_version, local_version), prescription_number FROM local_prescriptions WHERE id = ?1",
                         params![item.entity_id],
-                        |r| r.get(0),
-                    ).ok().flatten();
+                        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                    ).ok();
 
-                    from_db.or_else(|| {
+                    let (db_server_id, db_ver, rx_num) = match from_db {
+                        Some((s, v, n)) => (s, v as i64, Some(n)),
+                        None => (None, 1i64, None),
+                    };
+
+                    let s_id = db_server_id
+                        .or_else(|| {
+                            payload
+                                .get("serverId")
+                                .or_else(|| payload.get("server_id"))
+                                .and_then(|v| v.as_str())
+                                .filter(|s| !s.is_empty())
+                                .map(|s| s.to_string())
+                        })
+                        .or_else(|| {
+                            let target_rx = rx_num.as_deref().or_else(|| payload.get("prescriptionNumber").and_then(|v| v.as_str()));
+                            if let Some(num) = target_rx {
+                                tx.query_row(
+                                    "SELECT server_id FROM local_prescriptions WHERE clinic_id = ?1 AND prescription_number = ?2 AND server_id IS NOT NULL LIMIT 1",
+                                    params![item.clinic_id, num],
+                                    |r| r.get(0),
+                                ).ok().flatten()
+                            } else {
+                                None
+                            }
+                        });
+
+                    let ver = payload.get("expectedVersion").and_then(|v| v.as_i64()).unwrap_or(db_ver);
+                    (s_id, ver)
+                }
+                "INVOICE" => {
+                    let from_db: Option<(Option<String>, i32)> = tx.query_row(
+                        "SELECT server_id, COALESCE(server_version, local_version) FROM local_invoices_v2 WHERE id = ?1",
+                        params![item.entity_id],
+                        |r| Ok((r.get(0)?, r.get(1)?)),
+                    ).ok();
+
+                    let s_id = from_db.as_ref().and_then(|(s, _)| s.clone()).or_else(|| {
                         payload
                             .get("serverId")
                             .or_else(|| payload.get("server_id"))
                             .and_then(|v| v.as_str())
                             .filter(|s| !s.is_empty())
                             .map(|s| s.to_string())
-                    })
+                    });
+                    let ver = from_db.map(|(_, v)| v as i64).unwrap_or(1);
+                    (s_id, ver)
                 }
-                _ => None,
+                _ => (None, 1),
             };
 
             decrypted_items.push(DecryptedOutboxItem {
@@ -1887,7 +2099,7 @@ impl DbOperations {
                 entity_id: item.entity_id.clone(),
                 action: item.action.clone(),
                 idempotency_key: item.idempotency_key.clone(),
-                client_version: 1,
+                client_version,
                 server_id,
                 payload,
             });
@@ -2447,24 +2659,43 @@ impl DbOperations {
                     }
                 }
                 "PRESCRIPTION" | "PRESCRIPTION_REVISION" => {
-                    let consultation_id = item.payload.get("consultationId").and_then(|v| v.as_str()).unwrap_or("");
-                    let patient_id = item.payload.get("patientId").and_then(|v| v.as_str()).unwrap_or("");
+                    let consultation_id = item.payload.get("consultationId")
+                        .or_else(|| item.payload.get("revision").and_then(|r| r.get("consultationId")))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    let patient_id = item.payload.get("patientId")
+                        .or_else(|| item.payload.get("revision").and_then(|r| r.get("patientId")))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
                     let doctor_id = item.actor_doctor_id.as_str();
-                    let rx_number = item.payload.get("prescriptionNumber").and_then(|v| v.as_str()).unwrap_or("RX-UNKNOWN");
-                    let revision_number = item.payload.get("revisionNumber").and_then(|v| v.as_i64()).unwrap_or(1) as i32;
+                    let rx_number = item.payload.get("prescriptionNumber")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    let revision_number = item.payload.get("revisionNumber")
+                        .or_else(|| item.payload.get("currentRevisionNumber"))
+                        .or_else(|| item.payload.get("revision").and_then(|r| r.get("revisionNumber")))
+                        .and_then(|v| v.as_i64())
+                        .unwrap_or(1) as i32;
                     let status = item.payload.get("status").and_then(|v| v.as_str()).unwrap_or("ACTIVE");
-                    let items_val = item.payload.get("items").unwrap_or(&item.payload);
+                    let items_val = item.payload.get("items")
+                        .or_else(|| item.payload.get("revision").and_then(|r| r.get("items")))
+                        .unwrap_or(&item.payload);
                     let items_str = items_val.to_string();
 
                     let (enc_bytes, nonce) = encrypt_payload(&dek.key, items_str.as_bytes())?;
 
                     let existing_id: Option<String> = {
                         let mut check_stmt = tx.prepare(
-                            "SELECT id FROM local_prescriptions WHERE clinic_id = ?1 AND (server_id = ?2 OR (?3 != '' AND id = ?3)) LIMIT 1"
+                            r#"
+                            SELECT id FROM local_prescriptions
+                            WHERE clinic_id = ?1
+                              AND ((server_id = ?2 AND revision_number = ?3) OR (?4 != '' AND id = ?4))
+                            LIMIT 1
+                            "#
                         )?;
                         check_stmt
                             .query_map(
-                                params![clinic_id, item.entity_id, client_ent_id],
+                                params![clinic_id, item.entity_id, revision_number, client_ent_id],
                                 |row| row.get(0),
                             )?
                             .filter_map(Result::ok)
@@ -2489,6 +2720,47 @@ impl DbOperations {
                             params![item.entity_id, revision_number, status, enc_bytes, nonce, item.version, id],
                         )?;
                     } else {
+                        let effective_rx_number = if !rx_number.is_empty() && rx_number != "RX-UNKNOWN" {
+                            rx_number.to_string()
+                        } else {
+                            tx.query_row(
+                                "SELECT prescription_number FROM local_prescriptions WHERE clinic_id = ?1 AND server_id = ?2 LIMIT 1",
+                                params![clinic_id, item.entity_id],
+                                |r| r.get(0),
+                            ).unwrap_or_else(|_| "RX-UNKNOWN".to_string())
+                        };
+
+                        let effective_patient_id = if !patient_id.is_empty() {
+                            patient_id.to_string()
+                        } else {
+                            tx.query_row(
+                                "SELECT patient_id FROM local_prescriptions WHERE clinic_id = ?1 AND server_id = ?2 LIMIT 1",
+                                params![clinic_id, item.entity_id],
+                                |r| r.get(0),
+                            ).unwrap_or_default()
+                        };
+
+                        let effective_consultation_id = if !consultation_id.is_empty() {
+                            consultation_id.to_string()
+                        } else {
+                            tx.query_row(
+                                "SELECT consultation_id FROM local_prescriptions WHERE clinic_id = ?1 AND server_id = ?2 LIMIT 1",
+                                params![clinic_id, item.entity_id],
+                                |r| r.get(0),
+                            ).unwrap_or_default()
+                        };
+
+                        // Mark older revisions for this prescription as SUPERSEDED to preserve immutability
+                        tx.execute(
+                            r#"
+                            UPDATE local_prescriptions
+                            SET status = 'SUPERSEDED',
+                                updated_at = CURRENT_TIMESTAMP
+                            WHERE clinic_id = ?1 AND (server_id = ?2 OR prescription_number = ?3) AND status = 'ACTIVE'
+                            "#,
+                            params![clinic_id, item.entity_id, effective_rx_number],
+                        )?;
+
                         let local_id = item.client_entity_id.clone().unwrap_or_else(|| Uuid::new_v4().to_string());
                         tx.execute(
                             r#"
@@ -2499,8 +2771,8 @@ impl DbOperations {
                             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 'SYNCED', ?12, ?12, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                             "#,
                             params![
-                                local_id, item.entity_id, clinic_id, consultation_id, patient_id, doctor_id,
-                                rx_number, revision_number, status, enc_bytes, nonce, item.version
+                                local_id, item.entity_id, clinic_id, effective_consultation_id, effective_patient_id, doctor_id,
+                                effective_rx_number, revision_number, status, enc_bytes, nonce, item.version
                             ],
                         )?;
                     }
@@ -7395,5 +7667,369 @@ mod tests {
         let summary3 = DbOperations::get_outbox_summary(&conn, clinic_id).unwrap();
         assert_eq!(summary3.pending_count, 0);
         assert_eq!(summary3.in_flight_count, 0);
+    }
+
+    #[test]
+    fn test_prescription_revision_lifecycle_and_immutability() {
+        let (mut conn, dek) = setup_test_db();
+        let clinic_id = "clinic_rx_rev";
+        let doctor_id = "doc_rev_1";
+        let doctor_id_2 = "doc_rev_2";
+
+        // 1. Create patient and consultation
+        let pat_id = DbOperations::insert_patient(
+            &mut conn,
+            &dek,
+            clinic_id,
+            "P-REV-101",
+            "Revision Patient",
+            "9876543210",
+            "Male",
+            None,
+            35,
+            &[],
+            &[],
+            None,
+        )
+        .unwrap();
+
+        let c_id = DbOperations::insert_consultation(
+            &mut conn,
+            &dek,
+            clinic_id,
+            &pat_id,
+            doctor_id,
+            "2026-11-14",
+            "Acute bronchitis",
+            "Bronchitis",
+            Some(r#"{"vitals":{"heartRate":"72"}}"#),
+        )
+        .unwrap();
+
+        // 2. Finalize initial prescription (Revision 1)
+        let rx1_items = r#"[{"id":1,"name":"Amoxicillin","formulation":"Capsule","dose":"500mg","frequency":"Three times daily","duration":"5 days"}]"#;
+        let rx1_id = DbOperations::insert_prescription(
+            &mut conn,
+            &dek,
+            clinic_id,
+            &c_id,
+            &pat_id,
+            doctor_id,
+            "RX-2026-0001",
+            rx1_items,
+        )
+        .unwrap();
+
+        // Check initial state
+        let rxs_initial = DbOperations::get_prescriptions(&conn, &dek, clinic_id, Some(&pat_id)).unwrap();
+        assert_eq!(rxs_initial.len(), 1);
+        assert_eq!(rxs_initial[0].id, rx1_id);
+        assert_eq!(rxs_initial[0].revision_number, 1);
+        assert_eq!(rxs_initial[0].status, "ACTIVE");
+        assert_eq!(rxs_initial[0].items_json.as_deref(), Some(rx1_items));
+
+        // 3. Attempt revision with mismatched expected_revision_number -> must fail
+        let rx2_items = r#"[{"id":1,"name":"Amoxicillin","formulation":"Capsule","dose":"500mg","frequency":"Three times daily","duration":"7 days"},{"id":2,"name":"Paracetamol","formulation":"Tablet","dose":"650mg","frequency":"As needed","duration":"3 days"}]"#;
+        let wrong_rev_res = DbOperations::revise_prescription(
+            &mut conn,
+            &dek,
+            clinic_id,
+            &rx1_id,
+            2, // Wrong: expected is 1
+            rx2_items,
+            "Extended antibiotic course",
+            doctor_id_2,
+        );
+        assert!(wrong_rev_res.is_err(), "Mismatched expected revision must fail optimistic lock");
+
+        // 4. Attempt revision without reason -> must fail
+        let empty_reason_res = DbOperations::revise_prescription(
+            &mut conn,
+            &dek,
+            clinic_id,
+            &rx1_id,
+            1,
+            rx2_items,
+            "   ",
+            doctor_id_2,
+        );
+        assert!(empty_reason_res.is_err(), "Empty revision reason must be rejected");
+
+        // 5. Successful revision to Revision 2
+        let rx2_id = DbOperations::revise_prescription(
+            &mut conn,
+            &dek,
+            clinic_id,
+            &rx1_id,
+            1,
+            rx2_items,
+            "Extended antibiotic course and added antipyretic",
+            doctor_id_2,
+        )
+        .unwrap();
+        assert_ne!(rx1_id, rx2_id, "Revision must produce a new unique row");
+
+        // 6. Verify Revision 1 remains immutable with original medicines in local_prescriptions
+        let rx1_direct: (String, i32, Vec<u8>, Vec<u8>) = conn
+            .query_row(
+                "SELECT status, revision_number, encrypted_items, nonce FROM local_prescriptions WHERE id = ?1",
+                params![rx1_id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(rx1_direct.0, "SUPERSEDED", "Previous revision must be SUPERSEDED");
+        assert_eq!(rx1_direct.1, 1, "Original revision number must remain 1");
+        let rx1_decrypted = crate::crypto::decrypt_payload(&dek.key, &rx1_direct.2, &rx1_direct.3).unwrap();
+        assert_eq!(String::from_utf8(rx1_decrypted).unwrap(), rx1_items, "Original items must remain completely unchanged");
+
+        // 7. Verify Revision 2 is ACTIVE with revision_number 2
+        let rx2_direct: (String, i32, Vec<u8>, Vec<u8>) = conn
+            .query_row(
+                "SELECT status, revision_number, encrypted_items, nonce FROM local_prescriptions WHERE id = ?1",
+                params![rx2_id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(rx2_direct.0, "ACTIVE");
+        assert_eq!(rx2_direct.1, 2);
+        let rx2_decrypted = crate::crypto::decrypt_payload(&dek.key, &rx2_direct.2, &rx2_direct.3).unwrap();
+        assert_eq!(String::from_utf8(rx2_decrypted).unwrap(), rx2_items);
+
+        // 8. Verify get_prescriptions returns both revisions in descending order (Revision 2 first, then Revision 1)
+        let all_rxs = DbOperations::get_prescriptions(&conn, &dek, clinic_id, Some(&pat_id)).unwrap();
+        assert_eq!(all_rxs.len(), 2);
+        let latest = &all_rxs[0];
+        let previous = &all_rxs[1];
+        assert_eq!(latest.revision_number, 2);
+        assert_eq!(latest.status, "ACTIVE");
+        assert_eq!(previous.revision_number, 1);
+        assert_eq!(previous.status, "SUPERSEDED");
+
+        // 9. Verify outbox contains REVISE action for PRESCRIPTION with expected details
+        let outbox_batch = DbOperations::get_pending_outbox_batch(&mut conn, &dek, clinic_id, 10).unwrap();
+        let revise_outbox = outbox_batch.iter().find(|o| o.action == "REVISE" && o.entity_type == "PRESCRIPTION").unwrap();
+        assert_eq!(revise_outbox.payload["expectedRevisionNumber"], 1);
+        assert_eq!(revise_outbox.payload["reasonForRevision"], "Extended antibiotic course and added antipyretic");
+    }
+
+    #[test]
+    fn test_prescription_sync_offline_restart_idempotency_and_pull_revisions() {
+        let (mut conn, dek) = setup_test_db();
+        let clinic_id = "clinic_sync_rx_test";
+        let doctor_id = "doc_sync_1";
+
+        // 1. Create Patient & Consultation locally
+        let pat_id = DbOperations::insert_patient(
+            &mut conn,
+            &dek,
+            clinic_id,
+            "P-SYNC-101",
+            "Aarav Sharma",
+            "9876500001",
+            "Male",
+            None,
+            40,
+            &[],
+            &[],
+            None,
+        )
+        .unwrap();
+
+        let c_id = DbOperations::insert_consultation(
+            &mut conn,
+            &dek,
+            clinic_id,
+            &pat_id,
+            doctor_id,
+            "2026-11-14",
+            "Acute Bronchitis",
+            "Bronchitis",
+            None,
+        )
+        .unwrap();
+
+        // 2. Create Prescription Revision 1 (Online creation flow)
+        let rx1_items = r#"[{"id":1,"name":"Amoxicillin","formulation":"Capsule","dose":"500 mg","frequency":"TDS","duration":"5 days"}]"#;
+        let rx1_id = DbOperations::insert_prescription(
+            &mut conn,
+            &dek,
+            clinic_id,
+            &c_id,
+            &pat_id,
+            doctor_id,
+            "RX-2026-0001",
+            rx1_items,
+        )
+        .unwrap();
+
+        // Simulate initial sync to server: assign server_id = "srv_rx_101" to Revision 1
+        DbOperations::apply_push_mutation_result(
+            &mut conn,
+            "outbox-create-rx1",
+            "APPLIED",
+            "PRESCRIPTION",
+            &rx1_id,
+            Some("srv_rx_101"),
+            Some(1),
+            None,
+            None,
+        )
+        .unwrap();
+
+        // 3. Offline Revision to Revision 2
+        let rx2_items = r#"[{"id":1,"name":"Amoxicillin","formulation":"Capsule","dose":"500 mg","frequency":"TDS","duration":"7 days"},{"id":2,"name":"Cetirizine","formulation":"Tablet","dose":"10 mg","frequency":"OD","duration":"5 days"}]"#;
+        let rx2_id = DbOperations::revise_prescription(
+            &mut conn,
+            &dek,
+            clinic_id,
+            &rx1_id,
+            1,
+            rx2_items,
+            "Extended antibiotic course and added antihistamine",
+            doctor_id,
+        )
+        .unwrap();
+
+        // Verify Revision 1 is SUPERSEDED and Revision 2 is ACTIVE
+        let rxs = DbOperations::get_prescriptions(&conn, &dek, clinic_id, Some(&pat_id)).unwrap();
+        assert_eq!(rxs.len(), 2);
+        assert_eq!(rxs[0].id, rx2_id);
+        assert_eq!(rxs[0].revision_number, 2);
+        assert_eq!(rxs[0].status, "ACTIVE");
+        assert_eq!(rxs[1].id, rx1_id);
+        assert_eq!(rxs[1].revision_number, 1);
+        assert_eq!(rxs[1].status, "SUPERSEDED");
+
+        // 4. Fetch pending outbox batch: verify idempotency key and payload
+        let batch1 = DbOperations::get_pending_outbox_batch(&mut conn, &dek, clinic_id, 10).unwrap();
+        let revise_item = batch1.iter().find(|i| i.action == "REVISE" && i.entity_id == rx2_id).unwrap();
+        let expected_key = format!("prescription-revise-{rx2_id}-r2");
+        assert_eq!(revise_item.idempotency_key, expected_key);
+        assert_eq!(revise_item.server_id, Some("srv_rx_101".to_string()));
+        assert_eq!(revise_item.payload["prescriptionNumber"], "RX-2026-0001");
+        assert_eq!(revise_item.payload["expectedRevisionNumber"], 1);
+        assert_eq!(revise_item.client_version, 1);
+
+        // 5. Idempotent Retry: simulate network timeout while push is in flight
+        let outbox_id = revise_item.id.clone();
+        let reverted = DbOperations::revert_in_flight_to_pending(&conn, &[outbox_id.clone()], Some("Network timeout during push")).unwrap();
+        assert_eq!(reverted, 1);
+
+        // Re-read outbox batch: same idempotency key must be preserved
+        let batch2 = DbOperations::get_pending_outbox_batch(&mut conn, &dek, clinic_id, 10).unwrap();
+        let retry_item = batch2.iter().find(|i| i.id == outbox_id).unwrap();
+        assert_eq!(retry_item.idempotency_key, expected_key);
+        assert_eq!(retry_item.server_id, Some("srv_rx_101".to_string()));
+
+        // 6. Push succeeds on server: apply APPLIED result
+        DbOperations::apply_push_mutation_result(
+            &mut conn,
+            &outbox_id,
+            "APPLIED",
+            "PRESCRIPTION",
+            &rx2_id,
+            Some("srv_rx_101"),
+            Some(2),
+            None,
+            None,
+        )
+        .unwrap();
+
+        let rx2_after_sync: (String, String, i32) = conn
+            .query_row(
+                "SELECT sync_status, server_id, server_version FROM local_prescriptions WHERE id = ?1",
+                params![rx2_id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(rx2_after_sync.0, "SYNCED");
+        assert_eq!(rx2_after_sync.1, "srv_rx_101");
+        assert_eq!(rx2_after_sync.2, 2);
+
+        // 7. Pull remote Revision 3 from cloud change feed (e.g. edited by another workstation)
+        let rx3_items = serde_json::json!([
+            {"id": 1, "name": "Amoxicillin", "formulation": "Capsule", "dose": "500 mg"},
+            {"id": 2, "name": "Cetirizine", "formulation": "Tablet", "dose": "10 mg"},
+            {"id": 3, "name": "Vitamin C", "formulation": "Tablet", "dose": "500 mg"}
+        ]);
+        let remote_rev3 = SyncFeedChangeItem {
+            seq: 201,
+            entity_type: "PRESCRIPTION_REVISION".to_string(),
+            entity_id: "srv_rx_101".to_string(),
+            client_entity_id: None,
+            action: "REVISE".to_string(),
+            version: 3,
+            committed_at: "2026-11-14T12:00:00Z".to_string(),
+            actor_doctor_id: doctor_id.to_string(),
+            payload: serde_json::json!({
+                "prescriptionId": "srv_rx_101",
+                "revisionNumber": 3,
+                "revision": {
+                    "prescriptionId": "srv_rx_101",
+                    "consultationId": c_id,
+                    "patientId": pat_id,
+                    "revisionNumber": 3,
+                    "reasonForRevision": "Added nutritional support",
+                    "items": rx3_items
+                }
+            }),
+        };
+
+        DbOperations::apply_pull_feed_items(&mut conn, &dek, clinic_id, &[remote_rev3], 201, false).unwrap();
+
+        // 8. Verify all 3 revisions exist and are correctly ordered in patient history
+        let all_revisions = DbOperations::get_prescriptions(&conn, &dek, clinic_id, Some(&pat_id)).unwrap();
+        assert_eq!(all_revisions.len(), 3, "Must have exactly 3 revisions");
+        assert_eq!(all_revisions[0].revision_number, 3, "Latest revision must be Rev 3");
+        assert_eq!(all_revisions[0].status, "ACTIVE");
+        assert_eq!(all_revisions[1].revision_number, 2, "Previous revision Rev 2 must remain");
+        assert_eq!(all_revisions[1].status, "SUPERSEDED");
+        assert_eq!(all_revisions[2].revision_number, 1, "Original revision Rev 1 must remain");
+        assert_eq!(all_revisions[2].status, "SUPERSEDED");
+
+        // Verify Rev 1 original items are still completely intact
+        assert_eq!(all_revisions[2].items_json.as_deref(), Some(rx1_items));
+
+        // 9. Concurrency conflict handling: stale push returns CONFLICT
+        let (enc_stale, nonce_stale) = crate::crypto::encrypt_payload(&dek.key, b"{}").unwrap();
+        conn.execute(
+            r#"
+            INSERT INTO local_sync_outbox (
+                id, clinic_id, entity_type, entity_id, action, idempotency_key, encrypted_payload, nonce, sync_status
+            ) VALUES ('outbox-stale-test', ?1, 'PRESCRIPTION', ?2, 'REVISE', 'idem-stale-test-key', ?3, ?4, 'IN_FLIGHT')
+            "#,
+            params![clinic_id, rx1_id, enc_stale, nonce_stale],
+        )
+        .unwrap();
+
+        let stale_conflict_details = serde_json::json!({
+            "conflictReason": "CONCURRENT_REVISION_COLLISION",
+            "serverVersion": 3,
+            "clientVersion": 1,
+            "reason": "Stale revision rejected"
+        });
+
+        DbOperations::apply_push_mutation_result(
+            &mut conn,
+            "outbox-stale-test",
+            "CONFLICT",
+            "PRESCRIPTION",
+            &rx1_id,
+            Some("srv_rx_101"),
+            Some(3),
+            Some("Optimistic lock conflict"),
+            Some(&stale_conflict_details),
+        )
+        .unwrap();
+
+        // Verify conflict recorded in local_sync_conflicts
+        let conflict_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM local_sync_conflicts WHERE entity_type = 'PRESCRIPTION' AND status = 'OPEN'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(conflict_count, 1);
     }
 }

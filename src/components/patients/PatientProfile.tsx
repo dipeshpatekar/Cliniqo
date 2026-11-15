@@ -49,6 +49,11 @@ export function PatientProfile({
   desktopSession,
   onStartBill,
   onStartConsultation,
+  onViewPrescription,
+  activeTab,
+  onTabChange,
+  initialPrescriptions,
+  initialConsultations,
 }: {
   go: (page: Page) => void
   patient: Patient
@@ -58,15 +63,26 @@ export function PatientProfile({
   desktopSession?: DesktopSessionContext | null
   onStartBill?: (patient: Patient, invoice?: LocalInvoiceRecord) => void
   onStartConsultation?: (patient: Patient) => void
+  onViewPrescription?: (rx: LocalPrescriptionRecord) => void
+  activeTab?: string
+  onTabChange?: (tab: string) => void
+  initialPrescriptions?: LocalPrescriptionRecord[]
+  initialConsultations?: LocalConsultationRecord[]
 }) {
-  const [tab, setTab] = useState("Overview")
+  const [internalTab, setInternalTab] = useState(activeTab || "Overview")
+  const tab = activeTab ?? internalTab
+
+  const handleSelectTab = (newTab: string) => {
+    setInternalTab(newTab)
+    onTabChange?.(newTab)
+  }
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
   const [isDeleting, setIsDeleting] = useState(false)
   const [consultations, setConsultations] = useState<LocalConsultationRecord[]>(
-    [],
+    initialConsultations || [],
   )
   const [prescriptions, setPrescriptions] = useState<LocalPrescriptionRecord[]>(
-    [],
+    initialPrescriptions || [],
   )
   const [loadingHistory, setLoadingHistory] = useState(false)
 
@@ -303,7 +319,7 @@ export function PatientProfile({
               role="tab"
               aria-selected={tab === item}
               className={tab === item ? "active" : ""}
-              onClick={() => setTab(item)}
+              onClick={() => handleSelectTab(item)}
             >
               {item}
               {item === "Consultations" && <span>{consultations.length}</span>}
@@ -340,6 +356,7 @@ export function PatientProfile({
             prescriptions={prescriptions}
             loading={loadingHistory}
             desktopSession={desktopSession}
+            onViewPrescription={onViewPrescription}
           />
         )}
         {tab === "Invoices" && (
@@ -365,3 +382,5 @@ export function PatientProfile({
     </>
   )
 }
+
+export default PatientProfile

@@ -22,6 +22,7 @@ import {
   type Patient,
   type Vitals,
   type ConsultationData,
+  type Medicine,
 } from "../../types"
 import { cn } from "../../utils/cn"
 import { analyzeAllergies } from "../../utils/allergy"
@@ -33,7 +34,9 @@ import {
   type ClinicProfile,
   type DoctorProfile,
   type DesktopSessionContext,
+  type LocalPrescriptionRecord,
 } from "../../desktop/desktop-bridge"
+import { PrescriptionEditModal } from "./PrescriptionEditModal"
 
 export interface PrescriptionPreviewProps {
   go: (page: Page) => void
@@ -46,8 +49,14 @@ export interface PrescriptionPreviewProps {
   showClinicLogo: boolean
   showClinicEmail: boolean
   showAllergyWarning: boolean
-  returnPage: "consultation" | "settings"
+  returnPage: "consultation" | "settings" | "patient-profile"
   desktopSession?: DesktopSessionContext | null
+  prescriptionRecord?: LocalPrescriptionRecord | null
+  onRevisePrescription?: (
+    medicines: Medicine[],
+    reasonForRevision: string,
+  ) => Promise<void>
+  itemsError?: string | null
 }
 
 export function PrescriptionPreview({
@@ -63,10 +72,14 @@ export function PrescriptionPreview({
   showAllergyWarning,
   returnPage,
   desktopSession,
+  prescriptionRecord,
+  onRevisePrescription,
+  itemsError,
 }: PrescriptionPreviewProps) {
   const [whatsapp, setWhatsapp] = useState(false)
   const [delivery, setDelivery] =
     useState<"confirm" | "sending" | "queued" | "failed">("confirm")
+  const [showEditModal, setShowEditModal] = useState(false)
 
   const [clinicProfile, setClinicProfile] = useState<ClinicProfile | null>(null)
   const [doctorProfile, setDoctorProfile] = useState<DoctorProfile | null>(null)
@@ -131,12 +144,16 @@ export function PrescriptionPreview({
         title={
           returnPage === "settings"
             ? "Prescription layout preview"
-            : "Prescription preview"
+            : prescriptionRecord
+              ? `Prescription ${prescriptionRecord.prescription_number}`
+              : "Prescription preview"
         }
         subtitle={
           returnPage === "settings"
             ? "Sample preview · Layout changes apply to all future prescriptions"
-            : "Local session preview · Not persisted"
+            : prescriptionRecord
+              ? `${prescriptionRecord.revision_number > 1 ? `Revision ${prescriptionRecord.revision_number}` : "Original"} · Finalized ${formatDateDDMMYYYY(prescriptionRecord.created_at)} · Read-only historical record`
+              : "Local session preview · Not persisted"
         }
       >
         <IconButton
@@ -144,12 +161,24 @@ export function PrescriptionPreview({
           label={
             returnPage === "settings"
               ? "Back to prescription settings"
-              : "Back to consultation"
+              : returnPage === "patient-profile"
+                ? "Back to patient profile"
+                : "Back to consultation"
           }
           onClick={() => go(returnPage)}
         >
           <ArrowLeft size={18} />
         </IconButton>
+        {prescriptionRecord && prescriptionRecord.status === "ACTIVE" && onRevisePrescription && (
+          <Button
+            type="button"
+            variant="primary"
+            icon={Edit3}
+            onClick={() => setShowEditModal(true)}
+          >
+            Edit prescription
+          </Button>
+        )}
         <Button
           type="button"
           variant="secondary"
@@ -170,21 +199,70 @@ export function PrescriptionPreview({
       </AppHeader>
 
       <div className="preview-page">
-        <div className="preview-note">
-          <AlertCircle size={17} />
-          <span>
-            This is a browser preview using current consultation data. Backend
-            storage is required for finalization and revision history.
-          </span>
-          <Button
-            size="sm"
-            variant="ghost"
-            onClick={() => go("consultation")}
-            icon={Edit3}
+        {itemsError && (
+          <div
+            className="no-print"
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: "10px",
+              padding: "12px 16px",
+              marginBottom: "16px",
+              backgroundColor: "#fef2f2",
+              border: "1px solid #f87171",
+              borderRadius: "8px",
+              color: "#991b1b",
+              fontSize: "0.875rem",
+            }}
           >
-            Edit consultation
-          </Button>
-        </div>
+            <AlertCircle size={18} style={{ flexShrink: 0, color: "#dc2626" }} />
+            <div>
+              <strong>Prescription Data Warning:</strong> {itemsError}
+            </div>
+          </div>
+        )}
+        {prescriptionRecord ? (
+          <div className="preview-note">
+            <AlertCircle size={17} />
+            <span>
+              Viewing finalized historical prescription{" "}
+              <strong>{prescriptionRecord.prescription_number}</strong> (
+              {prescriptionRecord.revision_number > 1
+                ? `Revision ${prescriptionRecord.revision_number}`
+                : "Original"}
+              , {prescriptionRecord.status}).
+              {prescriptionRecord.status === "ACTIVE"
+                ? " Click 'Edit prescription' to append an immutable revision."
+                : " Historical revisions are read-only."}
+            </span>
+            {prescriptionRecord.status === "ACTIVE" && onRevisePrescription && (
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => setShowEditModal(true)}
+                icon={Edit3}
+              >
+                Edit prescription
+              </Button>
+            )}
+          </div>
+        ) : (
+          <div className="preview-note">
+            <AlertCircle size={17} />
+            <span>
+              This is a browser preview using current consultation data. Backend
+              storage is required for finalization and revision history.
+            </span>
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => go("consultation")}
+              icon={Edit3}
+            >
+              Edit consultation
+            </Button>
+          </div>
+        )}
 
         <article className="prescription-paper" id="printable-prescription">
           <div
@@ -297,6 +375,19 @@ export function PrescriptionPreview({
               <span>Patient ID</span>
               <strong>{getPublicPatientId(patient)}</strong>
             </div>
+            {prescriptionRecord && (
+              <div>
+                <span>Rx No. & Revision</span>
+                <strong>
+                  {prescriptionRecord.prescription_number} (
+                  {prescriptionRecord.revision_number > 1
+                    ? `Rev ${prescriptionRecord.revision_number}`
+                    : "Original"}
+                  )
+                </strong>
+                <small>{prescriptionRecord.status}</small>
+              </div>
+            )}
             <div>
               <span>Date</span>
               <strong>
@@ -363,7 +454,33 @@ export function PrescriptionPreview({
                 </tr>
               </thead>
               <tbody>
-                {data.medicines.length > 0 ? (
+                {itemsError ? (
+                  <tr>
+                    <td colSpan={4}>
+                      <div
+                        className="rx-empty"
+                        style={{
+                          border: "1px dashed var(--danger, #ef4444)",
+                          backgroundColor: "#fef2f2",
+                          color: "#991b1b",
+                          padding: "16px",
+                          borderRadius: "8px",
+                        }}
+                      >
+                        <strong
+                          style={{
+                            display: "block",
+                            color: "#b91c1c",
+                            marginBottom: "4px",
+                          }}
+                        >
+                          Unable to load medicines
+                        </strong>
+                        <span style={{ color: "#7f1d1d" }}>{itemsError}</span>
+                      </div>
+                    </td>
+                  </tr>
+                ) : data.medicines.length > 0 ? (
                   data.medicines.map((medicine) => (
                     <tr key={medicine.id}>
                       <td>
@@ -598,6 +715,17 @@ export function PrescriptionPreview({
             </div>
           )}
         </Modal>
+      )}
+
+      {prescriptionRecord && showEditModal && onRevisePrescription && (
+        <PrescriptionEditModal
+          isOpen={showEditModal}
+          onClose={() => setShowEditModal(false)}
+          prescriptionNumber={prescriptionRecord.prescription_number}
+          currentRevisionNumber={prescriptionRecord.revision_number}
+          initialMedicines={data.medicines}
+          onSaveRevision={onRevisePrescription}
+        />
       )}
     </>
   )

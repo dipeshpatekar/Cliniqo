@@ -130,6 +130,14 @@ export interface LocalPrescriptionArgs {
   items_json: string
 }
 
+export interface ReviseLocalPrescriptionArgs {
+  clinic_id: string
+  prescription_id: string
+  expected_revision_number: number
+  items_json: string
+  reason_for_revision: string
+}
+
 export interface LocalPrescriptionRecord {
   id: string
   server_id: string | null
@@ -712,6 +720,12 @@ export async function saveLocalPrescription(
   args: LocalPrescriptionArgs,
 ): Promise<string | null> {
   return invokeTauri<string>("save_local_prescription", { args })
+}
+
+export async function reviseLocalPrescription(
+  args: ReviseLocalPrescriptionArgs,
+): Promise<string | null> {
+  return invokeTauri<string>("revise_local_prescription", { args })
 }
 
 export async function getLocalPrescriptions(

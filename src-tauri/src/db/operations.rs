@@ -1,4 +1,5 @@
 use rusqlite::{params, Connection, OptionalExtension};
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use uuid::Uuid;
 use thiserror::Error;
@@ -30,6 +31,15 @@ pub enum DatabaseOpError {
 
     #[error("Conflict resolution error: {0}")]
     ConflictResolution(String),
+
+    #[error("Patient record not found: {0}")]
+    PatientNotFound(String),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SavePatientResult {
+    pub id: String,
+    pub patient_code: String,
 }
 
 pub type RawInvoiceRow = (
@@ -104,23 +114,24 @@ impl DbOperations {
 
     /// Computes the next sequential patient code for a clinic without modifying counter state.
     pub fn get_next_patient_code(conn: &mut Connection, clinic_id: &str) -> Result<String, DatabaseOpError> {
-        let counter_seq: u32 = conn
-            .query_row(
-                "SELECT last_seq FROM local_seq_counters WHERE clinic_id = ?1 AND sequence_name = 'patient'",
-                params![clinic_id],
-                |row| row.get(0),
-            )
-            .unwrap_or(0);
+        let counter_seq: u32 = match conn.query_row(
+            "SELECT last_seq FROM local_seq_counters WHERE clinic_id = ?1 AND sequence_name = 'patient'",
+            params![clinic_id],
+            |row| row.get(0),
+        ) {
+            Ok(seq) => seq,
+            Err(rusqlite::Error::QueryReturnedNoRows) => 0,
+            Err(e) => return Err(DatabaseOpError::Sqlite(e)),
+        };
 
         let mut max_seq = counter_seq;
         let mut stmt = conn.prepare("SELECT patient_code FROM local_patients WHERE clinic_id = ?1")?;
         let rows = stmt.query_map(params![clinic_id], |row| row.get::<_, String>(0))?;
         for r in rows {
-            if let Ok(code) = r {
-                if let Some(parsed) = Self::parse_sequential_patient_id(&code) {
-                    if parsed > max_seq {
-                        max_seq = parsed;
-                    }
+            let code = r?;
+            if let Some(parsed) = Self::parse_sequential_patient_id(&code) {
+                if parsed > max_seq {
+                    max_seq = parsed;
                 }
             }
         }
@@ -130,23 +141,24 @@ impl DbOperations {
     }
 
     fn allocate_next_patient_code_tx(tx: &rusqlite::Transaction, clinic_id: &str) -> Result<String, DatabaseOpError> {
-        let counter_seq: u32 = tx
-            .query_row(
-                "SELECT last_seq FROM local_seq_counters WHERE clinic_id = ?1 AND sequence_name = 'patient'",
-                params![clinic_id],
-                |row| row.get(0),
-            )
-            .unwrap_or(0);
+        let counter_seq: u32 = match tx.query_row(
+            "SELECT last_seq FROM local_seq_counters WHERE clinic_id = ?1 AND sequence_name = 'patient'",
+            params![clinic_id],
+            |row| row.get(0),
+        ) {
+            Ok(seq) => seq,
+            Err(rusqlite::Error::QueryReturnedNoRows) => 0,
+            Err(e) => return Err(DatabaseOpError::Sqlite(e)),
+        };
 
         let mut max_seq = counter_seq;
         let mut stmt = tx.prepare("SELECT patient_code FROM local_patients WHERE clinic_id = ?1")?;
         let rows = stmt.query_map(params![clinic_id], |row| row.get::<_, String>(0))?;
         for r in rows {
-            if let Ok(code) = r {
-                if let Some(parsed) = Self::parse_sequential_patient_id(&code) {
-                    if parsed > max_seq {
-                        max_seq = parsed;
-                    }
+            let code = r?;
+            if let Some(parsed) = Self::parse_sequential_patient_id(&code) {
+                if parsed > max_seq {
+                    max_seq = parsed;
                 }
             }
         }
@@ -165,9 +177,9 @@ impl DbOperations {
         Ok(Self::format_sequential_patient_id(next_seq))
     }
 
-    /// Inserts a patient record locally. All demographics and outbox mutation payloads are
-    /// encrypted at rest using AES-256-GCM.
-    pub fn insert_patient(
+    /// Inserts a patient record locally with optional client mutation idempotency and canonical
+    /// sequential code assignment. All demographics and outbox mutation payloads are encrypted at rest using AES-256-GCM.
+    pub fn insert_patient_ext(
         conn: &mut Connection,
         dek: &DatabaseEncryptionKey,
         clinic_id: &str,
@@ -180,20 +192,61 @@ impl DbOperations {
         allergies: &[String],
         conditions: &[String],
         sensitive_notes: Option<&str>,
-    ) -> Result<String, DatabaseOpError> {
-        let patient_id = Uuid::new_v4().to_string();
-        let idempotency_key = format!("local-patient-create-{patient_id}");
+        client_mutation_id: Option<&str>,
+    ) -> Result<SavePatientResult, DatabaseOpError> {
+        let idempotency_key = match client_mutation_id {
+            Some(cid) if !cid.trim().is_empty() => format!("client-patient-create-{}", cid.trim()),
+            _ => format!("local-patient-create-{}", Uuid::new_v4()),
+        };
 
         let tx = conn.transaction()?;
 
-        // Resolve canonical patient code: allocate if missing or placeholder
-        let effective_code = if patient_code.trim().is_empty() || patient_code == "PT-INIT" {
-            Self::allocate_next_patient_code_tx(&tx, clinic_id)?
+        // 1. Check idempotency: If this exact client mutation was already processed, return existing patient!
+        let existing_result: Option<(String, String)> = tx
+            .query_row(
+                r#"
+                SELECT p.id, p.patient_code 
+                FROM local_sync_outbox o
+                JOIN local_patients p ON p.id = o.entity_id
+                WHERE o.clinic_id = ?1 AND o.idempotency_key = ?2
+                LIMIT 1
+                "#,
+                params![clinic_id, &idempotency_key],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+
+        if let Some((existing_id, existing_code)) = existing_result {
+            log::info!("Idempotent patient creation matched existing record (mutation id: {:?})", client_mutation_id);
+            tx.commit()?;
+            return Ok(SavePatientResult {
+                id: existing_id,
+                patient_code: existing_code,
+            });
+        }
+
+        // 2. Resolve canonical patient code:
+        // A placeholder or already-in-use candidate code must safely allocate next sequential code.
+        let candidate = patient_code.trim();
+        let is_placeholder = candidate.is_empty() || candidate == "PT-INIT";
+
+        let candidate_in_use: bool = if !is_placeholder {
+            tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM local_patients WHERE clinic_id = ?1 AND patient_code = ?2)",
+                params![clinic_id, candidate],
+                |row| row.get(0),
+            )?
         } else {
-            patient_code.trim().to_string()
+            false
         };
 
-        // Advance sequential counter so deleted IDs are never reused
+        let effective_code = if is_placeholder || candidate_in_use {
+            Self::allocate_next_patient_code_tx(&tx, clinic_id)?
+        } else {
+            candidate.to_string()
+        };
+
+        // Advance sequential counter so counter tracks maximum allocated ID
         if let Some(seq) = Self::parse_sequential_patient_id(&effective_code) {
             tx.execute(
                 r#"
@@ -206,7 +259,9 @@ impl DbOperations {
             )?;
         }
 
-        // 1. Pack and encrypt all demographic and sensitive fields
+        let patient_id = Uuid::new_v4().to_string();
+
+        // 3. Pack and encrypt all demographic and sensitive fields
         let demographics = PatientDemographics {
             name: name.to_string(),
             phone: phone.to_string(),
@@ -221,7 +276,7 @@ impl DbOperations {
         let demo_bytes = serde_json::to_vec(&demographics)?;
         let (encrypted_demographics, demo_nonce) = encrypt_payload(&dek.key, &demo_bytes)?;
 
-        // 2. Pack and encrypt sync outbox mutation payload
+        // 4. Pack and encrypt sync outbox mutation payload
         let outbox_payload = json!({
             "patientId": effective_code,
             "name": name,
@@ -236,6 +291,7 @@ impl DbOperations {
 
         let (encrypted_outbox, outbox_nonce) = encrypt_payload(&dek.key, outbox_payload.as_bytes())?;
 
+        // 5. Insert patient record
         tx.execute(
             r#"
             INSERT INTO local_patients (
@@ -251,6 +307,7 @@ impl DbOperations {
             ],
         )?;
 
+        // 6. Insert outbox record atomically in the SAME transaction
         let outbox_id = Uuid::new_v4().to_string();
         tx.execute(
             r#"
@@ -261,8 +318,46 @@ impl DbOperations {
             params![outbox_id, clinic_id, patient_id, idempotency_key, encrypted_outbox, outbox_nonce],
         )?;
 
+        // Commit transaction
         tx.commit()?;
-        Ok(patient_id)
+
+        Ok(SavePatientResult {
+            id: patient_id,
+            patient_code: effective_code,
+        })
+    }
+
+    /// Backward-compatible wrapper returning only the patient UUID.
+    pub fn insert_patient(
+        conn: &mut Connection,
+        dek: &DatabaseEncryptionKey,
+        clinic_id: &str,
+        patient_code: &str,
+        name: &str,
+        phone: &str,
+        gender: &str,
+        date_of_birth: Option<&str>,
+        age: i32,
+        allergies: &[String],
+        conditions: &[String],
+        sensitive_notes: Option<&str>,
+    ) -> Result<String, DatabaseOpError> {
+        let res = Self::insert_patient_ext(
+            conn,
+            dek,
+            clinic_id,
+            patient_code,
+            name,
+            phone,
+            gender,
+            date_of_birth,
+            age,
+            allergies,
+            conditions,
+            sensitive_notes,
+            None,
+        )?;
+        Ok(res.id)
     }
 
     /// Updates an existing patient record locally. All demographics and outbox mutation payloads are
@@ -312,15 +407,23 @@ impl DbOperations {
 
         let tx = conn.transaction()?;
 
-        let current_local_ver: i32 = tx.query_row(
+        let current_local_ver: i32 = match tx.query_row(
             "SELECT local_version FROM local_patients WHERE clinic_id = ?1 AND id = ?2",
             params![clinic_id, patient_id],
             |row| row.get(0),
-        )?;
+        ) {
+            Ok(ver) => ver,
+            Err(rusqlite::Error::QueryReturnedNoRows) => {
+                return Err(DatabaseOpError::PatientNotFound(format!(
+                    "Cannot update patient {patient_id}: record does not exist in clinic {clinic_id}"
+                )));
+            }
+            Err(e) => return Err(DatabaseOpError::Sqlite(e)),
+        };
 
         let new_ver = current_local_ver + 1;
 
-        tx.execute(
+        let updated_count = tx.execute(
             r#"
             UPDATE local_patients
             SET patient_code = ?1,
@@ -333,6 +436,12 @@ impl DbOperations {
             "#,
             params![patient_code, encrypted_demographics, demo_nonce, new_ver, clinic_id, patient_id],
         )?;
+
+        if updated_count == 0 {
+            return Err(DatabaseOpError::PatientNotFound(format!(
+                "Failed to update patient {patient_id}: 0 rows affected"
+            )));
+        }
 
         let outbox_id = Uuid::new_v4().to_string();
         let idempotency_key = format!("local-patient-update-{patient_id}-{new_ver}");
@@ -8188,5 +8297,394 @@ mod tests {
             )
             .unwrap();
         assert_eq!(conflict_count, 1);
+    }
+
+    #[test]
+    fn test_twenty_consecutive_patient_creations() {
+        let (mut conn, dek) = setup_test_db();
+        let clinic_id = "clinic_twenty_consecutive";
+
+        let mut allocated_codes = Vec::new();
+        for i in 1..=20 {
+            let res = DbOperations::insert_patient_ext(
+                &mut conn,
+                &dek,
+                clinic_id,
+                "PT-INIT",
+                &format!("Patient Number {i}"),
+                &format!("98765432{:02}", i),
+                "Male",
+                Some("1990-01-01"),
+                30 + (i as i32 % 50),
+                &["Paracetamol".to_string()],
+                &["Hypertension".to_string()],
+                Some("Test notes"),
+                Some(&format!("mut-batch-{i}")),
+            )
+            .expect("Patient creation succeeds");
+
+            let expected_code = DbOperations::format_sequential_patient_id(i);
+            assert_eq!(res.patient_code, expected_code, "Patient {i} must receive sequential code {expected_code}");
+            allocated_codes.push(res.patient_code);
+        }
+
+        // Verify all 20 codes are distinct
+        let mut sorted = allocated_codes.clone();
+        sorted.sort();
+        sorted.dedup();
+        assert_eq!(sorted.len(), 20, "All 20 allocated patient codes must be strictly distinct");
+
+        // Verify count in local_patients
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM local_patients WHERE clinic_id = ?1",
+                params![clinic_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 20);
+
+        // Verify all 20 outbox records exist
+        let outbox_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM local_sync_outbox WHERE clinic_id = ?1 AND entity_type = 'PATIENT'",
+                params![clinic_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(outbox_count, 20);
+    }
+
+    #[test]
+    fn test_candidate_code_collision_reallocates_safely() {
+        let (mut conn, dek) = setup_test_db();
+        let clinic_id = "clinic_collision_test";
+
+        // Patient 1 gets candidate "AAA-0003"
+        let res1 = DbOperations::insert_patient_ext(
+            &mut conn,
+            &dek,
+            clinic_id,
+            "AAA-0003",
+            "First Patient",
+            "9876543210",
+            "Female",
+            None,
+            28,
+            &[],
+            &[],
+            None,
+            Some("mut-coll-1"),
+        )
+        .expect("Patient 1 succeeds");
+
+        assert_eq!(res1.patient_code, "AAA-0003");
+
+        // Patient 2 also submits candidate "AAA-0003" (e.g. from stale React state)
+        let res2 = DbOperations::insert_patient_ext(
+            &mut conn,
+            &dek,
+            clinic_id,
+            "AAA-0003",
+            "Second Patient",
+            "9876543211",
+            "Male",
+            None,
+            35,
+            &[],
+            &[],
+            None,
+            Some("mut-coll-2"),
+        )
+        .expect("Patient 2 safely reallocates");
+
+        // Must allocate next sequential code, not overwrite or fail!
+        assert_ne!(res2.patient_code, "AAA-0003", "Colliding candidate code must be reallocated");
+        assert_eq!(res2.patient_code, "AAA-0004", "Allocates next available code AAA-0004");
+        assert_ne!(res1.id, res2.id, "Patients have distinct IDs");
+
+        // Verify Patient 1 remains intact in local_patients
+        let p1_exists: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM local_patients WHERE id = ?1 AND patient_code = 'AAA-0003')",
+                params![res1.id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(p1_exists, "Patient 1 code AAA-0003 was not overwritten or destroyed");
+
+        // Verify Patient 2 exists with AAA-0004
+        let p2_exists: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM local_patients WHERE id = ?1 AND patient_code = 'AAA-0004')",
+                params![res2.id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(p2_exists, "Patient 2 code AAA-0004 exists");
+
+        // Both are distinct in database
+        let total: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM local_patients WHERE clinic_id = ?1",
+                params![clinic_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(total, 2);
+    }
+
+    #[test]
+    fn test_insert_patient_idempotency_with_mutation_id() {
+        let (mut conn, dek) = setup_test_db();
+        let clinic_id = "clinic_idempotency_test";
+        let mutation_id = "unique-client-mutation-uuid-999";
+
+        // First creation attempt
+        let res1 = DbOperations::insert_patient_ext(
+            &mut conn,
+            &dek,
+            clinic_id,
+            "PT-INIT",
+            "Dr. Patient",
+            "9876500000",
+            "Male",
+            None,
+            42,
+            &[],
+            &[],
+            None,
+            Some(mutation_id),
+        )
+        .expect("First creation succeeds");
+
+        // Second creation attempt with EXACT same client mutation ID (simulating retry / double click)
+        let res2 = DbOperations::insert_patient_ext(
+            &mut conn,
+            &dek,
+            clinic_id,
+            "PT-INIT",
+            "Dr. Patient",
+            "9876500000",
+            "Male",
+            None,
+            42,
+            &[],
+            &[],
+            None,
+            Some(mutation_id),
+        )
+        .expect("Retry returns existing record idempotently");
+
+        assert_eq!(res1.id, res2.id, "Idempotent retry must return the same patient ID");
+        assert_eq!(res1.patient_code, res2.patient_code, "Idempotent retry must return the same patient code");
+
+        // Verify exactly 1 patient in database
+        let p_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM local_patients WHERE clinic_id = ?1",
+                params![clinic_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(p_count, 1, "No duplicate patient created");
+
+        // Verify exactly 1 outbox mutation
+        let o_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM local_sync_outbox WHERE clinic_id = ?1",
+                params![clinic_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(o_count, 1, "No duplicate outbox entry created");
+    }
+
+    #[test]
+    fn test_patient_creation_edge_cases_phone_age_gender() {
+        let (mut conn, dek) = setup_test_db();
+        let clinic_id = "clinic_edge_cases";
+
+        // Case A: Blank optional phone number
+        let res_blank_phone = DbOperations::insert_patient_ext(
+            &mut conn,
+            &dek,
+            clinic_id,
+            "PT-INIT",
+            "Patient Blank Phone",
+            "",
+            "Female",
+            None,
+            25,
+            &[],
+            &[],
+            None,
+            None,
+        )
+        .expect("Patient with blank phone succeeds");
+        assert!(!res_blank_phone.id.is_empty());
+
+        // Case B: Valid 10-digit phone number
+        let res_valid_phone = DbOperations::insert_patient_ext(
+            &mut conn,
+            &dek,
+            clinic_id,
+            "PT-INIT",
+            "Patient Valid Phone",
+            "9123456789",
+            "Male",
+            None,
+            30,
+            &[],
+            &[],
+            None,
+            None,
+        )
+        .expect("Patient with valid phone succeeds");
+        assert!(!res_valid_phone.id.is_empty());
+
+        // Case C: Missing age (0) and blank gender
+        let res_missing_age_gender = DbOperations::insert_patient_ext(
+            &mut conn,
+            &dek,
+            clinic_id,
+            "PT-INIT",
+            "Patient Minimal",
+            "",
+            "",
+            None,
+            0,
+            &[],
+            &[],
+            None,
+            None,
+        )
+        .expect("Patient with 0 age and empty gender succeeds");
+        assert!(!res_missing_age_gender.id.is_empty());
+
+        // Verify all 3 were persisted and decryptable
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM local_patients WHERE clinic_id = ?1",
+                params![clinic_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 3);
+    }
+
+    #[test]
+    fn test_existing_patient_update_preserves_code_and_increments_version() {
+        let (mut conn, dek) = setup_test_db();
+        let clinic_id = "clinic_update_test";
+
+        let created = DbOperations::insert_patient_ext(
+            &mut conn,
+            &dek,
+            clinic_id,
+            "PT-INIT",
+            "Initial Name",
+            "9876543210",
+            "Male",
+            None,
+            30,
+            &[],
+            &[],
+            None,
+            None,
+        )
+        .expect("Initial insert succeeds");
+
+        assert_eq!(created.patient_code, "AAA-0001");
+
+        // Update patient
+        DbOperations::update_patient(
+            &mut conn,
+            &dek,
+            clinic_id,
+            &created.id,
+            &created.patient_code,
+            "Updated Name",
+            "9876543210",
+            "Male",
+            None,
+            31,
+            &["Penicillin".to_string()],
+            &[],
+            Some("Updated notes"),
+        )
+        .expect("Update succeeds");
+
+        // Verify patient_code unchanged, local_version is 2
+        let (saved_code, ver): (String, i32) = conn
+            .query_row(
+                "SELECT patient_code, local_version FROM local_patients WHERE clinic_id = ?1 AND id = ?2",
+                params![clinic_id, &created.id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(saved_code, "AAA-0001");
+        assert_eq!(ver, 2);
+
+        // Verify outbox has UPDATE mutation
+        let has_update_outbox: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM local_sync_outbox WHERE clinic_id = ?1 AND entity_id = ?2 AND action = 'UPDATE')",
+                params![clinic_id, &created.id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(has_update_outbox);
+    }
+
+    #[test]
+    fn test_update_non_existent_patient_fails_with_patient_not_found() {
+        let (mut conn, dek) = setup_test_db();
+        let clinic_id = "clinic_missing_update_test";
+
+        let result = DbOperations::update_patient(
+            &mut conn,
+            &dek,
+            clinic_id,
+            "non-existent-patient-uuid",
+            "AAA-0001",
+            "Missing Patient",
+            "9876543210",
+            "Other",
+            None,
+            40,
+            &[],
+            &[],
+            None,
+        );
+
+        match result {
+            Err(DatabaseOpError::PatientNotFound(msg)) => {
+                assert!(msg.contains("non-existent-patient-uuid"));
+            }
+            other => panic!("Expected DatabaseOpError::PatientNotFound, got {:?}", other),
+        }
+
+        // Verify no outbox record was inserted
+        let outbox_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM local_sync_outbox WHERE clinic_id = ?1",
+                params![clinic_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(outbox_count, 0);
+    }
+
+    #[test]
+    fn test_get_next_patient_code_propagates_sqlite_error() {
+        let (mut conn, _) = setup_test_db();
+        let clinic_id = "clinic_err_test";
+
+        // Corrupt local_seq_counters table by dropping it
+        conn.execute("DROP TABLE local_seq_counters", []).unwrap();
+
+        let result = DbOperations::get_next_patient_code(&mut conn, clinic_id);
+        assert!(matches!(result, Err(DatabaseOpError::Sqlite(_))));
     }
 }

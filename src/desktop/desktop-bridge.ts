@@ -62,6 +62,40 @@ export interface SyncStatusInfo {
   last_error: string | null
 }
 
+export interface SavePatientResult {
+  id: string
+  patient_code: string
+}
+
+export type DiagnosticCategory =
+  | "SESSION_EXPIRED"
+  | "CLINIC_MISMATCH"
+  | "DATABASE_BUSY"
+  | "DATABASE_CONSTRAINT"
+  | "DATABASE_FULL"
+  | "ENCRYPTION_FAILURE"
+  | "PATIENT_ID_ALLOCATION_FAILURE"
+  | "DATABASE_TRANSACTION_FAILURE"
+  | "UNKNOWN_SAVE_FAILURE"
+
+export interface PatientSaveDiagnostic {
+  category: DiagnosticCategory
+  stage: string
+  command: string
+  sqlite_error_code?: string | null
+  message: string
+  retryable: boolean
+}
+
+export class PatientSaveError extends Error {
+  diagnostic: PatientSaveDiagnostic
+  constructor(diagnostic: PatientSaveDiagnostic) {
+    super(diagnostic.message)
+    this.name = "PatientSaveError"
+    this.diagnostic = diagnostic
+  }
+}
+
 export interface LocalPatientArgs {
   id?: string | null
   clinic_id: string
@@ -74,6 +108,7 @@ export interface LocalPatientArgs {
   allergies: string[]
   conditions: string[]
   sensitive_notes?: string | null
+  client_mutation_id?: string | null
 }
 
 export interface LocalPatientRecord {
@@ -670,10 +705,126 @@ export async function getNextPatientCode(
   return invokeTauri<string>("get_next_patient_code", { clinicId })
 }
 
+function classifyDiagnosticError(err: any): PatientSaveDiagnostic {
+  const errMsg =
+    typeof err === "string"
+      ? err
+      : err?.message || String(err || "")
+  const lower = errMsg.toLowerCase()
+
+  let category: DiagnosticCategory = "UNKNOWN_SAVE_FAILURE"
+  let retryable = true
+
+  if (
+    lower.includes("session expired") ||
+    lower.includes("unauthenticated") ||
+    lower.includes("session_expired")
+  ) {
+    category = "SESSION_EXPIRED"
+    retryable = true
+  } else if (
+    lower.includes("clinic mismatch") ||
+    lower.includes("crossclinic") ||
+    lower.includes("clinic_mismatch")
+  ) {
+    category = "CLINIC_MISMATCH"
+    retryable = false
+  } else if (
+    lower.includes("busy") ||
+    lower.includes("locked") ||
+    lower.includes("database_busy")
+  ) {
+    category = "DATABASE_BUSY"
+    retryable = true
+  } else if (
+    lower.includes("disk") ||
+    lower.includes("full") ||
+    lower.includes("database_full")
+  ) {
+    category = "DATABASE_FULL"
+    retryable = false
+  } else if (
+    lower.includes("constraint") ||
+    lower.includes("unique") ||
+    lower.includes("database_constraint")
+  ) {
+    category = "DATABASE_CONSTRAINT"
+    retryable = false
+  } else if (
+    lower.includes("encryption") ||
+    lower.includes("crypto") ||
+    lower.includes("encryption_failure")
+  ) {
+    category = "ENCRYPTION_FAILURE"
+    retryable = false
+  } else if (
+    lower.includes("allocation") ||
+    lower.includes("patient_id_allocation")
+  ) {
+    category = "PATIENT_ID_ALLOCATION_FAILURE"
+    retryable = true
+  } else if (
+    lower.includes("transaction") ||
+    lower.includes("database_transaction")
+  ) {
+    category = "DATABASE_TRANSACTION_FAILURE"
+    retryable = true
+  }
+
+  return {
+    category,
+    stage: "save_local_patient",
+    command: "save_local_patient",
+    sqlite_error_code: null,
+    message: errMsg || "Failed to save patient.",
+    retryable,
+  }
+}
+
 export async function saveLocalPatient(
   args: LocalPatientArgs,
-): Promise<string | null> {
-  return invokeTauri<string>("save_local_patient", { args })
+): Promise<SavePatientResult | null> {
+  if (!isTauriDesktop()) {
+    return null
+  }
+
+  try {
+    const res = await invokeTauri<SavePatientResult>("save_local_patient", {
+      args,
+    })
+    return res
+  } catch (err: any) {
+    let diag: PatientSaveDiagnostic
+    try {
+      const raw = typeof err === "string" ? err : err?.message
+      const parsed = typeof raw === "string" ? JSON.parse(raw) : err
+      if (parsed && typeof parsed.category === "string") {
+        diag = {
+          category: parsed.category as DiagnosticCategory,
+          stage: parsed.stage || "save_local_patient",
+          command: parsed.command || "save_local_patient",
+          sqlite_error_code: parsed.sqlite_error_code || null,
+          message: parsed.message || "Failed to save patient record.",
+          retryable: parsed.retryable ?? true,
+        }
+      } else {
+        diag = classifyDiagnosticError(err)
+      }
+    } catch {
+      diag = classifyDiagnosticError(err)
+    }
+
+    // Diagnostic logging strictly avoiding any PII
+    console.error("[PatientSaveDiagnostic]", {
+      category: diag.category,
+      stage: diag.stage,
+      command: diag.command,
+      sqlite_error_code: diag.sqlite_error_code,
+      retryable: diag.retryable,
+    })
+
+    throw new PatientSaveError(diag)
+  }
 }
 
 export async function deleteLocalPatient(

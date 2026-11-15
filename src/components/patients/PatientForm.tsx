@@ -16,6 +16,7 @@ import {
   getIndiaDateTimeLocalString,
 } from "../../types"
 import { AlertCircle, ArrowLeft, Stethoscope, UserRound } from "lucide-react"
+import type { PatientSaveDiagnostic } from "../../desktop/desktop-bridge"
 
 export function PatientForm({
   go,
@@ -27,7 +28,11 @@ export function PatientForm({
   fieldPreferences = defaultPatientFormFieldPreferences,
 }: {
   go: (page: Page) => void
-  onSave: (patient: Patient, startConsultation?: boolean) => void
+  onSave: (
+    patient: Patient,
+    startConsultation?: boolean,
+    clientMutationId?: string,
+  ) => Promise<void> | void
   onReviewPatient: (patient: Patient) => void
   patient: Patient | null
   patients: Patient[]
@@ -37,12 +42,19 @@ export function PatientForm({
   const [submitted, setSubmitted] = useState(false)
   const [isSaving, setIsSaving] = useState(false)
   const [showDiscardConfirm, setShowDiscardConfirm] = useState(false)
+  const [saveError, setSaveError] = useState<PatientSaveDiagnostic | null>(null)
   const [name, setName] = useState(patient?.name || "")
   const [phone, setPhone] = useState(patient?.phone || "")
   const [dirty, setDirty] = useState(false)
   const formRef = useRef<HTMLFormElement>(null)
   const isSavingRef = useRef(false)
+  const lastStartConsultationRef = useRef(false)
   const nameInputRef = useRef<HTMLInputElement>(null)
+  const clientMutationIdRef = useRef<string>(
+    patient?.id
+      ? `patient-edit-${patient.id}`
+      : `patient-create-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+  )
 
   useEffect(() => {
     // Automatically focus the patient name input on mount so the user can type immediately
@@ -89,6 +101,7 @@ export function PatientForm({
   }
 
   const performSave = async (startConsultation: boolean) => {
+    lastStartConsultationRef.current = startConsultation
     if (isSavingRef.current || isSaving) return
     const form = formRef.current
     if (!form) return
@@ -105,6 +118,7 @@ export function PatientForm({
     if (!duplicatePatient) {
       isSavingRef.current = true
       setIsSaving(true)
+      setSaveError(null)
       try {
         const data = new FormData(form)
         const submittedName = name.trim()
@@ -141,8 +155,21 @@ export function PatientForm({
               new Date().toISOString(),
           },
           startConsultation,
+          clientMutationIdRef.current,
         )
         setDirty(false)
+      } catch (err: any) {
+        const diag: PatientSaveDiagnostic = err?.diagnostic || {
+          category: "UNKNOWN_SAVE_FAILURE",
+          stage: "form_submission",
+          command: "save_local_patient",
+          sqlite_error_code: null,
+          message:
+            err?.message ||
+            "Failed to save patient. Consultation cannot be started.",
+          retryable: true,
+        }
+        setSaveError(diag)
       } finally {
         setIsSaving(false)
         isSavingRef.current = false
@@ -218,6 +245,84 @@ export function PatientForm({
         onChange={() => setDirty(true)}
       >
         <div className="form-main">
+          {saveError && (
+            <div
+              className="patient-save-error-banner"
+              role="alert"
+              style={{
+                margin: "0 0 16px 0",
+                padding: "12px 16px",
+                borderRadius: "8px",
+                backgroundColor: "var(--color-bg-danger-subtle, #fef2f2)",
+                border: "1px solid var(--color-border-danger, #fca5a5)",
+                color: "var(--color-text-danger, #991b1b)",
+                display: "flex",
+                alignItems: "flex-start",
+                justifyContent: "space-between",
+                gap: "12px",
+              }}
+            >
+              <div
+                style={{
+                  display: "flex",
+                  gap: "10px",
+                  alignItems: "flex-start",
+                }}
+              >
+                <AlertCircle
+                  size={20}
+                  style={{ flexShrink: 0, marginTop: "2px" }}
+                />
+                <div>
+                  <div
+                    style={{
+                      fontWeight: 600,
+                      fontSize: "14px",
+                      marginBottom: "2px",
+                    }}
+                  >
+                    {saveError.category === "SESSION_EXPIRED" &&
+                      "Session Expired"}
+                    {saveError.category === "CLINIC_MISMATCH" &&
+                      "Clinic Tenancy Conflict"}
+                    {saveError.category === "DATABASE_BUSY" && "Database Busy"}
+                    {saveError.category === "DATABASE_FULL" &&
+                      "Storage Space Full"}
+                    {saveError.category === "DATABASE_CONSTRAINT" &&
+                      "Validation Constraint Conflict"}
+                    {saveError.category ===
+                      "PATIENT_ID_ALLOCATION_FAILURE" &&
+                      "Patient Code Allocation Error"}
+                    {saveError.category === "ENCRYPTION_FAILURE" &&
+                      "Security Encryption Error"}
+                    {saveError.category ===
+                      "DATABASE_TRANSACTION_FAILURE" &&
+                      "Transaction Save Failed"}
+                    {saveError.category === "UNKNOWN_SAVE_FAILURE" &&
+                      "Patient Save Failed"}
+                  </div>
+                  <p style={{ margin: 0, fontSize: "13px", opacity: 0.9 }}>
+                    {saveError.message}
+                    {saveError.category === "DATABASE_BUSY" &&
+                      " The database was busy syncing. Click Retry to complete your save."}
+                  </p>
+                </div>
+              </div>
+              <div style={{ display: "flex", gap: "8px", flexShrink: 0 }}>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="secondary"
+                  onClick={() => performSave(lastStartConsultationRef.current)}
+                  disabled={isSaving}
+                  loading={isSaving}
+                >
+                  Retry
+                </Button>
+              </div>
+            </div>
+          )}
+
           {duplicatePatient && (
             <div className="duplicate-warning" role="alert">
               <AlertCircle size={20} />

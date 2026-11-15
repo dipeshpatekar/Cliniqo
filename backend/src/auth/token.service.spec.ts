@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, vi } from "vitest"
 import { UnauthorizedException } from "@nestjs/common"
 import { JwtService } from "@nestjs/jwt"
 import { Types } from "mongoose"
+import crypto from "node:crypto"
 import {
   TokenService,
   hashOpaqueToken,
@@ -443,6 +444,328 @@ describe("TokenService", () => {
           $set: expect.objectContaining({ isRevoked: true }),
         }),
       )
+    })
+
+    describe("Crash-Safe Idempotency & Fault Injection Recovery", () => {
+      const testDeviceId = "win-desktop-device-exact-1"
+      const testIdempotencyKey = "client-retry-idempotency-key-xyz"
+
+      it("should recover the exact replacement token on repeated retries with same idempotencyKey without revoking family", async () => {
+        const initialToken = "c".repeat(64)
+        const initialHash = hashOpaqueToken(initialToken)
+
+        let savedOldSession: any = null
+        let createdSuccessor: any = null
+
+        const activeDoctor = {
+          _id: doctorId,
+          email: "dr@clinic.com",
+          fullName: "Dr. Reliable",
+          status: DoctorStatus.ACTIVE,
+        }
+        mockDoctorModel.findById.mockResolvedValue(activeDoctor)
+
+        // 1. Initial rotation with idempotencyKey
+        const initialActiveSession: any = {
+          doctorId,
+          familyId: "fam-idempotency",
+          tokenHash: initialHash,
+          sessionType: "DESKTOP_PERSISTENT",
+          deviceId: testDeviceId,
+          isRevoked: false,
+          save: vi.fn().mockImplementation(async function () {
+            savedOldSession = this
+            return true
+          }),
+        }
+
+        mockSessionModel.findOne.mockImplementation(async (query: any) => {
+          if (query.tokenHash === initialHash) {
+            return savedOldSession || initialActiveSession
+          }
+          if (query.tokenHash === createdSuccessor?.tokenHash) {
+            return createdSuccessor
+          }
+          return null
+        })
+
+        mockSessionModel.create.mockImplementation(async (doc: any) => {
+          createdSuccessor = { ...doc, isRevoked: false }
+          return createdSuccessor
+        })
+
+        const firstResult = await tokenService.rotateRefreshSession(
+          initialToken,
+          undefined,
+          { deviceId: testDeviceId, idempotencyKey: testIdempotencyKey },
+        )
+
+        expect(firstResult.refreshToken).toBeDefined()
+        expect(savedOldSession.isRevoked).toBe(true)
+        expect(savedOldSession.rotationReceiptHash).toBeDefined()
+        expect(savedOldSession.encryptedSuccessorToken).toBeDefined()
+
+        // 2. Retry 1: Client lost response and retries with EXACT same token, deviceId, idempotencyKey
+        const retry1Result = await tokenService.rotateRefreshSession(
+          initialToken,
+          undefined,
+          { deviceId: testDeviceId, idempotencyKey: testIdempotencyKey },
+        )
+
+        // Must return the exact same replacement token!
+        expect(retry1Result.refreshToken).toBe(firstResult.refreshToken)
+        expect(retry1Result.accessToken).toBeDefined()
+        expect(mockSessionModel.updateMany).not.toHaveBeenCalled()
+
+        // 3. Retry 2: Another retry (e.g. after restart) returns the exact same credential
+        const retry2Result = await tokenService.rotateRefreshSession(
+          initialToken,
+          undefined,
+          { deviceId: testDeviceId, idempotencyKey: testIdempotencyKey },
+        )
+        expect(retry2Result.refreshToken).toBe(firstResult.refreshToken)
+        expect(mockSessionModel.updateMany).not.toHaveBeenCalled()
+      })
+
+      it("should recover unpersisted successor session after crash between old-token invalidation and successor creation (fault injection)", async () => {
+        const initialToken = "d".repeat(64)
+        const initialHash = hashOpaqueToken(initialToken)
+
+        const activeDoctor = {
+          _id: doctorId,
+          email: "dr@clinic.com",
+          fullName: "Dr. CrashSafe",
+          status: DoctorStatus.ACTIVE,
+        }
+        mockDoctorModel.findById.mockResolvedValue(activeDoctor)
+
+        // Simulate state right after a crash:
+        // Old token was saved as revoked with encryptedSuccessorToken, but process died before successorModel.create()
+        const rawSuccessorToken = "1".repeat(64)
+        const successorHash = hashOpaqueToken(rawSuccessorToken)
+        const receiptKey = crypto
+          .createHash("sha256")
+          .update(`cliniqo-rotation-receipt-v1:${initialToken}:${testIdempotencyKey}`)
+          .digest()
+
+        const iv = crypto.randomBytes(12)
+        const cipher = crypto.createCipheriv("aes-256-gcm", receiptKey, iv)
+        const enc = Buffer.concat([cipher.update(rawSuccessorToken, "utf8"), cipher.final()])
+        const tag = cipher.getAuthTag()
+        const encryptedSuccessorToken = `${iv.toString("hex")}:${tag.toString("hex")}:${enc.toString("hex")}`
+
+        const crashedOldSession: any = {
+          doctorId,
+          familyId: "fam-crash-between-writes",
+          tokenHash: initialHash,
+          sessionType: "DESKTOP_PERSISTENT",
+          deviceId: testDeviceId,
+          isRevoked: true,
+          revokedAt: new Date(Date.now() - 3600000), // 1 hour ago
+          replacedByTokenHash: successorHash,
+          rotationReceiptHash: hashOpaqueToken(testIdempotencyKey),
+          encryptedSuccessorToken,
+        }
+
+        mockSessionModel.findOne.mockImplementation(async (query: any) => {
+          if (query.tokenHash === initialHash) return crashedOldSession
+          // Successor document does NOT exist in database (crash occurred before create!)
+          return null
+        })
+
+        mockSessionModel.create.mockImplementation(async (doc: any) => doc)
+
+        // Recovering client starts up and retries with old token + deviceId + idempotencyKey
+        const recovered = await tokenService.rotateRefreshSession(
+          initialToken,
+          undefined,
+          { deviceId: testDeviceId, idempotencyKey: testIdempotencyKey },
+        )
+
+        expect(recovered.refreshToken).toBe(rawSuccessorToken)
+        expect(recovered.accessToken).toBeDefined()
+        // Successor session was created in DB during recovery
+        expect(mockSessionModel.create).toHaveBeenCalledWith(
+          expect.objectContaining({
+            tokenHash: successorHash,
+            deviceId: testDeviceId,
+            isRevoked: false,
+          }),
+        )
+        // Family was NOT revoked!
+        expect(mockSessionModel.updateMany).not.toHaveBeenCalled()
+      })
+
+      it("should recover session days after rotation when successor has not been consumed", async () => {
+        const oldToken = "8".repeat(64)
+        const oldHash = hashOpaqueToken(oldToken)
+        const successorToken = "9".repeat(64)
+        const successorHash = hashOpaqueToken(successorToken)
+
+        const receiptKey = crypto
+          .createHash("sha256")
+          .update(`cliniqo-rotation-receipt-v1:${oldToken}:${testIdempotencyKey}`)
+          .digest()
+
+        const iv = crypto.randomBytes(12)
+        const cipher = crypto.createCipheriv("aes-256-gcm", receiptKey, iv)
+        const enc = Buffer.concat([cipher.update(successorToken, "utf8"), cipher.final()])
+        const tag = cipher.getAuthTag()
+        const encryptedSuccessorToken = `${iv.toString("hex")}:${tag.toString("hex")}:${enc.toString("hex")}`
+
+        // Rotated 5 days ago (far beyond 60s)
+        const fiveDaysAgo = new Date(Date.now() - 5 * 86400 * 1000)
+        const ancientRotatedSession: any = {
+          doctorId,
+          familyId: "fam-five-days-later",
+          tokenHash: oldHash,
+          sessionType: "DESKTOP_PERSISTENT",
+          deviceId: testDeviceId,
+          isRevoked: true,
+          revokedAt: fiveDaysAgo,
+          replacedByTokenHash: successorHash,
+          rotationReceiptHash: hashOpaqueToken(testIdempotencyKey),
+          encryptedSuccessorToken,
+        }
+
+        const unconsumedSuccessor: any = {
+          doctorId,
+          familyId: "fam-five-days-later",
+          tokenHash: successorHash,
+          sessionType: "DESKTOP_PERSISTENT",
+          deviceId: testDeviceId,
+          isRevoked: false, // never consumed
+        }
+
+        const activeDoctor = {
+          _id: doctorId,
+          email: "dr@clinic.com",
+          fullName: "Dr. FiveDays",
+          status: DoctorStatus.ACTIVE,
+        }
+        mockDoctorModel.findById.mockResolvedValue(activeDoctor)
+
+        mockSessionModel.findOne.mockImplementation(async (query: any) => {
+          if (query.tokenHash === oldHash) return ancientRotatedSession
+          if (query.tokenHash === successorHash) return unconsumedSuccessor
+          return null
+        })
+
+        const result = await tokenService.rotateRefreshSession(
+          oldToken,
+          undefined,
+          { deviceId: testDeviceId, idempotencyKey: testIdempotencyKey },
+        )
+
+        expect(result.refreshToken).toBe(successorToken)
+        expect(mockSessionModel.updateMany).not.toHaveBeenCalled()
+      })
+
+      it("should reject recovery and revoke entire family if successor was already consumed (genuine replay attack)", async () => {
+        const oldToken = "6".repeat(64)
+        const oldHash = hashOpaqueToken(oldToken)
+        const successorToken = "7".repeat(64)
+        const successorHash = hashOpaqueToken(successorToken)
+
+        const receiptKey = crypto
+          .createHash("sha256")
+          .update(`cliniqo-rotation-receipt-v1:${oldToken}:${testIdempotencyKey}`)
+          .digest()
+
+        const iv = crypto.randomBytes(12)
+        const cipher = crypto.createCipheriv("aes-256-gcm", receiptKey, iv)
+        const enc = Buffer.concat([cipher.update(successorToken, "utf8"), cipher.final()])
+        const tag = cipher.getAuthTag()
+        const encryptedSuccessorToken = `${iv.toString("hex")}:${tag.toString("hex")}:${enc.toString("hex")}`
+
+        const oldSession: any = {
+          doctorId,
+          familyId: "fam-replay-attack",
+          tokenHash: oldHash,
+          sessionType: "DESKTOP_PERSISTENT",
+          deviceId: testDeviceId,
+          isRevoked: true,
+          revokedAt: new Date(Date.now() - 3600000),
+          replacedByTokenHash: successorHash,
+          rotationReceiptHash: hashOpaqueToken(testIdempotencyKey),
+          encryptedSuccessorToken,
+        }
+
+        const consumedSuccessor: any = {
+          doctorId,
+          familyId: "fam-replay-attack",
+          tokenHash: successorHash,
+          sessionType: "DESKTOP_PERSISTENT",
+          deviceId: testDeviceId,
+          isRevoked: true, // ALREADY CONSUMED/REVOKED by legitimate client!
+        }
+
+        mockSessionModel.findOne.mockImplementation(async (query: any) => {
+          if (query.tokenHash === oldHash) return oldSession
+          if (query.tokenHash === successorHash) return consumedSuccessor
+          return null
+        })
+
+        await expect(
+          tokenService.rotateRefreshSession(
+            oldToken,
+            undefined,
+            { deviceId: testDeviceId, idempotencyKey: testIdempotencyKey },
+          ),
+        ).rejects.toThrow("Potential token reuse detected")
+
+        expect(mockSessionModel.updateMany).toHaveBeenCalledWith(
+          { familyId: "fam-replay-attack", isRevoked: false },
+          expect.objectContaining({
+            $set: expect.objectContaining({ isRevoked: true }),
+          }),
+        )
+      })
+
+      it("should fail closed and revoke family if deviceId is mismatched, missing or empty during recovery", async () => {
+        const oldToken = "2".repeat(64)
+        const oldHash = hashOpaqueToken(oldToken)
+
+        const revokedSession: any = {
+          doctorId,
+          familyId: "fam-device-check",
+          tokenHash: oldHash,
+          sessionType: "DESKTOP_PERSISTENT",
+          deviceId: "device-legit-001",
+          isRevoked: true,
+          revokedAt: new Date(Date.now() - 10000),
+          replacedByTokenHash: "dummy-successor",
+        }
+
+        mockSessionModel.findOne.mockResolvedValue(revokedSession)
+
+        // Case 1: Mismatched deviceId
+        await expect(
+          tokenService.rotateRefreshSession(
+            oldToken,
+            undefined,
+            { deviceId: "device-attacker-999", idempotencyKey: testIdempotencyKey },
+          ),
+        ).rejects.toThrow("Potential token reuse detected")
+
+        // Case 2: Missing deviceId
+        await expect(
+          tokenService.rotateRefreshSession(
+            oldToken,
+            undefined,
+            { idempotencyKey: testIdempotencyKey },
+          ),
+        ).rejects.toThrow("Potential token reuse detected")
+
+        // Case 3: Empty string deviceId
+        await expect(
+          tokenService.rotateRefreshSession(
+            oldToken,
+            undefined,
+            { deviceId: "   ", idempotencyKey: testIdempotencyKey },
+          ),
+        ).rejects.toThrow("Potential token reuse detected")
+      })
     })
   })
 

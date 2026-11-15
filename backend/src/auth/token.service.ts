@@ -1,7 +1,13 @@
-import { Injectable, UnauthorizedException, Logger } from "@nestjs/common"
+import {
+  Injectable,
+  UnauthorizedException,
+  ConflictException,
+  Logger,
+  Optional,
+} from "@nestjs/common"
 import { JwtService } from "@nestjs/jwt"
-import { InjectModel } from "@nestjs/mongoose"
-import { Model, Types } from "mongoose"
+import { InjectModel, InjectConnection } from "@nestjs/mongoose"
+import { Model, Types, type Connection } from "mongoose"
 import crypto from "node:crypto"
 import { ConfigService } from "../config/config.service.js"
 import {
@@ -49,6 +55,50 @@ export function hashOpaqueToken(token: string): string {
   return crypto.createHash("sha256").update(token).digest("hex")
 }
 
+export function deriveReceiptKey(
+  rawToken: string,
+  idempotencyKey: string,
+): Buffer {
+  return crypto
+    .createHash("sha256")
+    .update(`cliniqo-rotation-receipt-v1:${rawToken}:${idempotencyKey}`)
+    .digest()
+}
+
+export function encryptSuccessorToken(token: string, key: Buffer): string {
+  const iv = crypto.randomBytes(12)
+  const cipher = crypto.createCipheriv("aes-256-gcm", key, iv)
+  const encrypted = Buffer.concat([
+    cipher.update(token, "utf8"),
+    cipher.final(),
+  ])
+  const tag = cipher.getAuthTag()
+  return `${iv.toString("hex")}:${tag.toString("hex")}:${encrypted.toString("hex")}`
+}
+
+export function decryptSuccessorToken(
+  encryptedStr: string,
+  key: Buffer,
+): string | null {
+  try {
+    const parts = encryptedStr.split(":")
+    if (parts.length !== 3) return null
+    const [ivHex, tagHex, cipherHex] = parts
+    const iv = Buffer.from(ivHex, "hex")
+    const tag = Buffer.from(tagHex, "hex")
+    const ciphertext = Buffer.from(cipherHex, "hex")
+    const decipher = crypto.createDecipheriv("aes-256-gcm", key, iv)
+    decipher.setAuthTag(tag)
+    const decrypted = Buffer.concat([
+      decipher.update(ciphertext),
+      decipher.final(),
+    ])
+    return decrypted.toString("utf8")
+  } catch {
+    return null
+  }
+}
+
 export interface PublicKeyInfo {
   algorithm: "RS256"
   publicKey: string
@@ -81,6 +131,9 @@ export class TokenService {
     private readonly sessionModel: Model<RefreshSessionDocument>,
     @InjectModel(Doctor.name)
     private readonly doctorModel: Model<DoctorDocument>,
+    @Optional()
+    @InjectConnection()
+    private readonly connection?: Connection,
   ) {
     if (this.configService.jwtPrivateKey && this.configService.jwtPublicKey) {
       this.rsaKeyPair = {
@@ -254,11 +307,13 @@ export class TokenService {
   }
 
   /**
-   * Rotates a refresh token session with crash-safe recovery and strict reuse detection:
-   * - If an already revoked token is used, checks for crash-safe idempotent rotation recovery
-   *   within grace window for the same device/family.
-   * - If genuine replay attack detected outside grace window, revokes the entire session family!
-   * - If valid, consumes the old token, links the successor, and issues a new one in the same family.
+   * Rotates a refresh token session with crash-safe recovery, durable idempotency, and strict reuse detection:
+   * - If an already revoked token is used, verifies exact device ID match and rotation receipt hash.
+   * - Supports crash recovery beyond 60s when the successor token has not yet been consumed.
+   * - If genuine replay attack detected (mismatched device, missing/invalid receipt, or already consumed successor),
+   *   revokes the entire session family!
+   * - If valid, uses atomic compare-and-swap (CAS) to consume the old token, links the successor with an encrypted receipt,
+   *   and issues a new one in the same family.
    */
   async rotateRefreshSession(
     rawRefreshToken: string,
@@ -280,33 +335,112 @@ export class TokenService {
       throw new UnauthorizedException("Invalid or expired refresh token.")
     }
 
-    // Reuse detection and crash-safe rotation recovery
+    // 1. RECOVERY / REUSE DETECTION PATH (session is already revoked)
     if (session.isRevoked) {
+      // Require exact device match for persistent desktop sessions or sessions with deviceId bound
+      const hasExactDeviceMatch = Boolean(
+        session.deviceId &&
+          options?.deviceId &&
+          session.deviceId.trim() !== "" &&
+          session.deviceId.trim() === options.deviceId.trim(),
+      )
+
+      const providedReceiptHash = options?.idempotencyKey
+        ? hashOpaqueToken(options.idempotencyKey)
+        : null
+
+      const hasMatchingReceipt = Boolean(
+        providedReceiptHash &&
+          session.rotationReceiptHash &&
+          providedReceiptHash === session.rotationReceiptHash,
+      )
+
+      // Path A: Durable Idempotency Receipt Recovery (works at any time, even hours/days later!)
+      if (hasExactDeviceMatch && hasMatchingReceipt && session.replacedByTokenHash) {
+        let recoveredRawToken: string | null = null
+        if (session.encryptedSuccessorToken && options?.idempotencyKey) {
+          const key = deriveReceiptKey(rawRefreshToken, options.idempotencyKey)
+          recoveredRawToken = decryptSuccessorToken(session.encryptedSuccessorToken, key)
+        }
+
+        if (
+          recoveredRawToken &&
+          hashOpaqueToken(recoveredRawToken) === session.replacedByTokenHash
+        ) {
+          const successorSession = await this.sessionModel.findOne({
+            tokenHash: session.replacedByTokenHash,
+            familyId: session.familyId,
+          })
+
+          const doctor = await this.doctorModel.findById(session.doctorId)
+          if (doctor && doctor.status === DoctorStatus.ACTIVE) {
+            // Case A1: Successor session exists and is NOT revoked (client retrying after lost response / power cycle)
+            if (successorSession && !successorSession.isRevoked) {
+              this.logger.log(
+                `Durable idempotent rotation recovery succeeded for doctor ${session.doctorId.toString()} in family ${session.familyId} on device ${session.deviceId}.`,
+              )
+              const accessToken = await this.generateAccessToken(doctor)
+              return {
+                accessToken,
+                refreshToken: recoveredRawToken,
+                tokenType: "Bearer",
+                expiresIn: this.configService.jwtAccessExpiresIn,
+              }
+            }
+
+            // Case A2: Successor document missing (crash between old-token invalidation and successor creation)
+            if (!successorSession) {
+              this.logger.log(
+                `Recovering unpersisted successor session after crash for doctor ${session.doctorId.toString()} in family ${session.familyId}.`,
+              )
+              let successorExpiresAt: Date | null = null
+              if (session.sessionType !== SessionType.DESKTOP_PERSISTENT) {
+                const refreshDurationMs = parseDurationMs(this.configService.jwtRefreshExpiresIn)
+                successorExpiresAt = new Date(Date.now() + refreshDurationMs)
+              }
+
+              await this.sessionModel.create({
+                doctorId: session.doctorId,
+                tokenHash: session.replacedByTokenHash,
+                familyId: session.familyId,
+                sessionType: session.sessionType,
+                deviceId: session.deviceId,
+                isRevoked: false,
+                expiresAt: successorExpiresAt,
+                lastUsedAt: new Date(),
+                userAgent: meta?.userAgent || null,
+                ipAddress: meta?.ipAddress || null,
+              })
+
+              const accessToken = await this.generateAccessToken(doctor)
+              return {
+                accessToken,
+                refreshToken: recoveredRawToken,
+                tokenType: "Bearer",
+                expiresIn: this.configService.jwtAccessExpiresIn,
+              }
+            }
+          }
+        }
+      }
+
+      // Path B: Grace-window fallback within 60s if exact device ID matches
       const now = Date.now()
       const revokedTime = session.revokedAt ? session.revokedAt.getTime() : 0
       const isWithinGrace =
         now - revokedTime <=
         AUTH_DEFAULTS.ROTATION_RECOVERY_GRACE_WINDOW_SEC * 1000
 
-      if (isWithinGrace && session.replacedByTokenHash) {
+      if (hasExactDeviceMatch && isWithinGrace && session.replacedByTokenHash) {
         const successorSession = await this.sessionModel.findOne({
           tokenHash: session.replacedByTokenHash,
           familyId: session.familyId,
           isRevoked: false,
         })
 
-        if (
-          successorSession &&
-          (!session.deviceId ||
-            !options?.deviceId ||
-            session.deviceId === options.deviceId)
-        ) {
-          this.logger.log(
-            `Crash-safe rotation recovery triggered for doctor ${session.doctorId.toString()} in family ${session.familyId}.`,
-          )
+        if (successorSession) {
           const doctor = await this.doctorModel.findById(session.doctorId)
           if (doctor && doctor.status === DoctorStatus.ACTIVE) {
-            // Re-rotate to issue a new credential safely to the recovering client
             successorSession.isRevoked = true
             successorSession.revokedAt = new Date()
             await successorSession.save()
@@ -320,7 +454,7 @@ export class TokenService {
                   sessionType:
                     (session.sessionType as any) ||
                     SessionType.DESKTOP_PERSISTENT,
-                  deviceId: session.deviceId || options?.deviceId,
+                  deviceId: session.deviceId || undefined,
                 },
               )
 
@@ -347,6 +481,8 @@ export class TokenService {
       )
     }
 
+    // 2. NORMAL ROTATION PATH (session is currently active, isRevoked: false)
+
     // Check expiration (only for non-persistent sessions)
     if (
       session.sessionType !== SessionType.DESKTOP_PERSISTENT &&
@@ -370,45 +506,96 @@ export class TokenService {
       throw new UnauthorizedException("Account is not active.")
     }
 
+    // Enforce exact device ID for persistent desktop sessions
+    if (session.sessionType === SessionType.DESKTOP_PERSISTENT) {
+      if (!options?.deviceId || options.deviceId.trim() === "") {
+        throw new UnauthorizedException("Device ID is required for persistent desktop sessions.")
+      }
+      if (session.deviceId && session.deviceId.trim() !== options.deviceId.trim()) {
+        throw new UnauthorizedException("Device ID mismatch for persistent desktop session.")
+      }
+    }
+
+    const boundDeviceId = options?.deviceId?.trim() || session.deviceId || null
+
     // Generate successor token
     const rawNewToken = crypto.randomBytes(32).toString("hex")
     const newHash = hashOpaqueToken(rawNewToken)
 
-    // Invalidate old session and link successor
-    session.isRevoked = true
-    session.revokedAt = new Date()
-    session.replacedByTokenHash = newHash
-    // Give rotated persistent records 30 days retention for audit and reuse detection
-    if (session.sessionType === SessionType.DESKTOP_PERSISTENT) {
-      session.expiresAt = new Date(Date.now() + 30 * 86400 * 1000)
-    }
-    await session.save()
+    const receiptHash = options?.idempotencyKey
+      ? hashOpaqueToken(options.idempotencyKey)
+      : null
+    const encryptedSuccessorToken = options?.idempotencyKey
+      ? encryptSuccessorToken(
+          rawNewToken,
+          deriveReceiptKey(rawRefreshToken, options.idempotencyKey),
+        )
+      : null
 
-    // Create successor session in same family
     const sessionType = (session.sessionType as any) || SessionType.WEB_STANDARD
-    const deviceId = session.deviceId || options?.deviceId || null
     let successorExpiresAt: Date | null = null
     if (sessionType !== SessionType.DESKTOP_PERSISTENT) {
-      const refreshDurationMs = parseDurationMs(
-        this.configService.jwtRefreshExpiresIn,
-      )
+      const refreshDurationMs = parseDurationMs(this.configService.jwtRefreshExpiresIn)
       successorExpiresAt = new Date(Date.now() + refreshDurationMs)
     }
 
-    await this.sessionModel.create({
-      doctorId: session.doctorId,
-      tokenHash: newHash,
-      familyId: session.familyId,
-      sessionType,
-      deviceId,
-      isRevoked: false,
-      expiresAt: successorExpiresAt,
-      lastUsedAt: new Date(),
-      userAgent: meta?.userAgent || null,
-      ipAddress: meta?.ipAddress || null,
-    })
+    // Atomic compare-and-swap (CAS): invalidate old session only if still active
+    let updated: any = null
+    if (typeof this.sessionModel.findOneAndUpdate === "function") {
+      updated = await this.sessionModel.findOneAndUpdate(
+        { tokenHash, isRevoked: false },
+        {
+          $set: {
+            isRevoked: true,
+            revokedAt: new Date(),
+            replacedByTokenHash: newHash,
+            rotationReceiptHash: receiptHash,
+            encryptedSuccessorToken,
+            lastUsedAt: new Date(),
+            ...(session.sessionType === SessionType.DESKTOP_PERSISTENT
+              ? { expiresAt: new Date(Date.now() + 30 * 86400 * 1000) }
+              : {}),
+          },
+        },
+        { new: false },
+      )
 
-    // Generate fresh access token
+      if (!updated) {
+        // Another concurrent request updated it first. Re-run rotation which enters idempotent recovery
+        return this.rotateRefreshSession(rawRefreshToken, meta, options)
+      }
+    } else {
+      session.isRevoked = true
+      session.revokedAt = new Date()
+      session.replacedByTokenHash = newHash
+      session.rotationReceiptHash = receiptHash
+      session.encryptedSuccessorToken = encryptedSuccessorToken
+      session.lastUsedAt = new Date()
+      if (session.sessionType === SessionType.DESKTOP_PERSISTENT) {
+        session.expiresAt = new Date(Date.now() + 30 * 86400 * 1000)
+      }
+      await session.save()
+    }
+
+    // Create successor session document
+    try {
+      await this.sessionModel.create({
+        doctorId: session.doctorId,
+        tokenHash: newHash,
+        familyId: session.familyId,
+        sessionType,
+        deviceId: boundDeviceId,
+        isRevoked: false,
+        expiresAt: successorExpiresAt,
+        lastUsedAt: new Date(),
+        userAgent: meta?.userAgent || null,
+        ipAddress: meta?.ipAddress || null,
+      })
+    } catch (createErr) {
+      this.logger.error(`Failed to create successor session document: ${createErr}`)
+      throw createErr
+    }
+
     const accessToken = await this.generateAccessToken(doctor)
 
     return {

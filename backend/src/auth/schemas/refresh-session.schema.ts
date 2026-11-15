@@ -68,6 +68,12 @@ export class RefreshSession {
   rotationReceiptHash?: string | null
 
   @Prop({
+    type: String,
+    default: null,
+  })
+  encryptedSuccessorToken?: string | null
+
+  @Prop({
     type: Date,
     default: null,
     required: false,

@@ -798,14 +798,29 @@ async fn do_actual_refresh_session(
     // Fast, responsive 10-second timeout for session refresh to avoid UI delay
     let client = crate::config::create_secure_http_client(Duration::from_secs(10))?;
 
-    let device_id = key_mgr.get_or_create_device_id().ok();
-    let idempotency_key = uuid::Uuid::new_v4().to_string();
+    // Issue 3: Require exact, non-empty device ID; fail closed if unavailable
+    let device_id = match key_mgr.get_or_create_device_id() {
+        Ok(id) if !id.trim().is_empty() => id,
+        _ => return Err("Failed to obtain secure device identifier for desktop session".to_string()),
+    };
+
+    // Issue 2: Stable, deterministic idempotency key derived from refresh token + device ID.
+    // Remains identical across process restarts, reboots, and network retries for this credential.
+    let idempotency_key = {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(b"cliniqo-rotation-idempotency-v1:");
+        hasher.update(persisted_rt.as_bytes());
+        hasher.update(b":");
+        hasher.update(device_id.as_bytes());
+        format!("{:x}", hasher.finalize())
+    };
 
     let send_result = client
         .post(&refresh_url)
         .json(&BackendRefreshRequest {
             refresh_token: &persisted_rt,
-            device_id: device_id.as_deref(),
+            device_id: Some(&device_id),
             idempotency_key: Some(&idempotency_key),
         })
         .send()
@@ -977,6 +992,18 @@ fn try_restore_offline_session(
     session_mgr: &SessionManager,
     db: &DatabaseManager,
 ) -> Option<DesktopLoginResult> {
+    // Issue 5: Prevent offline restoration after manual logout.
+    // Offline restoration MUST verify that a valid, persisted DPAPI credential exists.
+    // When manual logout clears the DPAPI credentials, cached SQLite doctor/clinic profiles
+    // must NEVER independently recreate an authenticated session.
+    match key_mgr.load_refresh_token() {
+        Ok(Some(ref tok)) if !tok.trim().is_empty() => {}
+        _ => {
+            log::warn!("Offline session restoration denied: no valid persisted desktop credentials found (user logged out).");
+            return None;
+        }
+    }
+
     let conn = db.get_connection();
     let doc = crate::db::operations::DbOperations::get_doctor_profile_any(&conn).ok()??;
     let cached_clinics = crate::db::operations::DbOperations::get_all_clinic_profiles(&conn).unwrap_or_default();
@@ -3038,6 +3065,83 @@ D1d0B/9iI/8p4iH21N3W7B3gT9D9e/9Y2Z3b4K5L6M7N8P9Q0R1S2T3U4V5W6X7Y
         assert_eq!(deserialized.category, "SESSION_EXPIRED");
         assert_eq!(deserialized.stage, "session_validation");
         assert!(deserialized.retryable);
+    }
+
+    #[test]
+    fn test_offline_restore_denied_after_logout() {
+        tauri::async_runtime::block_on(async {
+            let temp_dir = std::env::temp_dir().join(format!("cliniqo_logout_restore_{}", uuid::Uuid::new_v4()));
+            let key_mgr = KeyManager::new(&temp_dir);
+            let session_mgr = SessionManager::with_default_public_key().unwrap();
+            let db = DatabaseManager::init(&temp_dir).unwrap();
+
+            // Seed doctor profile into local SQLite database
+            {
+                let conn = db.get_connection();
+                DbOperations::upsert_doctor_profile(
+                    &conn,
+                    &crate::db::schema::DoctorProfileRecord {
+                        doctor_id: "doc_logout_test".to_string(),
+                        email: "dr.logout@cliniqo.test".to_string(),
+                        full_name: "Dr. Logout Test".to_string(),
+                        phone: "9876543210".to_string(),
+                        qualification: "MBBS".to_string(),
+                        registration_number: "MCI-9988".to_string(),
+                        gender: "Male".to_string(),
+                        updated_at: None,
+                    },
+                ).unwrap();
+            }
+
+            // Case 1: With persisted DPAPI credentials, offline restoration succeeds
+            key_mgr.save_refresh_token("valid_persisted_token_123").unwrap();
+            let before_logout = try_restore_offline_session(&key_mgr, &session_mgr, &db);
+            assert!(before_logout.is_some(), "Offline restore must succeed when valid token exists");
+            assert_eq!(before_logout.unwrap().session.doctor_id, "doc_logout_test");
+
+            // Case 2: Manual logout is executed (clears in-memory session and wipes DPAPI store)
+            session_mgr.logout();
+            key_mgr.clear_refresh_token().expect("clear succeeds");
+
+            // Assert DPAPI store was zeroized & removed
+            assert_eq!(key_mgr.load_refresh_token().unwrap(), None);
+
+            // Case 3: Offline restore MUST be denied after logout (Issue 5)
+            // Even though SQLite still has the cached doctor profile, credentials no longer exist!
+            let after_logout = try_restore_offline_session(&key_mgr, &session_mgr, &db);
+            assert!(after_logout.is_none(), "Offline restore MUST be denied after manual logout clears credentials");
+            assert!(session_mgr.get_session().is_none(), "SessionManager must remain unauthenticated");
+
+            let _ = std::fs::remove_dir_all(&temp_dir);
+        });
+    }
+
+    #[test]
+    fn test_deterministic_idempotency_key_stability() {
+        let token = "refresh_token_secret_value_1234567890";
+        let device_id = "device-uuid-abcd-ef01";
+
+        let derive_key = |t: &str, d: &str| -> String {
+            use sha2::{Digest, Sha256};
+            let mut hasher = Sha256::new();
+            hasher.update(b"cliniqo-rotation-idempotency-v1:");
+            hasher.update(t.as_bytes());
+            hasher.update(b":");
+            hasher.update(d.as_bytes());
+            format!("{:x}", hasher.finalize())
+        };
+
+        // Must be stable across calls and restarts
+        let key1 = derive_key(token, device_id);
+        let key2 = derive_key(token, device_id);
+        assert_eq!(key1, key2);
+        assert_eq!(key1.len(), 64);
+
+        // Different device or token produces different key
+        let diff_device = derive_key(token, "other-device");
+        let diff_token = derive_key("other_token", device_id);
+        assert_ne!(key1, diff_device);
+        assert_ne!(key1, diff_token);
     }
 }
 

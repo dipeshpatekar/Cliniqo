@@ -30,6 +30,20 @@ export class RefreshSession {
   familyId: string
 
   @Prop({
+    type: String,
+    enum: ["WEB_STANDARD", "DESKTOP_PERSISTENT"],
+    default: "WEB_STANDARD",
+  })
+  sessionType: string
+
+  @Prop({
+    type: String,
+    trim: true,
+    default: null,
+  })
+  deviceId?: string | null
+
+  @Prop({
     type: Boolean,
     default: false,
   })
@@ -42,10 +56,29 @@ export class RefreshSession {
   revokedAt?: Date | null
 
   @Prop({
-    type: Date,
-    required: true,
+    type: String,
+    default: null,
   })
-  expiresAt: Date
+  replacedByTokenHash?: string | null
+
+  @Prop({
+    type: String,
+    default: null,
+  })
+  rotationReceiptHash?: string | null
+
+  @Prop({
+    type: Date,
+    default: null,
+    required: false,
+  })
+  expiresAt?: Date | null
+
+  @Prop({
+    type: Date,
+    default: () => new Date(),
+  })
+  lastUsedAt?: Date
 
   @Prop({
     type: String,
@@ -73,4 +106,5 @@ export const RefreshSessionSchema = SchemaFactory.createForClass(RefreshSession)
 RefreshSessionSchema.index({ tokenHash: 1 }, { unique: true })
 RefreshSessionSchema.index({ doctorId: 1, isRevoked: 1 })
 RefreshSessionSchema.index({ familyId: 1 })
+RefreshSessionSchema.index({ doctorId: 1, deviceId: 1 })
 RefreshSessionSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 })

@@ -279,6 +279,171 @@ describe("TokenService", () => {
         }),
       )
     })
+
+    it("should create DESKTOP_PERSISTENT session with null expiresAt", async () => {
+      mockSessionModel.create.mockImplementation((doc: any) => Promise.resolve(doc))
+
+      const { session } = await tokenService.createRefreshSession(
+        doctorId,
+        undefined,
+        undefined,
+        {
+          sessionType: "DESKTOP_PERSISTENT",
+          deviceId: "win-device-uuid-123",
+        },
+      )
+
+      expect(mockSessionModel.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          sessionType: "DESKTOP_PERSISTENT",
+          deviceId: "win-device-uuid-123",
+          expiresAt: null,
+          isRevoked: false,
+        }),
+      )
+    })
+
+    it("should allow DESKTOP_PERSISTENT session rotation without arbitrary time expiry", async () => {
+      const rawToken = "d".repeat(64)
+      const tokenHash = hashOpaqueToken(rawToken)
+
+      const persistentSession: any = {
+        doctorId,
+        familyId: "fam-persistent-1",
+        tokenHash,
+        sessionType: "DESKTOP_PERSISTENT",
+        deviceId: "win-device-uuid-123",
+        isRevoked: false,
+        expiresAt: null, // No expiration
+        save: vi.fn().mockResolvedValue(true),
+      }
+
+      const activeDoctor = {
+        _id: doctorId,
+        email: "dr@clinic.com",
+        fullName: "Dr. Persistent",
+        status: DoctorStatus.ACTIVE,
+      }
+
+      mockSessionModel.findOne.mockResolvedValue(persistentSession)
+      mockDoctorModel.findById.mockResolvedValue(activeDoctor)
+      mockSessionModel.create.mockImplementation((doc: any) => Promise.resolve(doc))
+
+      const result = await tokenService.rotateRefreshSession(rawToken, undefined, {
+        deviceId: "win-device-uuid-123",
+      })
+
+      expect(result.refreshToken).toBeDefined()
+      expect(result.accessToken).toBeDefined()
+      expect(persistentSession.isRevoked).toBe(true)
+      expect(persistentSession.replacedByTokenHash).toBeDefined()
+
+      expect(mockSessionModel.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          familyId: "fam-persistent-1",
+          sessionType: "DESKTOP_PERSISTENT",
+          deviceId: "win-device-uuid-123",
+          expiresAt: null,
+          isRevoked: false,
+        }),
+      )
+    })
+
+    it("should support crash-safe rotation recovery within grace window without revoking family", async () => {
+      const rawToken = "e".repeat(64)
+      const tokenHash = hashOpaqueToken(rawToken)
+      const successorHash = "f".repeat(64)
+
+      // Session was already revoked 10 seconds ago during interrupted rotation
+      const revokedSession: any = {
+        doctorId,
+        familyId: "fam-crash-recovery",
+        tokenHash,
+        sessionType: "DESKTOP_PERSISTENT",
+        deviceId: "win-device-uuid-123",
+        isRevoked: true,
+        revokedAt: new Date(Date.now() - 10000), // 10 seconds ago (within 60s grace window)
+        replacedByTokenHash: successorHash,
+      }
+
+      const activeSuccessor: any = {
+        doctorId,
+        familyId: "fam-crash-recovery",
+        tokenHash: successorHash,
+        sessionType: "DESKTOP_PERSISTENT",
+        deviceId: "win-device-uuid-123",
+        isRevoked: false,
+        save: vi.fn().mockResolvedValue(true),
+      }
+
+      const activeDoctor = {
+        _id: doctorId,
+        email: "dr@clinic.com",
+        fullName: "Dr. Recovered",
+        status: DoctorStatus.ACTIVE,
+      }
+
+      mockSessionModel.findOne
+        .mockResolvedValueOnce(revokedSession) // lookup of incoming old token
+        .mockResolvedValueOnce(activeSuccessor) // lookup of linked successor token
+
+      mockDoctorModel.findById.mockResolvedValue(activeDoctor)
+      mockSessionModel.create.mockImplementation((doc: any) => Promise.resolve(doc))
+
+      // Client retries with old token after crash
+      const recovered = await tokenService.rotateRefreshSession(rawToken, undefined, {
+        deviceId: "win-device-uuid-123",
+      })
+
+      expect(recovered.refreshToken).toBeDefined()
+      expect(recovered.accessToken).toBeDefined()
+      // Family was NOT revoked!
+      expect(mockSessionModel.updateMany).not.toHaveBeenCalled()
+    })
+
+    it("should trigger genuine token reuse detection outside grace window and revoke entire family", async () => {
+      const rawToken = "a".repeat(64)
+      const tokenHash = hashOpaqueToken(rawToken)
+
+      const ancientRevokedSession: any = {
+        doctorId,
+        familyId: "fam-attack-detected",
+        tokenHash,
+        sessionType: "DESKTOP_PERSISTENT",
+        deviceId: "win-device-uuid-123",
+        isRevoked: true,
+        revokedAt: new Date(Date.now() - 500000), // 500 seconds ago (outside 60s grace window)
+        replacedByTokenHash: "some-other-hash",
+      }
+
+      mockSessionModel.findOne.mockResolvedValue(ancientRevokedSession)
+
+      await expect(
+        tokenService.rotateRefreshSession(rawToken, undefined, {
+          deviceId: "win-device-uuid-123",
+        }),
+      ).rejects.toThrow("Potential token reuse detected. Please log in again.")
+
+      expect(mockSessionModel.updateMany).toHaveBeenCalledWith(
+        { familyId: "fam-attack-detected", isRevoked: false },
+        expect.objectContaining({
+          $set: expect.objectContaining({ isRevoked: true }),
+        }),
+      )
+    })
+
+    it("should revoke device-specific sessions on demand", async () => {
+      mockSessionModel.updateMany.mockResolvedValue({ modifiedCount: 2 })
+
+      const count = await tokenService.revokeDeviceSessions(doctorId, "device-to-revoke")
+      expect(count).toBe(2)
+      expect(mockSessionModel.updateMany).toHaveBeenCalledWith(
+        { doctorId, deviceId: "device-to-revoke", isRevoked: false },
+        expect.objectContaining({
+          $set: expect.objectContaining({ isRevoked: true }),
+        }),
+      )
+    })
   })
 
   describe("normalizePemKey", () => {

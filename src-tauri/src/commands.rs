@@ -241,6 +241,7 @@ pub async fn login_desktop(
     let client = crate::config::create_secure_http_client(Duration::from_secs(60))?;
 
     let login_url = format!("{base_url}/auth/login");
+    let device_id = state.key_mgr.get_or_create_device_id().unwrap_or_else(|_| uuid::Uuid::new_v4().to_string());
     let mut last_err = String::new();
     let mut resp_opt = None;
 
@@ -250,7 +251,9 @@ pub async fn login_desktop(
             .post(&login_url)
             .json(&serde_json::json!({
                 "email": email.trim(),
-                "password": password
+                "password": password,
+                "sessionType": "DESKTOP_PERSISTENT",
+                "deviceId": device_id,
             }))
             .send()
             .await
@@ -493,6 +496,7 @@ pub async fn register_desktop(
     let client = crate::config::create_secure_http_client(Duration::from_secs(35))?;
 
     let register_url = format!("{base_url}/auth/register");
+    let device_id = state.key_mgr.get_or_create_device_id().unwrap_or_else(|_| uuid::Uuid::new_v4().to_string());
     let payload = serde_json::json!({
         "fullName": input.full_name.trim(),
         "email": input.email.trim(),
@@ -501,6 +505,8 @@ pub async fn register_desktop(
         "qualification": input.qualification.as_ref().map(|p| p.trim()),
         "registrationNumber": input.registration_number.as_ref().map(|p| p.trim()),
         "gender": input.gender.as_ref().map(|p| p.trim()),
+        "sessionType": "DESKTOP_PERSISTENT",
+        "deviceId": device_id,
     });
 
     let max_attempts = 3;
@@ -724,6 +730,16 @@ struct BackendRefreshResponse {
 struct BackendRefreshRequest<'a> {
     #[serde(rename = "refreshToken")]
     refresh_token: &'a str,
+    #[serde(rename = "deviceId", skip_serializing_if = "Option::is_none")]
+    device_id: Option<&'a str>,
+    #[serde(rename = "idempotencyKey", skip_serializing_if = "Option::is_none")]
+    idempotency_key: Option<&'a str>,
+}
+
+#[derive(Serialize)]
+struct BackendLogoutRequest<'a> {
+    #[serde(rename = "refreshToken")]
+    refresh_token: &'a str,
 }
 
 pub async fn execute_refresh_session(
@@ -782,10 +798,15 @@ async fn do_actual_refresh_session(
     // Fast, responsive 10-second timeout for session refresh to avoid UI delay
     let client = crate::config::create_secure_http_client(Duration::from_secs(10))?;
 
+    let device_id = key_mgr.get_or_create_device_id().ok();
+    let idempotency_key = uuid::Uuid::new_v4().to_string();
+
     let send_result = client
         .post(&refresh_url)
         .json(&BackendRefreshRequest {
             refresh_token: &persisted_rt,
+            device_id: device_id.as_deref(),
+            idempotency_key: Some(&idempotency_key),
         })
         .send()
         .await;
@@ -811,12 +832,30 @@ async fn do_actual_refresh_session(
     if !status.is_success() {
         if status == reqwest::StatusCode::UNAUTHORIZED
             || status == reqwest::StatusCode::FORBIDDEN
-            || status == reqwest::StatusCode::BAD_REQUEST
         {
-            let _ = key_mgr.clear_refresh_token();
-            let _ = key_mgr.clear_active_clinic_id();
-            session_mgr.logout();
-            return Err("Refresh token rejected or expired by server. Local session cleared.".to_string());
+            let body_text = resp.text().await.unwrap_or_default();
+            log::warn!("Refresh token rejected by auth server (HTTP {status}): {body_text}");
+            let lower = body_text.to_lowercase();
+            // Clear local credentials ONLY on confirmed security revocation / reuse detection / account lockout
+            if lower.contains("reuse")
+                || lower.contains("revoked")
+                || lower.contains("disabled")
+                || lower.contains("invalid")
+                || lower.contains("expired")
+            {
+                let _ = key_mgr.clear_refresh_token();
+                let _ = key_mgr.clear_active_clinic_id();
+                session_mgr.logout();
+                return Err("Refresh token rejected or expired by server. Local session cleared.".to_string());
+            } else {
+                if let Some(db_mgr) = db {
+                    if let Some(offline_result) = try_restore_offline_session(key_mgr, session_mgr, db_mgr) {
+                        log::info!("Auth server returned non-revocation error (HTTP {status}). Restored permitted offline session.");
+                        return Ok(offline_result);
+                    }
+                }
+                return Err(format!("Auth server error: {body_text}"));
+            }
         }
 
         // For 5xx server errors, fall back to offline session if local profile exists
@@ -985,7 +1024,8 @@ fn try_restore_offline_session(
         doctor_email: doc.email,
         doctor_name: doc.full_name,
         role: active_role,
-        expires_at: now_sec + (7 * 86400), // 7 days permitted offline duration
+        expires_at: now_sec + (365 * 86400), // persistent offline session
+        is_offline: true,
     };
 
     session_mgr.set_offline_session(session.clone());
@@ -1009,7 +1049,7 @@ pub async fn execute_logout_session(
                 if let Ok(client) = crate::config::create_secure_http_client(Duration::from_secs(5)) {
                     let _ = client
                         .post(&logout_url)
-                        .json(&BackendRefreshRequest {
+                        .json(&BackendLogoutRequest {
                             refresh_token: &rt,
                         })
                         .send()
@@ -1076,6 +1116,13 @@ pub async fn refresh_desktop_session(
     }
 
     Ok(result)
+}
+
+#[tauri::command]
+pub fn restore_offline_desktop_session(
+    state: State<'_, AppState>,
+) -> Result<Option<DesktopLoginResult>, String> {
+    Ok(try_restore_offline_session(&state.key_mgr, &state.session_mgr, &state.db))
 }
 
 #[tauri::command]
@@ -2616,6 +2663,7 @@ mod tests {
             doctor_name: "Dr. Safe Session".to_string(),
             role: "DOCTOR".to_string(),
             expires_at: 1893456000,
+            is_offline: false,
         };
 
         let json_str = serde_json::to_string(&ctx).expect("serialization succeeds");
@@ -2695,6 +2743,7 @@ mod tests {
                             doctor_name: "Dr. One".to_string(),
                             role: "DOCTOR".to_string(),
                             expires_at: 1999999999,
+                            is_offline: false,
                         },
                         clinics: vec![],
                         active_clinic_id: "clinic_1".to_string(),
@@ -2717,6 +2766,7 @@ mod tests {
                             doctor_name: "Dr. Two".to_string(),
                             role: "DOCTOR".to_string(),
                             expires_at: 1999999999,
+                            is_offline: false,
                         },
                         clinics: vec![],
                         active_clinic_id: "clinic_1".to_string(),

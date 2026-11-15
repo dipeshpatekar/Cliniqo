@@ -9,7 +9,7 @@ import {
   type RefreshSessionDocument,
 } from "./schemas/refresh-session.schema.js"
 import { Doctor, type DoctorDocument } from "./schemas/doctor.schema.js"
-import { DoctorStatus } from "./auth.constants.js"
+import { DoctorStatus, SessionType, AUTH_DEFAULTS } from "./auth.constants.js"
 
 export interface AccessTokenPayload {
   sub: string
@@ -212,27 +212,40 @@ export class TokenService {
   /**
    * Creates a new cryptographically secure opaque refresh session.
    * Stores only the SHA-256 hash in MongoDB.
+   * For DESKTOP_PERSISTENT sessions, expiresAt is null (no arbitrary expiration).
    */
   async createRefreshSession(
     doctorId: Types.ObjectId | string,
     familyId?: string,
     meta?: { userAgent?: string; ipAddress?: string },
+    options?: {
+      sessionType?: "WEB_STANDARD" | "DESKTOP_PERSISTENT"
+      deviceId?: string
+    },
   ): Promise<{ refreshToken: string; session: RefreshSessionDocument }> {
     const rawRefreshToken = crypto.randomBytes(32).toString("hex")
     const tokenHash = hashOpaqueToken(rawRefreshToken)
     const sessionFamily = familyId || crypto.randomUUID()
+    const sessionType = options?.sessionType || SessionType.WEB_STANDARD
+    const deviceId = options?.deviceId || null
 
-    const refreshDurationMs = parseDurationMs(
-      this.configService.jwtRefreshExpiresIn,
-    )
-    const expiresAt = new Date(Date.now() + refreshDurationMs)
+    let expiresAt: Date | null = null
+    if (sessionType !== SessionType.DESKTOP_PERSISTENT) {
+      const refreshDurationMs = parseDurationMs(
+        this.configService.jwtRefreshExpiresIn,
+      )
+      expiresAt = new Date(Date.now() + refreshDurationMs)
+    }
 
     const session = await this.sessionModel.create({
       doctorId: new Types.ObjectId(doctorId.toString()),
       tokenHash,
       familyId: sessionFamily,
+      sessionType,
+      deviceId,
       isRevoked: false,
       expiresAt,
+      lastUsedAt: new Date(),
       userAgent: meta?.userAgent || null,
       ipAddress: meta?.ipAddress || null,
     })
@@ -241,13 +254,19 @@ export class TokenService {
   }
 
   /**
-   * Rotates a refresh token session with strict reuse detection:
-   * - If an already revoked token is used, revokes the entire session family!
-   * - If valid, consumes the old token and issues a new one in the same family.
+   * Rotates a refresh token session with crash-safe recovery and strict reuse detection:
+   * - If an already revoked token is used, checks for crash-safe idempotent rotation recovery
+   *   within grace window for the same device/family.
+   * - If genuine replay attack detected outside grace window, revokes the entire session family!
+   * - If valid, consumes the old token, links the successor, and issues a new one in the same family.
    */
   async rotateRefreshSession(
     rawRefreshToken: string,
     meta?: { userAgent?: string; ipAddress?: string },
+    options?: {
+      deviceId?: string
+      idempotencyKey?: string
+    },
   ): Promise<{
     accessToken: string
     refreshToken: string
@@ -261,8 +280,61 @@ export class TokenService {
       throw new UnauthorizedException("Invalid or expired refresh token.")
     }
 
-    // Reuse detection: If the session was already revoked, a replay attack has occurred!
+    // Reuse detection and crash-safe rotation recovery
     if (session.isRevoked) {
+      const now = Date.now()
+      const revokedTime = session.revokedAt ? session.revokedAt.getTime() : 0
+      const isWithinGrace =
+        now - revokedTime <=
+        AUTH_DEFAULTS.ROTATION_RECOVERY_GRACE_WINDOW_SEC * 1000
+
+      if (isWithinGrace && session.replacedByTokenHash) {
+        const successorSession = await this.sessionModel.findOne({
+          tokenHash: session.replacedByTokenHash,
+          familyId: session.familyId,
+          isRevoked: false,
+        })
+
+        if (
+          successorSession &&
+          (!session.deviceId ||
+            !options?.deviceId ||
+            session.deviceId === options.deviceId)
+        ) {
+          this.logger.log(
+            `Crash-safe rotation recovery triggered for doctor ${session.doctorId.toString()} in family ${session.familyId}.`,
+          )
+          const doctor = await this.doctorModel.findById(session.doctorId)
+          if (doctor && doctor.status === DoctorStatus.ACTIVE) {
+            // Re-rotate to issue a new credential safely to the recovering client
+            successorSession.isRevoked = true
+            successorSession.revokedAt = new Date()
+            await successorSession.save()
+
+            const { refreshToken: recoveredToken } =
+              await this.createRefreshSession(
+                session.doctorId,
+                session.familyId,
+                meta,
+                {
+                  sessionType:
+                    (session.sessionType as any) ||
+                    SessionType.DESKTOP_PERSISTENT,
+                  deviceId: session.deviceId || options?.deviceId,
+                },
+              )
+
+            const accessToken = await this.generateAccessToken(doctor)
+            return {
+              accessToken,
+              refreshToken: recoveredToken,
+              tokenType: "Bearer",
+              expiresIn: this.configService.jwtAccessExpiresIn,
+            }
+          }
+        }
+      }
+
       this.logger.warn(
         `Refresh token reuse detected for doctor ${session.doctorId.toString()} in session family ${session.familyId}. Revoking entire session family.`,
       )
@@ -275,8 +347,12 @@ export class TokenService {
       )
     }
 
-    // Check expiration
-    if (session.expiresAt.getTime() <= Date.now()) {
+    // Check expiration (only for non-persistent sessions)
+    if (
+      session.sessionType !== SessionType.DESKTOP_PERSISTENT &&
+      session.expiresAt &&
+      session.expiresAt.getTime() <= Date.now()
+    ) {
       session.isRevoked = true
       session.revokedAt = new Date()
       await session.save()
@@ -294,27 +370,71 @@ export class TokenService {
       throw new UnauthorizedException("Account is not active.")
     }
 
-    // Invalidate old session (rotation)
+    // Generate successor token
+    const rawNewToken = crypto.randomBytes(32).toString("hex")
+    const newHash = hashOpaqueToken(rawNewToken)
+
+    // Invalidate old session and link successor
     session.isRevoked = true
     session.revokedAt = new Date()
+    session.replacedByTokenHash = newHash
+    // Give rotated persistent records 30 days retention for audit and reuse detection
+    if (session.sessionType === SessionType.DESKTOP_PERSISTENT) {
+      session.expiresAt = new Date(Date.now() + 30 * 86400 * 1000)
+    }
     await session.save()
 
-    // Create new session in same family
-    const { refreshToken: newRawToken } = await this.createRefreshSession(
-      session.doctorId,
-      session.familyId,
-      meta,
-    )
+    // Create successor session in same family
+    const sessionType = (session.sessionType as any) || SessionType.WEB_STANDARD
+    const deviceId = session.deviceId || options?.deviceId || null
+    let successorExpiresAt: Date | null = null
+    if (sessionType !== SessionType.DESKTOP_PERSISTENT) {
+      const refreshDurationMs = parseDurationMs(
+        this.configService.jwtRefreshExpiresIn,
+      )
+      successorExpiresAt = new Date(Date.now() + refreshDurationMs)
+    }
+
+    await this.sessionModel.create({
+      doctorId: session.doctorId,
+      tokenHash: newHash,
+      familyId: session.familyId,
+      sessionType,
+      deviceId,
+      isRevoked: false,
+      expiresAt: successorExpiresAt,
+      lastUsedAt: new Date(),
+      userAgent: meta?.userAgent || null,
+      ipAddress: meta?.ipAddress || null,
+    })
 
     // Generate fresh access token
     const accessToken = await this.generateAccessToken(doctor)
 
     return {
       accessToken,
-      refreshToken: newRawToken,
+      refreshToken: rawNewToken,
       tokenType: "Bearer",
       expiresIn: this.configService.jwtAccessExpiresIn,
     }
+  }
+
+  /**
+   * Revokes all active refresh sessions for a specific device (e.g. lost laptop).
+   */
+  async revokeDeviceSessions(
+    doctorId: Types.ObjectId | string,
+    deviceId: string,
+  ): Promise<number> {
+    const result = await this.sessionModel.updateMany(
+      {
+        doctorId: new Types.ObjectId(doctorId.toString()),
+        deviceId,
+        isRevoked: false,
+      },
+      { $set: { isRevoked: true, revokedAt: new Date() } },
+    )
+    return result.modifiedCount
   }
 
   /**

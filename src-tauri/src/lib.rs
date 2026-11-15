@@ -96,6 +96,7 @@ pub fn run() {
             commands::login_desktop,
             commands::login_desktop_session,
             commands::refresh_desktop_session,
+            commands::restore_offline_desktop_session,
             commands::logout_desktop_session,
             commands::get_desktop_session,
             commands::has_persisted_refresh_token,

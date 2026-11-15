@@ -188,6 +188,10 @@ export class AuthService {
       doctor._id,
       undefined,
       meta,
+      {
+        sessionType: dto.sessionType,
+        deviceId: dto.deviceId,
+      },
     )
 
     return {
@@ -277,6 +281,10 @@ export class AuthService {
         doctor._id,
         undefined,
         meta,
+        {
+          sessionType: dto.sessionType,
+          deviceId: dto.deviceId,
+        },
       )
       refreshToken = session.refreshToken
     } catch (tokenErr) {
@@ -382,7 +390,10 @@ export class AuthService {
     dto: RefreshTokenDto,
     meta?: { ipAddress?: string; userAgent?: string },
   ) {
-    return this.tokenService.rotateRefreshSession(dto.refreshToken, meta)
+    return this.tokenService.rotateRefreshSession(dto.refreshToken, meta, {
+      deviceId: dto.deviceId,
+      idempotencyKey: dto.idempotencyKey,
+    })
   }
 
   /**

@@ -177,6 +177,8 @@ pub struct SessionContext {
     pub doctor_name: String,
     pub role: String,
     pub expires_at: i64,
+    #[serde(default)]
+    pub is_offline: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
@@ -487,6 +489,7 @@ impl SessionManager {
             doctor_name: payload.full_name.unwrap_or_else(|| "Doctor".to_string()),
             role: role.to_uppercase(),
             expires_at,
+            is_offline: false,
         };
 
         let mut lock = self.current_session.write().unwrap();
@@ -506,7 +509,8 @@ impl SessionManager {
     }
 
     /// Establishes a permitted offline session context when backend is unreachable but valid persisted credentials exist
-    pub fn set_offline_session(&self, context: SessionContext) {
+    pub fn set_offline_session(&self, mut context: SessionContext) {
+        context.is_offline = true;
         let mut lock = self.current_session.write().unwrap();
         *lock = Some(context.clone());
         log::info!(
@@ -537,6 +541,7 @@ impl SessionManager {
             doctor_name: "Test Doctor".to_string(),
             role: "DOCTOR".to_string(),
             expires_at: now + 3600,
+            is_offline: false,
         };
         *self.current_session.write().unwrap() = Some(context);
         *self.current_access_token.write().unwrap() = Some(token.to_string());
@@ -560,10 +565,13 @@ impl SessionManager {
         lock.clone()
     }
 
-    /// Returns the current session context if valid and unexpired
+    /// Returns the current session context if valid and unexpired or permitted offline
     pub fn get_session(&self) -> Option<SessionContext> {
         let lock = self.current_session.read().unwrap();
         if let Some(ref session) = *lock {
+            if session.is_offline {
+                return Some(session.clone());
+            }
             let now_sec = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap_or_default()
@@ -576,7 +584,8 @@ impl SessionManager {
         None
     }
 
-    /// Validates that an active, non-expired session exists and matches the expected clinic tenancy.
+    /// Validates that an active session exists and matches the expected clinic tenancy.
+    /// Does not auto-logout on expired access token so that transparent refresh can proceed.
     pub fn validate_session(
         &self,
         required_clinic_id: Option<&str>,
@@ -590,9 +599,7 @@ impl SessionManager {
                     .unwrap_or_default()
                     .as_secs() as i64;
 
-                if session.expires_at <= now_sec {
-                    drop(lock);
-                    self.logout();
+                if !session.is_offline && session.expires_at <= now_sec {
                     return Err(AuthError::SessionExpired);
                 }
 
@@ -1309,6 +1316,60 @@ T3hekm0XS7FminNIflwhv/xFRbGtN9RdFGWbOZx87J1yecSiqPhBx0+19bu/0M1A
         assert!(validate_rsa_key_strength(PRODUCTION_BACKEND_PUBLIC_KEY_PEM, 2048).is_ok());
         let decoding_key = DecodingKey::from_rsa_pem(PRODUCTION_BACKEND_PUBLIC_KEY_PEM.as_bytes());
         assert!(decoding_key.is_ok(), "Production backend public key must be valid SPKI PEM");
+    }
+
+    #[test]
+    fn test_expired_session_does_not_clear_session_context() {
+        let manager = SessionManager::with_default_public_key().unwrap();
+        let token = generate_test_rs256_jwt_with_name(
+            TEST_BACKEND_PRIVATE_KEY_PEM,
+            "doc_test_123",
+            "doc@clinic.com",
+            Some("Dr. Test"),
+            1, // Valid for 1 second
+        );
+
+        manager.login(&token, "clinic_001", "DOCTOR").unwrap();
+        // Artificially expire the session timestamp in memory
+        {
+            let mut lock = manager.current_session.write().unwrap();
+            if let Some(ref mut session) = *lock {
+                session.expires_at = 100; // Far in past
+            }
+        }
+
+        // validate_session fails with SessionExpired
+        let err = manager.validate_session(Some("clinic_001"));
+        assert_eq!(err, Err(AuthError::SessionExpired));
+
+        // CRITICAL: SessionContext must NOT be wiped so background refresh can use it
+        let session_after = manager.current_session.read().unwrap();
+        assert!(session_after.is_some(), "SessionContext must be preserved for token refresh");
+        assert_eq!(session_after.as_ref().unwrap().doctor_id, "doc_test_123");
+    }
+
+    #[test]
+    fn test_offline_session_validates_regardless_of_timestamp() {
+        let manager = SessionManager::with_default_public_key().unwrap();
+        let offline_context = SessionContext {
+            doctor_id: "doc_offline_1".to_string(),
+            clinic_id: "clinic_local".to_string(),
+            doctor_email: "offline@clinic.com".to_string(),
+            doctor_name: "Dr. Offline".to_string(),
+            role: "DOCTOR".to_string(),
+            expires_at: 100, // Past timestamp
+            is_offline: true,
+        };
+
+        manager.set_offline_session(offline_context);
+
+        // Validation must succeed because is_offline = true
+        let validated = manager.validate_session(Some("clinic_local")).expect("offline session validates");
+        assert_eq!(validated.doctor_id, "doc_offline_1");
+        assert!(validated.is_offline);
+
+        let retrieved = manager.get_session().expect("offline session is returned");
+        assert_eq!(retrieved.doctor_id, "doc_offline_1");
     }
 }
 

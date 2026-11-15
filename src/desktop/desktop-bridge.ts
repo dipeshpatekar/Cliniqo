@@ -23,6 +23,7 @@ export interface DesktopSessionContext {
   doctor_name: string
   role: string
   expires_at: number
+  is_offline?: boolean
 }
 
 export interface ClinicAddressData {
@@ -668,7 +669,24 @@ export async function refreshDesktopSession(
   try {
     return await invokeTauri<DesktopLoginResult>("refresh_desktop_session")
   } catch (err) {
-    console.warn("[Desktop Bridge] Refresh failed closed:", err)
+    console.warn("[Desktop Bridge] Refresh encountered error. Attempting offline fallback:", err)
+    try {
+      const offline = await invokeTauri<DesktopLoginResult | null>(
+        "restore_offline_desktop_session",
+      )
+      if (offline) return offline
+    } catch {}
+    return null
+  }
+}
+
+export async function restoreOfflineDesktopSession(): Promise<DesktopLoginResult | null> {
+  try {
+    return await invokeTauri<DesktopLoginResult | null>(
+      "restore_offline_desktop_session",
+    )
+  } catch (err) {
+    console.warn("[Desktop Bridge] Offline restoration failed:", err)
     return null
   }
 }

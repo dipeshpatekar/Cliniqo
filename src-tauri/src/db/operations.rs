@@ -31,6 +31,9 @@ pub enum DatabaseOpError {
 
     #[error("Conflict resolution error: {0}")]
     ConflictResolution(String),
+
+    #[error("Patient record not found: {0}")]
+    PatientNotFound(String),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -111,23 +114,24 @@ impl DbOperations {
 
     /// Computes the next sequential patient code for a clinic without modifying counter state.
     pub fn get_next_patient_code(conn: &mut Connection, clinic_id: &str) -> Result<String, DatabaseOpError> {
-        let counter_seq: u32 = conn
-            .query_row(
-                "SELECT last_seq FROM local_seq_counters WHERE clinic_id = ?1 AND sequence_name = 'patient'",
-                params![clinic_id],
-                |row| row.get(0),
-            )
-            .unwrap_or(0);
+        let counter_seq: u32 = match conn.query_row(
+            "SELECT last_seq FROM local_seq_counters WHERE clinic_id = ?1 AND sequence_name = 'patient'",
+            params![clinic_id],
+            |row| row.get(0),
+        ) {
+            Ok(seq) => seq,
+            Err(rusqlite::Error::QueryReturnedNoRows) => 0,
+            Err(e) => return Err(DatabaseOpError::Sqlite(e)),
+        };
 
         let mut max_seq = counter_seq;
         let mut stmt = conn.prepare("SELECT patient_code FROM local_patients WHERE clinic_id = ?1")?;
         let rows = stmt.query_map(params![clinic_id], |row| row.get::<_, String>(0))?;
         for r in rows {
-            if let Ok(code) = r {
-                if let Some(parsed) = Self::parse_sequential_patient_id(&code) {
-                    if parsed > max_seq {
-                        max_seq = parsed;
-                    }
+            let code = r?;
+            if let Some(parsed) = Self::parse_sequential_patient_id(&code) {
+                if parsed > max_seq {
+                    max_seq = parsed;
                 }
             }
         }
@@ -137,23 +141,24 @@ impl DbOperations {
     }
 
     fn allocate_next_patient_code_tx(tx: &rusqlite::Transaction, clinic_id: &str) -> Result<String, DatabaseOpError> {
-        let counter_seq: u32 = tx
-            .query_row(
-                "SELECT last_seq FROM local_seq_counters WHERE clinic_id = ?1 AND sequence_name = 'patient'",
-                params![clinic_id],
-                |row| row.get(0),
-            )
-            .unwrap_or(0);
+        let counter_seq: u32 = match tx.query_row(
+            "SELECT last_seq FROM local_seq_counters WHERE clinic_id = ?1 AND sequence_name = 'patient'",
+            params![clinic_id],
+            |row| row.get(0),
+        ) {
+            Ok(seq) => seq,
+            Err(rusqlite::Error::QueryReturnedNoRows) => 0,
+            Err(e) => return Err(DatabaseOpError::Sqlite(e)),
+        };
 
         let mut max_seq = counter_seq;
         let mut stmt = tx.prepare("SELECT patient_code FROM local_patients WHERE clinic_id = ?1")?;
         let rows = stmt.query_map(params![clinic_id], |row| row.get::<_, String>(0))?;
         for r in rows {
-            if let Ok(code) = r {
-                if let Some(parsed) = Self::parse_sequential_patient_id(&code) {
-                    if parsed > max_seq {
-                        max_seq = parsed;
-                    }
+            let code = r?;
+            if let Some(parsed) = Self::parse_sequential_patient_id(&code) {
+                if parsed > max_seq {
+                    max_seq = parsed;
                 }
             }
         }
@@ -230,7 +235,7 @@ impl DbOperations {
                 "SELECT EXISTS(SELECT 1 FROM local_patients WHERE clinic_id = ?1 AND patient_code = ?2)",
                 params![clinic_id, candidate],
                 |row| row.get(0),
-            ).unwrap_or(false)
+            )?
         } else {
             false
         };
@@ -402,15 +407,23 @@ impl DbOperations {
 
         let tx = conn.transaction()?;
 
-        let current_local_ver: i32 = tx.query_row(
+        let current_local_ver: i32 = match tx.query_row(
             "SELECT local_version FROM local_patients WHERE clinic_id = ?1 AND id = ?2",
             params![clinic_id, patient_id],
             |row| row.get(0),
-        )?;
+        ) {
+            Ok(ver) => ver,
+            Err(rusqlite::Error::QueryReturnedNoRows) => {
+                return Err(DatabaseOpError::PatientNotFound(format!(
+                    "Cannot update patient {patient_id}: record does not exist in clinic {clinic_id}"
+                )));
+            }
+            Err(e) => return Err(DatabaseOpError::Sqlite(e)),
+        };
 
         let new_ver = current_local_ver + 1;
 
-        tx.execute(
+        let updated_count = tx.execute(
             r#"
             UPDATE local_patients
             SET patient_code = ?1,
@@ -423,6 +436,12 @@ impl DbOperations {
             "#,
             params![patient_code, encrypted_demographics, demo_nonce, new_ver, clinic_id, patient_id],
         )?;
+
+        if updated_count == 0 {
+            return Err(DatabaseOpError::PatientNotFound(format!(
+                "Failed to update patient {patient_id}: 0 rows affected"
+            )));
+        }
 
         let outbox_id = Uuid::new_v4().to_string();
         let idempotency_key = format!("local-patient-update-{patient_id}-{new_ver}");
@@ -8616,5 +8635,56 @@ mod tests {
             )
             .unwrap();
         assert!(has_update_outbox);
+    }
+
+    #[test]
+    fn test_update_non_existent_patient_fails_with_patient_not_found() {
+        let (mut conn, dek) = setup_test_db();
+        let clinic_id = "clinic_missing_update_test";
+
+        let result = DbOperations::update_patient(
+            &mut conn,
+            &dek,
+            clinic_id,
+            "non-existent-patient-uuid",
+            "AAA-0001",
+            "Missing Patient",
+            "9876543210",
+            "Other",
+            None,
+            40,
+            &[],
+            &[],
+            None,
+        );
+
+        match result {
+            Err(DatabaseOpError::PatientNotFound(msg)) => {
+                assert!(msg.contains("non-existent-patient-uuid"));
+            }
+            other => panic!("Expected DatabaseOpError::PatientNotFound, got {:?}", other),
+        }
+
+        // Verify no outbox record was inserted
+        let outbox_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM local_sync_outbox WHERE clinic_id = ?1",
+                params![clinic_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(outbox_count, 0);
+    }
+
+    #[test]
+    fn test_get_next_patient_code_propagates_sqlite_error() {
+        let (mut conn, _) = setup_test_db();
+        let clinic_id = "clinic_err_test";
+
+        // Corrupt local_seq_counters table by dropping it
+        conn.execute("DROP TABLE local_seq_counters", []).unwrap();
+
+        let result = DbOperations::get_next_patient_code(&mut conn, clinic_id);
+        assert!(matches!(result, Err(DatabaseOpError::Sqlite(_))));
     }
 }

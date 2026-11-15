@@ -1097,12 +1097,14 @@ export default function App({
               if (matched) effectivePatient = matched
             }
           } catch {}
-        } else if (!wasEditing) {
+        } else {
           throw new PatientSaveError({
             category: "UNKNOWN_SAVE_FAILURE",
             stage: "save_local_patient",
             command: "save_local_patient",
-            message: "Desktop bridge returned empty result for patient save.",
+            message: wasEditing
+              ? "Desktop bridge returned empty result for patient update."
+              : "Desktop bridge returned empty result for patient save.",
             retryable: true,
           })
         }

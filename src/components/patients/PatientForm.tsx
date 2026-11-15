@@ -48,6 +48,7 @@ export function PatientForm({
   const [dirty, setDirty] = useState(false)
   const formRef = useRef<HTMLFormElement>(null)
   const isSavingRef = useRef(false)
+  const lastStartConsultationRef = useRef(false)
   const nameInputRef = useRef<HTMLInputElement>(null)
   const clientMutationIdRef = useRef<string>(
     patient?.id
@@ -100,6 +101,7 @@ export function PatientForm({
   }
 
   const performSave = async (startConsultation: boolean) => {
+    lastStartConsultationRef.current = startConsultation
     if (isSavingRef.current || isSaving) return
     const form = formRef.current
     if (!form) return
@@ -311,7 +313,7 @@ export function PatientForm({
                   type="button"
                   size="sm"
                   variant="secondary"
-                  onClick={() => performSave(false)}
+                  onClick={() => performSave(lastStartConsultationRef.current)}
                   disabled={isSaving}
                   loading={isSaving}
                 >

@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use tauri::State;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use rusqlite::params;
+use rusqlite::{params, OptionalExtension};
 use crate::auth::{SessionContext, SessionManager};
 use crate::crypto::key_manager::KeyManager;
 use crate::db::DatabaseManager;
@@ -1590,6 +1590,14 @@ impl PatientSaveDiagnostic {
                     }
                 }
             }
+            DatabaseOpError::PatientNotFound(_) => Self {
+                category: "DATABASE_CONSTRAINT".to_string(),
+                stage: stage.to_string(),
+                command: "save_local_patient".to_string(),
+                sqlite_error_code: None,
+                message: "Patient record not found for update.".to_string(),
+                retryable: false,
+            },
             DatabaseOpError::Crypto(_) => Self {
                 category: "ENCRYPTION_FAILURE".to_string(),
                 stage: stage.to_string(),
@@ -1731,49 +1739,43 @@ pub async fn save_local_patient(
         let save_once = || -> Result<crate::db::operations::SavePatientResult, crate::db::operations::DatabaseOpError> {
             let mut conn = state.db.get_connection();
 
-            let exists: bool = if let Some(ref pid) = args.id {
-                conn.query_row(
-                    "SELECT EXISTS(SELECT 1 FROM local_patients WHERE clinic_id = ?1 AND (id = ?2 OR patient_code = ?2))",
-                    params![args.clinic_id, pid],
-                    |row| row.get(0),
-                ).unwrap_or(false)
-            } else {
-                false
-            };
+            if let Some(ref pid) = args.id {
+                let patient_row: Option<(String, String)> = conn
+                    .query_row(
+                        "SELECT id, patient_code FROM local_patients WHERE clinic_id = ?1 AND (id = ?2 OR patient_code = ?2) LIMIT 1",
+                        params![args.clinic_id, pid],
+                        |row| Ok((row.get(0)?, row.get(1)?)),
+                    )
+                    .optional()?;
 
-            if exists {
-                let pid = args.id.as_deref().unwrap();
-                let actual_id: String = conn.query_row(
-                    "SELECT id FROM local_patients WHERE clinic_id = ?1 AND (id = ?2 OR patient_code = ?2) LIMIT 1",
-                    params![args.clinic_id, pid],
-                    |row| row.get(0),
-                ).unwrap_or_else(|_| pid.to_string());
-
-                let existing_code: String = conn.query_row(
-                    "SELECT patient_code FROM local_patients WHERE clinic_id = ?1 AND id = ?2",
-                    params![args.clinic_id, &actual_id],
-                    |row| row.get(0),
-                ).unwrap_or_else(|_| args.patient_code.clone());
-
-                DbOperations::update_patient(
-                    &mut conn,
-                    dek,
-                    &args.clinic_id,
-                    &actual_id,
-                    &existing_code,
-                    &args.name,
-                    &args.phone,
-                    &args.gender,
-                    args.date_of_birth.as_deref(),
-                    args.age,
-                    &args.allergies,
-                    &args.conditions,
-                    args.sensitive_notes.as_deref(),
-                )?;
-                Ok(crate::db::operations::SavePatientResult {
-                    id: actual_id,
-                    patient_code: existing_code,
-                })
+                match patient_row {
+                    Some((actual_id, existing_code)) => {
+                        DbOperations::update_patient(
+                            &mut conn,
+                            dek,
+                            &args.clinic_id,
+                            &actual_id,
+                            &existing_code,
+                            &args.name,
+                            &args.phone,
+                            &args.gender,
+                            args.date_of_birth.as_deref(),
+                            args.age,
+                            &args.allergies,
+                            &args.conditions,
+                            args.sensitive_notes.as_deref(),
+                        )?;
+                        Ok(crate::db::operations::SavePatientResult {
+                            id: actual_id,
+                            patient_code: existing_code,
+                        })
+                    }
+                    None => {
+                        Err(crate::db::operations::DatabaseOpError::PatientNotFound(format!(
+                            "Patient with identifier '{pid}' does not exist in clinic tenancy"
+                        )))
+                    }
+                }
             } else {
                 DbOperations::insert_patient_ext(
                     &mut conn,
@@ -2956,6 +2958,13 @@ D1d0B/9iI/8p4iH21N3W7B3gT9D9e/9Y2Z3b4K5L6M7N8P9Q0R1S2T3U4V5W6X7Y
         let crypto_diag = PatientSaveDiagnostic::from_db_error("encrypt", &crypto_err);
         assert_eq!(crypto_diag.category, "ENCRYPTION_FAILURE");
         assert!(!crypto_diag.retryable);
+
+        // 5. PatientNotFound mapping
+        let not_found_err = DatabaseOpError::PatientNotFound("missing_id".to_string());
+        let not_found_diag = PatientSaveDiagnostic::from_db_error("update_lookup", &not_found_err);
+        assert_eq!(not_found_diag.category, "DATABASE_CONSTRAINT");
+        assert_eq!(not_found_diag.message, "Patient record not found for update.");
+        assert!(!not_found_diag.retryable);
     }
 
     #[test]

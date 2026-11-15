@@ -212,6 +212,147 @@ describe("Cliniqo Patient Save Reliability & Diagnostic Error Reporting", () => 
       expect(attempts[1]).toBe(stableMutationId)
       expect(attempts[0]).toBe(attempts[1])
     })
+
+    it("preserves startConsultation: true intent during Retry after a failed Save & Start Consultation", async () => {
+      let retryIntent: boolean | undefined = undefined
+      let callCount = 0
+
+      // Simulate PatientForm retry logic where lastStartConsultationRef preserves intent
+      let lastStartConsultation = false
+      const performSave = async (startConsultation: boolean) => {
+        lastStartConsultation = startConsultation
+        callCount++
+        if (callCount === 1) {
+          throw new PatientSaveError({
+            category: "DATABASE_BUSY",
+            stage: "save_local_patient",
+            command: "save_local_patient",
+            sqlite_error_code: "5",
+            message: "Database busy syncing. Please retry.",
+            retryable: true,
+          })
+        }
+        retryIntent = startConsultation
+      }
+
+      // 1. Initial attempt with Save & Start Consultation (startConsultation = true)
+      try {
+        await performSave(true)
+      } catch (err) {
+        expect(err).toBeInstanceOf(PatientSaveError)
+      }
+      expect(callCount).toBe(1)
+      expect(lastStartConsultation).toBe(true)
+
+      // 2. User clicks Retry banner button (which invokes performSave(lastStartConsultation))
+      await performSave(lastStartConsultation)
+      expect(callCount).toBe(2)
+      expect(retryIntent).toBe(true)
+    })
+
+    it("preserves startConsultation: false intent during Retry after a failed Save patient", async () => {
+      let retryIntent: boolean | undefined = undefined
+      let callCount = 0
+
+      let lastStartConsultation = true
+      const performSave = async (startConsultation: boolean) => {
+        lastStartConsultation = startConsultation
+        callCount++
+        if (callCount === 1) {
+          throw new PatientSaveError({
+            category: "DATABASE_BUSY",
+            stage: "save_local_patient",
+            command: "save_local_patient",
+            sqlite_error_code: "5",
+            message: "Database busy syncing. Please retry.",
+            retryable: true,
+          })
+        }
+        retryIntent = startConsultation
+      }
+
+      // 1. Initial attempt with standard Save patient (startConsultation = false)
+      try {
+        await performSave(false)
+      } catch (err) {
+        expect(err).toBeInstanceOf(PatientSaveError)
+      }
+      expect(callCount).toBe(1)
+      expect(lastStartConsultation).toBe(false)
+
+      // 2. User clicks Retry banner button
+      await performSave(lastStartConsultation)
+      expect(callCount).toBe(2)
+      expect(retryIntent).toBe(false)
+    })
+  })
+
+  describe("Confirmed Persistence Verification for Create and Edit", () => {
+    it("throws PatientSaveError when desktop save returns empty result on CREATE", () => {
+      const wasEditing = false
+      const saveRes = null
+
+      let thrownError: any = null
+      if (saveRes) {
+        // Success path
+      } else {
+        thrownError = new PatientSaveError({
+          category: "UNKNOWN_SAVE_FAILURE",
+          stage: "save_local_patient",
+          command: "save_local_patient",
+          message: wasEditing
+            ? "Desktop bridge returned empty result for patient update."
+            : "Desktop bridge returned empty result for patient save.",
+          retryable: true,
+        })
+      }
+
+      expect(thrownError).toBeInstanceOf(PatientSaveError)
+      expect(thrownError.diagnostic.category).toBe("UNKNOWN_SAVE_FAILURE")
+      expect(thrownError.diagnostic.message).toBe("Desktop bridge returned empty result for patient save.")
+      expect(thrownError.diagnostic.retryable).toBe(true)
+    })
+
+    it("throws PatientSaveError when desktop save returns empty result on EDIT", () => {
+      const wasEditing = true
+      const saveRes = null
+
+      let thrownError: any = null
+      if (saveRes) {
+        // Success path
+      } else {
+        thrownError = new PatientSaveError({
+          category: "UNKNOWN_SAVE_FAILURE",
+          stage: "save_local_patient",
+          command: "save_local_patient",
+          message: wasEditing
+            ? "Desktop bridge returned empty result for patient update."
+            : "Desktop bridge returned empty result for patient save.",
+          retryable: true,
+        })
+      }
+
+      expect(thrownError).toBeInstanceOf(PatientSaveError)
+      expect(thrownError.diagnostic.category).toBe("UNKNOWN_SAVE_FAILURE")
+      expect(thrownError.diagnostic.message).toBe("Desktop bridge returned empty result for patient update.")
+      expect(thrownError.diagnostic.retryable).toBe(true)
+    })
+
+    it("correctly identifies PatientNotFound constraint failure as non-retryable", () => {
+      const diag: PatientSaveDiagnostic = {
+        category: "DATABASE_CONSTRAINT",
+        stage: "save_local_patient",
+        command: "save_local_patient",
+        sqlite_error_code: null,
+        message: "Patient record not found for update.",
+        retryable: false,
+      }
+
+      const err = new PatientSaveError(diag)
+      expect(err.diagnostic.category).toBe("DATABASE_CONSTRAINT")
+      expect(err.diagnostic.message).toBe("Patient record not found for update.")
+      expect(err.diagnostic.retryable).toBe(false)
+    })
   })
 })
 

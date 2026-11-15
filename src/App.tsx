@@ -37,10 +37,7 @@ import {
 import { cn } from "./utils/cn"
 
 // Components
-import {
-  IconButton,
-  ShortcutGuideModal,
-} from "./components/common"
+import { IconButton, ShortcutGuideModal } from "./components/common"
 import { Sidebar, Logo } from "./components/layout"
 import { Login, Register, Setup } from "./components/auth"
 import { Dashboard } from "./components/dashboard"
@@ -79,6 +76,28 @@ import {
   type LocalConsultationRecord,
 } from "./desktop/desktop-bridge"
 import stockReportData from "./data/stock-report-18-10-26.json"
+import {
+  resolvePrescriptionPreviewNavigation,
+  resolveBillPreviewNavigation,
+  shouldClearHistoricalPrescriptionOnNavigation,
+  reconstructHistoricalPrescription,
+  computePrescriptionPreviewState,
+  executePrescriptionRevision,
+  type PrescriptionPreviewReturnPage,
+  type BillPreviewReturnPage,
+  type ViewingHistoricalPrescriptionState,
+} from "./routing/prescriptionRouting"
+
+export type { PrescriptionPreviewReturnPage, BillPreviewReturnPage, ViewingHistoricalPrescriptionState }
+
+export interface AppProps {
+  initialPage?: Page
+  initialDesktopSession?: DesktopSessionContext | null
+  initialSelectedPatient?: Patient
+  initialViewingHistoricalPrescription?: ViewingHistoricalPrescriptionState | null
+  initialPrescriptionPreviewReturnPage?: PrescriptionPreviewReturnPage
+  initialPatientProfileTab?: string
+}
 
 const SAMPLE_PREVIEW_PATIENT: Patient = {
   id: "sample-patient-preview",
@@ -170,11 +189,18 @@ const SAMPLE_PREVIEW_BILL: BillData = {
   ],
 }
 
-export default function App() {
-  const [page, setPage] = useState<Page>("login")
+export default function App({
+  initialPage = "login",
+  initialDesktopSession = null,
+  initialSelectedPatient,
+  initialViewingHistoricalPrescription = null,
+  initialPrescriptionPreviewReturnPage = "consultation",
+  initialPatientProfileTab = "Overview",
+}: AppProps = {}) {
+  const [page, setPage] = useState<Page>(initialPage)
   const [desktopSession, setDesktopSession] =
-    useState<DesktopSessionContext | null>(null)
-  const desktopSessionRef = useRef<DesktopSessionContext | null>(null)
+    useState<DesktopSessionContext | null>(initialDesktopSession)
+  const desktopSessionRef = useRef<DesktopSessionContext | null>(initialDesktopSession)
   const [onboardingDoctor, setOnboardingDoctor] = useState<{
     id: string
     email: string
@@ -201,7 +227,8 @@ export default function App() {
     isTauriDesktop() ? [] : initialPatients,
   )
   const [selectedPatient, setSelectedPatient] = useState<Patient>(() =>
-    isTauriDesktop()
+    initialSelectedPatient ||
+    (isTauriDesktop()
       ? {
           id: "PT-INIT",
           name: "No patient selected",
@@ -213,7 +240,7 @@ export default function App() {
           allergies: [],
           conditions: [],
         }
-      : initialPatients[0],
+      : initialPatients[0]),
   )
   const [editingPatient, setEditingPatient] = useState<Patient | null>(null)
   const [patientSaveFeedback, setPatientSaveFeedback] =
@@ -221,15 +248,10 @@ export default function App() {
   const [settingsKey, setSettingsKey] = useState(0)
   const [settingsInitialTab, setSettingsInitialTab] = useState("Doctor profile")
   const [prescriptionPreviewReturnPage, setPrescriptionPreviewReturnPage] =
-    useState<"consultation" | "settings" | "patient-profile">("consultation")
+    useState<PrescriptionPreviewReturnPage>(initialPrescriptionPreviewReturnPage)
   const [viewingHistoricalPrescription, setViewingHistoricalPrescription] =
-    useState<{
-      record: LocalPrescriptionRecord
-      consultationData: ConsultationData
-      vitals: Vitals
-      itemsError?: string | null
-    } | null>(null)
-  const [patientProfileTab, setPatientProfileTab] = useState("Overview")
+    useState<ViewingHistoricalPrescriptionState | null>(initialViewingHistoricalPrescription)
+  const [patientProfileTab, setPatientProfileTab] = useState(initialPatientProfileTab)
   const [billPreviewReturnPage, setBillPreviewReturnPage] =
     useState<"bill-form" | "settings" | "patient-profile">("bill-form")
   const [vitals, setVitals] = useState<Vitals>({
@@ -385,7 +407,10 @@ export default function App() {
       if (typeof window !== "undefined" && window.localStorage) {
         const key = `cliniqo_last_patient_seq_${desktopSession?.clinic_id || "default"}`
         window.localStorage.setItem(key, String(effectiveMaxSeq))
-        window.localStorage.setItem("cliniqo_last_patient_seq", String(effectiveMaxSeq))
+        window.localStorage.setItem(
+          "cliniqo_last_patient_seq",
+          String(effectiveMaxSeq),
+        )
       }
     }
   }, [effectiveMaxSeq, maxAllocatedSeq, desktopSession?.clinic_id])
@@ -694,16 +719,26 @@ export default function App() {
     }
 
     if (next === "preview") {
-      const fromSettings = page === "settings"
-      setPrescriptionPreviewReturnPage(
-        fromSettings ? "settings" : "consultation",
-      )
-      if (fromSettings) setSettingsInitialTab("Prescription layout")
+      const { returnPage, clearHistorical, settingsTab } =
+        resolvePrescriptionPreviewNavigation(page, prescriptionPreviewReturnPage)
+      setPrescriptionPreviewReturnPage(returnPage)
+      if (settingsTab) {
+        setSettingsInitialTab(settingsTab)
+      }
+      if (clearHistorical) {
+        setViewingHistoricalPrescription(null)
+      }
+    }
+    if (shouldClearHistoricalPrescriptionOnNavigation(next)) {
+      setViewingHistoricalPrescription(null)
     }
     if (next === "bill-preview") {
-      const fromSettings = page === "settings"
-      setBillPreviewReturnPage(fromSettings ? "settings" : "bill-form")
-      if (fromSettings) setSettingsInitialTab("Bill layout")
+      const { returnPage, settingsTab } =
+        resolveBillPreviewNavigation(page, billPreviewReturnPage)
+      setBillPreviewReturnPage(returnPage)
+      if (settingsTab) {
+        setSettingsInitialTab(settingsTab)
+      }
     }
     if (next === "patient-form") {
       setEditingPatient(
@@ -770,6 +805,7 @@ export default function App() {
       height: "",
       weight: "",
     })
+    setViewingHistoricalPrescription(null)
     setPatientProfileTab("Overview")
     go("patient-profile")
   }
@@ -784,6 +820,7 @@ export default function App() {
     try {
       setSelectedPatient(patient)
       setPatientSaveFeedback(null)
+      setViewingHistoricalPrescription(null)
       setConsultationData(createEmptyConsultationData())
       setVitals({
         systolic: "",
@@ -809,26 +846,7 @@ export default function App() {
     const targetPatient = patient || selectedPatient
     setSelectedPatient(targetPatient)
 
-    // 1. Parse medicines from items_json
-    let parsedMedicines: Medicine[] = []
-    let itemsError: string | null = null
-    try {
-      if (rx.items_json && rx.items_json.trim().length > 0) {
-        const parsed = JSON.parse(rx.items_json)
-        if (Array.isArray(parsed)) {
-          parsedMedicines = parsed
-        } else {
-          itemsError = `Prescription record ${rx.prescription_number || rx.id} contains invalid medicine structure (expected a list).`
-        }
-      } else {
-        itemsError = `Prescription record ${rx.prescription_number || rx.id} has no medicine data recorded.`
-      }
-    } catch (e) {
-      console.error("Failed to parse prescription items JSON:", e)
-      itemsError = `Failed to parse medicines for prescription ${rx.prescription_number || rx.id}: invalid JSON.`
-    }
-
-    // 2. Fetch associated consultation to restore diagnosis, chief complaint, vitals, advice
+    // Fetch associated consultation to restore diagnosis, chief complaint, vitals, advice
     let matchedConsultation: LocalConsultationRecord | undefined
     if (isTauriDesktop() && desktopSession?.clinic_id) {
       try {
@@ -846,52 +864,11 @@ export default function App() {
       }
     }
 
-    let parsedVitals: Vitals = {
-      systolic: "",
-      diastolic: "",
-      heartRate: "",
-      spo2: "",
-      temperature: "",
-      height: "",
-      weight: "",
-    }
-    let followUpDate = ""
-    let followUpInstructions = ""
-    let symptomDuration = ""
-
-    if (matchedConsultation?.clinical_snapshot_json) {
-      try {
-        const snapshot = JSON.parse(matchedConsultation.clinical_snapshot_json)
-        if (snapshot.vitals) {
-          parsedVitals = { ...parsedVitals, ...snapshot.vitals }
-        }
-        if (snapshot.followUpDate) followUpDate = snapshot.followUpDate
-        if (snapshot.followUpInstructions)
-          followUpInstructions = snapshot.followUpInstructions
-        if (snapshot.symptomDuration)
-          symptomDuration = snapshot.symptomDuration
-      } catch {}
-    }
-
-    const reconstructedConsultation: ConsultationData = {
-      date: rx.created_at
-        ? rx.created_at.slice(0, 10)
-        : matchedConsultation?.consultation_date ||
-          new Date().toISOString().slice(0, 10),
-      time: rx.created_at
-        ? new Date(rx.created_at).toLocaleTimeString([], {
-            hour: "2-digit",
-            minute: "2-digit",
-            hour12: true,
-          })
-        : "",
-      chiefComplaint: matchedConsultation?.chief_complaint || "",
-      symptomDuration,
-      diagnosis: matchedConsultation?.diagnosis || "",
-      medicines: parsedMedicines,
-      followUpDate,
-      followUpInstructions,
-    }
+    const {
+      consultationData: reconstructedConsultation,
+      vitals: parsedVitals,
+      itemsError,
+    } = reconstructHistoricalPrescription(rx, matchedConsultation)
 
     setViewingHistoricalPrescription({
       record: rx,
@@ -908,46 +885,33 @@ export default function App() {
     medicines: Medicine[],
     reasonForRevision: string,
   ) => {
-    if (!viewingHistoricalPrescription?.record) return
-    if (!isTauriDesktop() || !desktopSession?.clinic_id) return
+    if (!viewingHistoricalPrescription?.record) {
+      throw new Error("No active historical prescription selected.")
+    }
+    if (!isTauriDesktop() || !desktopSession?.clinic_id) {
+      throw new Error(
+        "Active clinic session is required to revise prescriptions.",
+      )
+    }
 
-    const currentRecord = viewingHistoricalPrescription.record
-
-    const newPrescriptionId = await reviseLocalPrescription({
-      clinic_id: desktopSession.clinic_id,
-      prescription_id: currentRecord.id,
-      expected_revision_number: currentRecord.revision_number,
-      items_json: JSON.stringify(medicines),
-      reason_for_revision: reasonForRevision,
+    const newRecord = await executePrescriptionRevision({
+      currentRecord: viewingHistoricalPrescription.record,
+      clinicId: desktopSession.clinic_id,
+      patientId: selectedPatient.id,
+      medicines,
+      reasonForRevision,
     })
 
-    if (newPrescriptionId) {
-      // Re-query latest prescriptions to obtain the updated record
-      const updatedList = await getLocalPrescriptions(
-        desktopSession.clinic_id,
-        selectedPatient.id,
-      )
-      const newRecord =
-        updatedList.find((r) => r.id === newPrescriptionId) ||
-        ({
-          ...currentRecord,
-          id: newPrescriptionId,
-          revision_number: currentRecord.revision_number + 1,
-          status: "ACTIVE",
-          items_json: JSON.stringify(medicines),
-        } as LocalPrescriptionRecord)
-
-      // Update the active historical viewing prescription state without touching global consultationData draft
-      setViewingHistoricalPrescription({
-        record: newRecord,
-        consultationData: {
-          ...viewingHistoricalPrescription.consultationData,
-          medicines,
-        },
-        vitals: viewingHistoricalPrescription.vitals,
-        itemsError: null,
-      })
-    }
+    // Update the active historical viewing prescription state without touching global consultationData draft
+    setViewingHistoricalPrescription({
+      record: newRecord,
+      consultationData: {
+        ...viewingHistoricalPrescription.consultationData,
+        medicines,
+      },
+      vitals: viewingHistoricalPrescription.vitals,
+      itemsError: null,
+    })
   }
 
   const editPatient = (patient: Patient) => {
@@ -1067,9 +1031,9 @@ export default function App() {
             patient.patientCode ||
             (wasEditing
               ? patient.id
-              : (/^[A-Z]{3}-\d{4}$/.test(patient.id)
-                  ? patient.id
-                  : nextPatientId))
+              : /^[A-Z]{3}-\d{4}$/.test(patient.id)
+                ? patient.id
+                : nextPatientId)
 
           const notesObj = {
             registeredAt: patient.registeredAt,
@@ -1151,7 +1115,10 @@ export default function App() {
           if (typeof window !== "undefined" && window.localStorage) {
             const key = `cliniqo_last_patient_seq_${desktopSession?.clinic_id || "default"}`
             window.localStorage.setItem(key, String(allocatedSeq))
-            window.localStorage.setItem("cliniqo_last_patient_seq", String(allocatedSeq))
+            window.localStorage.setItem(
+              "cliniqo_last_patient_seq",
+              String(allocatedSeq),
+            )
           }
         }
       }
@@ -1730,8 +1697,10 @@ export default function App() {
       />
     )
   } else if (page === "preview") {
-    const isSamplePreview = prescriptionPreviewReturnPage === "settings"
-    const isHistorical = viewingHistoricalPrescription && prescriptionPreviewReturnPage === "patient-profile"
+    const { isSamplePreview, isHistorical } = computePrescriptionPreviewState(
+      prescriptionPreviewReturnPage,
+      viewingHistoricalPrescription,
+    )
     content = (
       <PrescriptionPreview
         go={go}
@@ -1740,14 +1709,14 @@ export default function App() {
           isSamplePreview
             ? SAMPLE_PREVIEW_VITALS
             : isHistorical
-              ? viewingHistoricalPrescription.vitals
+              ? viewingHistoricalPrescription!.vitals
               : vitals
         }
         data={
           isSamplePreview
             ? SAMPLE_PREVIEW_CONSULTATION
             : isHistorical
-              ? viewingHistoricalPrescription.consultationData
+              ? viewingHistoricalPrescription!.consultationData
               : consultationData
         }
         bannerVisible={prescriptionBannerVisible}
@@ -1758,9 +1727,15 @@ export default function App() {
         showAllergyWarning={showAllergyWarning}
         returnPage={prescriptionPreviewReturnPage}
         desktopSession={desktopSession}
-        prescriptionRecord={isHistorical ? viewingHistoricalPrescription.record : null}
-        onRevisePrescription={isHistorical ? handleRevisePrescription : undefined}
-        itemsError={isHistorical ? viewingHistoricalPrescription.itemsError : null}
+        prescriptionRecord={
+          isHistorical ? viewingHistoricalPrescription!.record : null
+        }
+        onRevisePrescription={
+          isHistorical ? handleRevisePrescription : undefined
+        }
+        itemsError={
+          isHistorical ? viewingHistoricalPrescription!.itemsError : null
+        }
       />
     )
   } else if (page === "bill-form") {

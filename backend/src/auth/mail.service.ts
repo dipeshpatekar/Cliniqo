@@ -60,7 +60,7 @@ export class MailService implements OnModuleInit {
         /(["']?(?:password|pass|auth|key|secret|token|refresh_token|access_token|client_secret)["']?\s*[:=]\s*["']?)[^"',\s}]+/gi,
         "$1[REDACTED]",
       )
-      .replace(/Bearer\s+[A-Za-z0-9_.\-]+/gi, "Bearer [REDACTED]")
+      .replace(/Bearer\s+[A-Za-z0-9_.-]+/gi, "Bearer [REDACTED]")
       .replace(/accepted[:=\s]+[^\s,]+/gi, "accepted: [REDACTED]")
       .replace(/:\s*([A-Za-z0-9_-]{8,})/g, ": [REDACTED]")
   }
@@ -120,11 +120,13 @@ export class MailService implements OnModuleInit {
   buildRfc2822Raw(from: string, to: string, subject: string, text: string, html: string): string {
     const boundary = `====_Part_${Date.now()}_${Math.random().toString(36).substring(2, 10)}====`
     const encodedSubject = `=?UTF-8?B?${Buffer.from(subject, "utf-8").toString("base64")}?=`
+    const dateHeader = new Date().toUTCString()
 
     const lines = [
       `From: ${from}`,
       `To: ${to}`,
       `Subject: ${encodedSubject}`,
+      `Date: ${dateHeader}`,
       "MIME-Version: 1.0",
       `Content-Type: multipart/alternative; boundary="${boundary}"`,
       "",
@@ -274,13 +276,15 @@ export class MailService implements OnModuleInit {
 
   /**
    * Sends a 6-digit OTP email with 5-minute expiry for password recovery.
+   * Uses a clean generic subject to optimize spam filter deliverability,
+   * keeping the OTP exclusively in the message body.
    * Fails safely without leaking credentials or errors to the HTTP caller.
    */
   async sendPasswordResetOtpEmail(
     to: string,
     otp: string,
   ): Promise<boolean> {
-    const subject = `Cliniqo Verification Code: ${otp}`
+    const subject = "Your Cliniqo verification code"
     const text = `Hello Doctor,
 
 A password reset request was received for your Cliniqo account.

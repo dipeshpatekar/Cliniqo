@@ -1526,6 +1526,113 @@ pub struct SavePatientArgs {
     pub allergies: Vec<String>,
     pub conditions: Vec<String>,
     pub sensitive_notes: Option<String>,
+    pub client_mutation_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PatientSaveDiagnostic {
+    pub category: String,
+    pub stage: String,
+    pub command: String,
+    pub sqlite_error_code: Option<String>,
+    pub message: String,
+    pub retryable: bool,
+}
+
+impl PatientSaveDiagnostic {
+    pub fn from_db_error(stage: &str, err: &crate::db::operations::DatabaseOpError) -> Self {
+        use crate::db::operations::DatabaseOpError;
+        match err {
+            DatabaseOpError::Sqlite(rusqlite::Error::SqliteFailure(ffi_err, _)) => {
+                let code = ffi_err.code;
+                let ext = ffi_err.extended_code;
+                if code == rusqlite::ffi::ErrorCode::DatabaseBusy
+                    || code == rusqlite::ffi::ErrorCode::DatabaseLocked
+                    || ext == 5
+                    || ext == 6
+                    || ext == 261
+                    || ext == 517
+                {
+                    Self {
+                        category: "DATABASE_BUSY".to_string(),
+                        stage: stage.to_string(),
+                        command: "save_local_patient".to_string(),
+                        sqlite_error_code: Some(format!("{ext}")),
+                        message: "Database busy lock contention. Retry in progress.".to_string(),
+                        retryable: true,
+                    }
+                } else if code == rusqlite::ffi::ErrorCode::DiskFull || ext == 13 {
+                    Self {
+                        category: "DATABASE_FULL".to_string(),
+                        stage: stage.to_string(),
+                        command: "save_local_patient".to_string(),
+                        sqlite_error_code: Some(format!("{ext}")),
+                        message: "Disk storage full. Free space and retry.".to_string(),
+                        retryable: false,
+                    }
+                } else if code == rusqlite::ffi::ErrorCode::ConstraintViolation || (ext & 0xff) == 19 {
+                    Self {
+                        category: "DATABASE_CONSTRAINT".to_string(),
+                        stage: stage.to_string(),
+                        command: "save_local_patient".to_string(),
+                        sqlite_error_code: Some(format!("{ext}")),
+                        message: "Database constraint prevented saving record.".to_string(),
+                        retryable: false,
+                    }
+                } else {
+                    Self {
+                        category: "DATABASE_TRANSACTION_FAILURE".to_string(),
+                        stage: stage.to_string(),
+                        command: "save_local_patient".to_string(),
+                        sqlite_error_code: Some(format!("{ext}")),
+                        message: "Database transaction failed.".to_string(),
+                        retryable: true,
+                    }
+                }
+            }
+            DatabaseOpError::Crypto(_) => Self {
+                category: "ENCRYPTION_FAILURE".to_string(),
+                stage: stage.to_string(),
+                command: "save_local_patient".to_string(),
+                sqlite_error_code: None,
+                message: "Cryptographic encryption failure.".to_string(),
+                retryable: false,
+            },
+            DatabaseOpError::Serialization(_) => Self {
+                category: "DATABASE_TRANSACTION_FAILURE".to_string(),
+                stage: stage.to_string(),
+                command: "save_local_patient".to_string(),
+                sqlite_error_code: None,
+                message: "Payload serialization failure.".to_string(),
+                retryable: false,
+            },
+            _ => Self {
+                category: "UNKNOWN_SAVE_FAILURE".to_string(),
+                stage: stage.to_string(),
+                command: "save_local_patient".to_string(),
+                sqlite_error_code: None,
+                message: "Unexpected save failure occurred.".to_string(),
+                retryable: true,
+            },
+        }
+    }
+}
+
+fn is_sqlite_busy_error(err: &crate::db::operations::DatabaseOpError) -> bool {
+    use crate::db::operations::DatabaseOpError;
+    match err {
+        DatabaseOpError::Sqlite(rusqlite::Error::SqliteFailure(ffi_err, _)) => {
+            let code = ffi_err.code;
+            let ext = ffi_err.extended_code;
+            code == rusqlite::ffi::ErrorCode::DatabaseBusy
+                || code == rusqlite::ffi::ErrorCode::DatabaseLocked
+                || ext == 5
+                || ext == 6
+                || ext == 261
+                || ext == 517
+        }
+        _ => false,
+    }
 }
 
 #[tauri::command]
@@ -1543,70 +1650,167 @@ pub fn get_next_patient_code(
 }
 
 #[tauri::command]
-pub fn save_local_patient(
+pub async fn save_local_patient(
     state: State<'_, AppState>,
     args: SavePatientArgs,
-) -> Result<String, String> {
-    // 1. Enforce authenticated session matching clinic tenancy
-    let _session = state
-        .session_mgr
-        .validate_session(Some(&args.clinic_id))
-        .map_err(|e| e.to_string())?;
-
-    let mut conn = state.db.get_connection();
-    let dek = state.db.get_dek();
-
-    let exists: bool = if let Some(ref pid) = args.id {
-        conn.query_row(
-            "SELECT EXISTS(SELECT 1 FROM local_patients WHERE clinic_id = ?1 AND (id = ?2 OR patient_code = ?2))",
-            params![args.clinic_id, pid],
-            |row| row.get(0),
-        ).unwrap_or(false)
-    } else {
-        false
+) -> Result<crate::db::operations::SavePatientResult, String> {
+    // 1. Session and Clinic Context Validation
+    let session_check = state.session_mgr.validate_session(Some(&args.clinic_id));
+    let _session = match session_check {
+        Ok(s) => s,
+        Err(crate::auth::AuthError::SessionExpired) => {
+            log::info!("Session expired during save_local_patient. Attempting auto-refresh...");
+            match execute_refresh_session_with_db(
+                &state.key_mgr,
+                &state.session_mgr,
+                &state.refresh_coordinator,
+                None,
+                Some(&state.db),
+            )
+            .await
+            {
+                Ok(refreshed) => {
+                    log::info!("Session auto-refreshed successfully during save_local_patient.");
+                    if refreshed.session.clinic_id != args.clinic_id {
+                        let diag = PatientSaveDiagnostic {
+                            category: "CLINIC_MISMATCH".to_string(),
+                            stage: "session_validation".to_string(),
+                            command: "save_local_patient".to_string(),
+                            sqlite_error_code: None,
+                            message: "Refreshed session clinic does not match patient clinic tenancy.".to_string(),
+                            retryable: false,
+                        };
+                        return Err(serde_json::to_string(&diag).unwrap_or_else(|_| "CLINIC_MISMATCH".to_string()));
+                    }
+                    refreshed.session
+                }
+                Err(refresh_err) => {
+                    log::warn!("Auto-refresh during save_local_patient failed: {refresh_err}");
+                    let diag = PatientSaveDiagnostic {
+                        category: "SESSION_EXPIRED".to_string(),
+                        stage: "session_validation".to_string(),
+                        command: "save_local_patient".to_string(),
+                        sqlite_error_code: None,
+                        message: "Session expired. Please log in again to continue.".to_string(),
+                        retryable: true,
+                    };
+                    return Err(serde_json::to_string(&diag).unwrap_or_else(|_| "SESSION_EXPIRED".to_string()));
+                }
+            }
+        }
+        Err(crate::auth::AuthError::CrossClinicForbidden { attempted_clinic: _, session_clinic: _ }) => {
+            let diag = PatientSaveDiagnostic {
+                category: "CLINIC_MISMATCH".to_string(),
+                stage: "session_validation".to_string(),
+                command: "save_local_patient".to_string(),
+                sqlite_error_code: None,
+                message: "Clinic context mismatch with authenticated session.".to_string(),
+                retryable: false,
+            };
+            return Err(serde_json::to_string(&diag).unwrap_or_else(|_| "CLINIC_MISMATCH".to_string()));
+        }
+        Err(other_auth_err) => {
+            let diag = PatientSaveDiagnostic {
+                category: "SESSION_EXPIRED".to_string(),
+                stage: "session_validation".to_string(),
+                command: "save_local_patient".to_string(),
+                sqlite_error_code: None,
+                message: format!("Authentication validation failed: {other_auth_err}"),
+                retryable: true,
+            };
+            return Err(serde_json::to_string(&diag).unwrap_or_else(|_| "SESSION_EXPIRED".to_string()));
+        }
     };
 
-    if exists {
-        let pid = args.id.as_deref().unwrap();
-        let actual_id: String = conn.query_row(
-            "SELECT id FROM local_patients WHERE clinic_id = ?1 AND (id = ?2 OR patient_code = ?2) LIMIT 1",
-            params![args.clinic_id, pid],
-            |row| row.get(0),
-        ).unwrap_or_else(|_| pid.to_string());
+    // 2. Perform database save with bounded retry for transient busy lock contention
+    let mut retries = 0;
+    const MAX_BUSY_RETRIES: u32 = 3;
+    let dek = state.db.get_dek();
 
-        DbOperations::update_patient(
-            &mut conn,
-            dek,
-            &args.clinic_id,
-            &actual_id,
-            &args.patient_code,
-            &args.name,
-            &args.phone,
-            &args.gender,
-            args.date_of_birth.as_deref(),
-            args.age,
-            &args.allergies,
-            &args.conditions,
-            args.sensitive_notes.as_deref(),
-        )
-        .map_err(|e| e.to_string())?;
-        Ok(actual_id)
-    } else {
-        DbOperations::insert_patient(
-            &mut conn,
-            dek,
-            &args.clinic_id,
-            &args.patient_code,
-            &args.name,
-            &args.phone,
-            &args.gender,
-            args.date_of_birth.as_deref(),
-            args.age,
-            &args.allergies,
-            &args.conditions,
-            args.sensitive_notes.as_deref(),
-        )
-        .map_err(|e| e.to_string())
+    loop {
+        let save_once = || -> Result<crate::db::operations::SavePatientResult, crate::db::operations::DatabaseOpError> {
+            let mut conn = state.db.get_connection();
+
+            let exists: bool = if let Some(ref pid) = args.id {
+                conn.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM local_patients WHERE clinic_id = ?1 AND (id = ?2 OR patient_code = ?2))",
+                    params![args.clinic_id, pid],
+                    |row| row.get(0),
+                ).unwrap_or(false)
+            } else {
+                false
+            };
+
+            if exists {
+                let pid = args.id.as_deref().unwrap();
+                let actual_id: String = conn.query_row(
+                    "SELECT id FROM local_patients WHERE clinic_id = ?1 AND (id = ?2 OR patient_code = ?2) LIMIT 1",
+                    params![args.clinic_id, pid],
+                    |row| row.get(0),
+                ).unwrap_or_else(|_| pid.to_string());
+
+                let existing_code: String = conn.query_row(
+                    "SELECT patient_code FROM local_patients WHERE clinic_id = ?1 AND id = ?2",
+                    params![args.clinic_id, &actual_id],
+                    |row| row.get(0),
+                ).unwrap_or_else(|_| args.patient_code.clone());
+
+                DbOperations::update_patient(
+                    &mut conn,
+                    dek,
+                    &args.clinic_id,
+                    &actual_id,
+                    &existing_code,
+                    &args.name,
+                    &args.phone,
+                    &args.gender,
+                    args.date_of_birth.as_deref(),
+                    args.age,
+                    &args.allergies,
+                    &args.conditions,
+                    args.sensitive_notes.as_deref(),
+                )?;
+                Ok(crate::db::operations::SavePatientResult {
+                    id: actual_id,
+                    patient_code: existing_code,
+                })
+            } else {
+                DbOperations::insert_patient_ext(
+                    &mut conn,
+                    dek,
+                    &args.clinic_id,
+                    &args.patient_code,
+                    &args.name,
+                    &args.phone,
+                    &args.gender,
+                    args.date_of_birth.as_deref(),
+                    args.age,
+                    &args.allergies,
+                    &args.conditions,
+                    args.sensitive_notes.as_deref(),
+                    args.client_mutation_id.as_deref(),
+                )
+            }
+        };
+
+        let op_result = save_once();
+
+        match op_result {
+            Ok(saved) => return Ok(saved),
+            Err(ref db_err) if is_sqlite_busy_error(db_err) && retries < MAX_BUSY_RETRIES => {
+                retries += 1;
+                let backoff_ms = retries * 50;
+                log::warn!(
+                    "save_local_patient SQLite busy contention (attempt {retries}/{MAX_BUSY_RETRIES}), backing off {backoff_ms}ms..."
+                );
+                tokio::time::sleep(tokio::time::Duration::from_millis(backoff_ms as u64)).await;
+            }
+            Err(db_err) => {
+                let diag = PatientSaveDiagnostic::from_db_error("database_save", &db_err);
+                log::error!("save_local_patient failed [{}]: {}", diag.category, diag.message);
+                return Err(serde_json::to_string(&diag).unwrap_or_else(|_| diag.message));
+            }
+        }
     }
 }
 
@@ -2709,6 +2913,72 @@ D1d0B/9iI/8p4iH21N3W7B3gT9D9e/9Y2Z3b4K5L6M7N8P9Q0R1S2T3U4V5W6X7Y
         assert_eq!(key_mgr.load_refresh_token().unwrap(), None);
 
         let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_patient_save_diagnostic_category_mapping() {
+        use crate::db::operations::DatabaseOpError;
+
+        // 1. Busy error mapping
+        let busy_ffi = rusqlite::ffi::Error {
+            code: rusqlite::ffi::ErrorCode::DatabaseBusy,
+            extended_code: 5,
+        };
+        let busy_err = DatabaseOpError::Sqlite(rusqlite::Error::SqliteFailure(busy_ffi, None));
+        assert!(is_sqlite_busy_error(&busy_err));
+        let busy_diag = PatientSaveDiagnostic::from_db_error("tx_begin", &busy_err);
+        assert_eq!(busy_diag.category, "DATABASE_BUSY");
+        assert!(busy_diag.retryable);
+
+        // 2. Disk full mapping
+        let full_ffi = rusqlite::ffi::Error {
+            code: rusqlite::ffi::ErrorCode::DiskFull,
+            extended_code: 13,
+        };
+        let full_err = DatabaseOpError::Sqlite(rusqlite::Error::SqliteFailure(full_ffi, None));
+        assert!(!is_sqlite_busy_error(&full_err));
+        let full_diag = PatientSaveDiagnostic::from_db_error("insert", &full_err);
+        assert_eq!(full_diag.category, "DATABASE_FULL");
+        assert!(!full_diag.retryable);
+
+        // 3. Constraint violation mapping
+        let constraint_ffi = rusqlite::ffi::Error {
+            code: rusqlite::ffi::ErrorCode::ConstraintViolation,
+            extended_code: 19,
+        };
+        let constraint_err = DatabaseOpError::Sqlite(rusqlite::Error::SqliteFailure(constraint_ffi, None));
+        let constraint_diag = PatientSaveDiagnostic::from_db_error("insert", &constraint_err);
+        assert_eq!(constraint_diag.category, "DATABASE_CONSTRAINT");
+        assert!(!constraint_diag.retryable);
+
+        // 4. Crypto error mapping
+        let crypto_err = DatabaseOpError::Crypto(crate::crypto::CryptoError::EncryptionFailed("Cipher err".to_string()));
+        let crypto_diag = PatientSaveDiagnostic::from_db_error("encrypt", &crypto_err);
+        assert_eq!(crypto_diag.category, "ENCRYPTION_FAILURE");
+        assert!(!crypto_diag.retryable);
+    }
+
+    #[test]
+    fn test_save_patient_diagnostic_json_serialization_no_pii() {
+        let diag = PatientSaveDiagnostic {
+            category: "SESSION_EXPIRED".to_string(),
+            stage: "session_validation".to_string(),
+            command: "save_local_patient".to_string(),
+            sqlite_error_code: None,
+            message: "Session expired. Please log in again to continue.".to_string(),
+            retryable: true,
+        };
+
+        let serialized = serde_json::to_string(&diag).expect("serializes cleanly");
+        assert!(serialized.contains("SESSION_EXPIRED"));
+        assert!(!serialized.contains("Patient"));
+        assert!(!serialized.contains("phone"));
+        assert!(!serialized.contains("address"));
+
+        let deserialized: PatientSaveDiagnostic = serde_json::from_str(&serialized).expect("deserializes cleanly");
+        assert_eq!(deserialized.category, "SESSION_EXPIRED");
+        assert_eq!(deserialized.stage, "session_validation");
+        assert!(deserialized.retryable);
     }
 }
 

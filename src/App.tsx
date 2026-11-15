@@ -73,6 +73,7 @@ import {
   type DesktopSessionContext,
   type LocalInvoiceRecord,
   type LocalPrescriptionRecord,
+  PatientSaveError,
   type LocalConsultationRecord,
 } from "./desktop/desktop-bridge"
 import stockReportData from "./data/stock-report-18-10-26.json"
@@ -1017,7 +1018,11 @@ export default function App({
     go("bill-form")
   }
 
-  const savePatient = async (patient: Patient, startConsultation = false) => {
+  const savePatient = async (
+    patient: Patient,
+    startConsultation = false,
+    clientMutationId?: string,
+  ) => {
     if (isSavingPatientRef.current) return
     isSavingPatientRef.current = true
     try {
@@ -1025,66 +1030,81 @@ export default function App({
       let effectivePatient = patient
 
       if (isTauriDesktop() && desktopSession?.clinic_id) {
-        try {
-          const publicCode =
-            patient.displayId ||
-            patient.patientCode ||
-            (wasEditing
-              ? patient.id
-              : /^[A-Z]{3}-\d{4}$/.test(patient.id)
-                ? patient.id
-                : nextPatientId)
-
-          const notesObj = {
-            registeredAt: patient.registeredAt,
-            alternatePhone: patient.alternatePhone,
-            address: patient.address,
-          }
-
-          const savedId = await saveLocalPatient({
-            id: wasEditing ? editingPatient?.id : null,
-            clinic_id: desktopSession.clinic_id,
-            patient_code: publicCode,
-            name: patient.name,
-            phone: patient.phone,
-            gender: patient.gender,
-            date_of_birth: patient.dateOfBirth || null,
-            age: patient.age,
-            allergies: patient.allergies,
-            conditions: patient.conditions,
-            sensitive_notes: JSON.stringify(notesObj),
-          })
-          if (savedId) {
-            effectivePatient = {
-              ...patient,
-              id: wasEditing ? patient.id : savedId,
-              displayId: publicCode,
-              patientCode: publicCode,
+        // Proactive token refresh if session is expired or within 60s of expiring
+        const nowSec = Math.floor(Date.now() / 1000)
+        if (desktopSession.expires_at <= nowSec + 60) {
+          try {
+            const refreshed = await refreshDesktopSession()
+            if (refreshed?.session) {
+              desktopSessionRef.current = refreshed.session
+              setDesktopSession(refreshed.session)
             }
-            try {
-              const freshPatients = await getLocalPatients(
-                desktopSession.clinic_id,
-              )
-              if (freshPatients && freshPatients.length > 0) {
-                const mapped = freshPatients.map(mapLocalRecordToPatient)
-                setPatientRecords(mapped)
-                const matched = mapped.find((p) => p.id === savedId)
-                if (matched) effectivePatient = matched
-              }
-            } catch {}
-          } else if (!wasEditing) {
-            alert(
-              "Failed to save patient record. Consultation cannot be started.",
+          } catch (refreshErr) {
+            console.warn(
+              "[Cliniqo Desktop] Proactive session refresh attempt:",
+              refreshErr,
             )
-            return
           }
-        } catch (err) {
-          console.error(
-            "[Cliniqo Desktop] Failed to save patient to SQLite:",
-            err,
-          )
-          alert("Failed to save patient. Consultation cannot be started.")
-          return
+        }
+
+        const publicCode =
+          patient.displayId ||
+          patient.patientCode ||
+          (wasEditing
+            ? patient.id
+            : /^[A-Z]{3}-\d{4}$/.test(patient.id)
+              ? patient.id
+              : nextPatientId)
+
+        const notesObj = {
+          registeredAt: patient.registeredAt,
+          alternatePhone: patient.alternatePhone,
+          address: patient.address,
+        }
+
+        const saveRes = await saveLocalPatient({
+          id: wasEditing ? editingPatient?.id : null,
+          clinic_id: desktopSession.clinic_id,
+          patient_code: publicCode,
+          name: patient.name,
+          phone: patient.phone,
+          gender: patient.gender,
+          date_of_birth: patient.dateOfBirth || null,
+          age: patient.age,
+          allergies: patient.allergies,
+          conditions: patient.conditions,
+          sensitive_notes: JSON.stringify(notesObj),
+          client_mutation_id: clientMutationId || null,
+        })
+
+        if (saveRes) {
+          const canonicalId = saveRes.id
+          const canonicalCode = saveRes.patient_code
+          effectivePatient = {
+            ...patient,
+            id: wasEditing ? patient.id : canonicalId,
+            displayId: canonicalCode,
+            patientCode: canonicalCode,
+          }
+          try {
+            const freshPatients = await getLocalPatients(
+              desktopSession.clinic_id,
+            )
+            if (freshPatients && freshPatients.length > 0) {
+              const mapped = freshPatients.map(mapLocalRecordToPatient)
+              setPatientRecords(mapped)
+              const matched = mapped.find((p) => p.id === canonicalId)
+              if (matched) effectivePatient = matched
+            }
+          } catch {}
+        } else if (!wasEditing) {
+          throw new PatientSaveError({
+            category: "UNKNOWN_SAVE_FAILURE",
+            stage: "save_local_patient",
+            command: "save_local_patient",
+            message: "Desktop bridge returned empty result for patient save.",
+            retryable: true,
+          })
         }
       }
 
@@ -1093,8 +1113,9 @@ export default function App({
         !effectivePatient.id ||
         effectivePatient.id === "PT-INIT"
       ) {
-        alert("Invalid patient record. Consultation cannot be started.")
-        return
+        throw new Error(
+          "Invalid patient record. Consultation cannot be started.",
+        )
       }
 
       setPatientRecords((records) => [

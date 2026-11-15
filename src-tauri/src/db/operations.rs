@@ -962,15 +962,10 @@ impl DbOperations {
                 DatabaseOpError::ConflictResolution("Prescription not found in clinic".to_string())
             })?;
 
-        if status == "DISCONTINUED" {
-            return Err(DatabaseOpError::ConflictResolution(
-                "Cannot revise a discontinued prescription. Issue a replacement instead.".to_string(),
-            ));
-        }
-        if status == "CANCELLED" {
-            return Err(DatabaseOpError::ConflictResolution(
-                "Cannot revise a cancelled prescription.".to_string(),
-            ));
+        if status != "ACTIVE" {
+            return Err(DatabaseOpError::ConflictResolution(format!(
+                "Cannot revise prescription with status '{status}'. Only ACTIVE prescriptions can be revised."
+            )));
         }
 
         // Optimistic concurrency check
@@ -981,13 +976,34 @@ impl DbOperations {
         }
 
         let next_revision_number = current_rev + 1;
+
+        // Prevent duplicate revision numbers for the same clinic and prescription number
+        let revision_exists: bool = tx
+            .query_row(
+                r#"
+                SELECT EXISTS(
+                    SELECT 1 FROM local_prescriptions
+                    WHERE clinic_id = ?1 AND prescription_number = ?2 AND revision_number = ?3
+                )
+                "#,
+                params![clinic_id, prescription_number, next_revision_number],
+                |row| row.get(0),
+            )?;
+
+        if revision_exists {
+            return Err(DatabaseOpError::ConflictResolution(format!(
+                "Revision {next_revision_number} already exists for prescription {prescription_number} in this clinic."
+            )));
+        }
+
         let new_local_version = local_ver + 1;
         let new_prescription_id = Uuid::new_v4().to_string();
 
         let (encrypted_items, nonce) = encrypt_payload(&dek.key, items_json.as_bytes())?;
 
-        // 1. Mark the previous revision status as SUPERSEDED so it remains an immutable historical record
-        tx.execute(
+        // 1. Mark the previous revision status as SUPERSEDED so it remains an immutable historical record.
+        // Conditional update MUST affect exactly 1 active row. If not, rollback transaction immediately.
+        let rows_affected = tx.execute(
             r#"
             UPDATE local_prescriptions
             SET status = 'SUPERSEDED',
@@ -996,6 +1012,12 @@ impl DbOperations {
             "#,
             params![clinic_id, prescription_id],
         )?;
+
+        if rows_affected != 1 {
+            return Err(DatabaseOpError::ConflictResolution(format!(
+                "Failed to supersede active prescription: expected 1 row affected, got {rows_affected}."
+            )));
+        }
 
         // 2. Insert new immutable revision row with ACTIVE status
         tx.execute(
@@ -7810,6 +7832,141 @@ mod tests {
         let revise_outbox = outbox_batch.iter().find(|o| o.action == "REVISE" && o.entity_type == "PRESCRIPTION").unwrap();
         assert_eq!(revise_outbox.payload["expectedRevisionNumber"], 1);
         assert_eq!(revise_outbox.payload["reasonForRevision"], "Extended antibiotic course and added antipyretic");
+
+        // 10. Attempt to revise Revision 1 a SECOND time after Revision 2 already exists
+        // Must fail because Revision 1 is SUPERSEDED (not ACTIVE) and Revision 2 already exists
+        let rx3_items = r#"[{"id":1,"name":"Azithromycin","formulation":"Tablet","dose":"500mg","frequency":"Once daily","duration":"3 days"}]"#;
+        let second_rev1_attempt = DbOperations::revise_prescription(
+            &mut conn,
+            &dek,
+            clinic_id,
+            &rx1_id,
+            1,
+            rx3_items,
+            "Duplicate revision attempt",
+            doctor_id_2,
+        );
+        assert!(second_rev1_attempt.is_err(), "Revising a SUPERSEDED prescription (Rev 1) must be rejected");
+
+        // 11. Verify invariants: Exactly one Revision 2 exists, Revision 1 remains immutable, Revision 2 remains ACTIVE
+        let all_rxs_after = DbOperations::get_prescriptions(&conn, &dek, clinic_id, Some(&pat_id)).unwrap();
+        assert_eq!(all_rxs_after.len(), 2, "There must still be exactly 2 prescription records");
+        assert_eq!(all_rxs_after[0].id, rx2_id, "Latest record must still be original Revision 2");
+        assert_eq!(all_rxs_after[0].revision_number, 2);
+        assert_eq!(all_rxs_after[0].status, "ACTIVE");
+        assert_eq!(all_rxs_after[1].id, rx1_id, "Previous record must still be Revision 1");
+        assert_eq!(all_rxs_after[1].revision_number, 1);
+        assert_eq!(all_rxs_after[1].status, "SUPERSEDED");
+
+        // 12. Verify no duplicate outbox event was created in local_sync_outbox
+        let total_revise_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM local_sync_outbox WHERE clinic_id = ?1 AND action = 'REVISE' AND entity_type = 'PRESCRIPTION'",
+                params![clinic_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(total_revise_count, 1, "Must have exactly 1 REVISE outbox entry in total");
+    }
+
+    #[test]
+    fn test_prescription_revision_status_validation_and_rollback() {
+        let (mut conn, dek) = setup_test_db();
+        let clinic_id = "clinic_status_check";
+        let doctor_id = "doc_status_1";
+
+        let pat_id = DbOperations::insert_patient(
+            &mut conn,
+            &dek,
+            clinic_id,
+            "P-STAT-101",
+            "Status Patient",
+            "9876543211",
+            "Female",
+            None,
+            28,
+            &[],
+            &[],
+            None,
+        )
+        .unwrap();
+
+        let c_id = DbOperations::insert_consultation(
+            &mut conn,
+            &dek,
+            clinic_id,
+            &pat_id,
+            doctor_id,
+            "2026-11-15",
+            "Routine checkup",
+            "Healthy",
+            None,
+        )
+        .unwrap();
+
+        let rx_items = r#"[{"id":1,"name":"Multivitamin","formulation":"Tablet","dose":"1 daily","frequency":"Once daily","duration":"30 days"}]"#;
+        let rx_id = DbOperations::insert_prescription(
+            &mut conn,
+            &dek,
+            clinic_id,
+            &c_id,
+            &pat_id,
+            doctor_id,
+            "RX-STAT-0001",
+            rx_items,
+        )
+        .unwrap();
+
+        // 1. Manually set status to DISCONTINUED and attempt revision -> must fail
+        conn.execute("UPDATE local_prescriptions SET status = 'DISCONTINUED' WHERE id = ?1", params![rx_id]).unwrap();
+        let discon_res = DbOperations::revise_prescription(
+            &mut conn,
+            &dek,
+            clinic_id,
+            &rx_id,
+            1,
+            rx_items,
+            "Try revise discontinued",
+            doctor_id,
+        );
+        assert!(discon_res.is_err());
+        assert!(discon_res.unwrap_err().to_string().contains("Only ACTIVE prescriptions can be revised"));
+
+        // 2. Manually set status to CANCELLED and attempt revision -> must fail
+        conn.execute("UPDATE local_prescriptions SET status = 'CANCELLED' WHERE id = ?1", params![rx_id]).unwrap();
+        let cancel_res = DbOperations::revise_prescription(
+            &mut conn,
+            &dek,
+            clinic_id,
+            &rx_id,
+            1,
+            rx_items,
+            "Try revise cancelled",
+            doctor_id,
+        );
+        assert!(cancel_res.is_err());
+        assert!(cancel_res.unwrap_err().to_string().contains("Only ACTIVE prescriptions can be revised"));
+
+        // 3. Manually set status to SUPERSEDED and attempt revision -> must fail
+        conn.execute("UPDATE local_prescriptions SET status = 'SUPERSEDED' WHERE id = ?1", params![rx_id]).unwrap();
+        let super_res = DbOperations::revise_prescription(
+            &mut conn,
+            &dek,
+            clinic_id,
+            &rx_id,
+            1,
+            rx_items,
+            "Try revise superseded",
+            doctor_id,
+        );
+        assert!(super_res.is_err());
+        assert!(super_res.unwrap_err().to_string().contains("Only ACTIVE prescriptions can be revised"));
+
+        // Verify no extra prescriptions or outbox records were created
+        let rxs = DbOperations::get_prescriptions(&conn, &dek, clinic_id, Some(&pat_id)).unwrap();
+        assert_eq!(rxs.len(), 1);
+        let outbox = DbOperations::get_pending_outbox_batch(&mut conn, &dek, clinic_id, 10).unwrap();
+        assert_eq!(outbox.iter().filter(|o| o.action == "REVISE").count(), 0);
     }
 
     #[test]

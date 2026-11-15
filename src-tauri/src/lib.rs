@@ -108,6 +108,7 @@ pub fn run() {
             commands::save_local_consultation,
             commands::get_local_consultations,
             commands::save_local_prescription,
+            commands::revise_local_prescription,
             commands::get_local_prescriptions,
             commands::get_sync_outbox_summary,
             commands::get_sync_state,

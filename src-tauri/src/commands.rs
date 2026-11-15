@@ -1739,6 +1739,43 @@ pub fn save_local_prescription(
     .map_err(|e| e.to_string())
 }
 
+#[derive(Deserialize)]
+pub struct RevisePrescriptionArgs {
+    pub clinic_id: String,
+    pub prescription_id: String,
+    pub expected_revision_number: i32,
+    pub items_json: String,
+    pub reason_for_revision: String,
+}
+
+#[tauri::command]
+pub fn revise_local_prescription(
+    state: State<'_, AppState>,
+    args: RevisePrescriptionArgs,
+) -> Result<String, String> {
+    let session = state
+        .session_mgr
+        .validate_session(Some(&args.clinic_id))
+        .map_err(|e| e.to_string())?;
+
+    let verified_doctor_id = session.doctor_id;
+
+    let mut conn = state.db.get_connection();
+    let dek = state.db.get_dek();
+
+    DbOperations::revise_prescription(
+        &mut conn,
+        dek,
+        &args.clinic_id,
+        &args.prescription_id,
+        args.expected_revision_number,
+        &args.items_json,
+        &args.reason_for_revision,
+        &verified_doctor_id,
+    )
+    .map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub fn get_local_prescriptions(
     state: State<'_, AppState>,

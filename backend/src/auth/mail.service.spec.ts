@@ -111,14 +111,17 @@ describe("MailService", () => {
         expect.objectContaining({
           from: "Cliniqo Security <noreply@cliniqo.app>",
           to: "doctor@clinic.com",
-          subject: "Cliniqo Verification Code: 491823",
+          subject: "Your Cliniqo verification code",
           text: expect.stringContaining("491823"),
           html: expect.stringContaining("491823"),
         }),
       )
 
-      // Validate that HTML and text explicitly emphasize 5-minute expiry and single-use
+      // Validate that HTML and text explicitly emphasize 5-minute expiry and single-use,
+      // and that the subject line is generic (no OTP digits) for spam filter deliverability
       const mailCall = mockTransporter.sendMail.mock.calls[0][0]
+      expect(mailCall.subject).toBe("Your Cliniqo verification code")
+      expect(mailCall.subject).not.toContain("491823")
       expect(mailCall.text).toContain("expire in 5 minutes")
       expect(mailCall.html).toContain("5 minutes")
       expect(mailCall.text).toContain("can only be used once")
@@ -307,6 +310,11 @@ describe("MailService", () => {
       // Decode raw to confirm OTP 765432 is contained in MIME
       const decodedMime = Buffer.from(body.raw, "base64url").toString("utf-8")
       expect(decodedMime).toContain("To: patient@example.com")
+      expect(decodedMime).toContain("Date:")
+      // Verify generic subject is used to protect deliverability and avoid spam classification
+      const expectedSubjectB64 = Buffer.from("Your Cliniqo verification code", "utf-8").toString("base64")
+      expect(decodedMime).toContain(`Subject: =?UTF-8?B?${expectedSubjectB64}?=`)
+      expect(decodedMime).not.toContain("765432?=") // Subject must NOT contain OTP digits
       // Check that the text base64 part contains 765432
       const textBase64Match = decodedMime.match(/Content-Type: text\/plain[^\r\n]*\r\nContent-Transfer-Encoding: base64\r\n\r\n([A-Za-z0-9+/=]+)/)
       expect(textBase64Match).toBeTruthy()

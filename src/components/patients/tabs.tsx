@@ -387,6 +387,7 @@ export function PrescriptionsTab({
   prescriptions = [],
   loading = false,
   desktopSession,
+  onViewPrescription,
 }: {
   go: (page: Page) => void
   patient?: Patient
@@ -394,6 +395,7 @@ export function PrescriptionsTab({
   prescriptions?: LocalPrescriptionRecord[]
   loading?: boolean
   desktopSession?: DesktopSessionContext | null
+  onViewPrescription?: (rx: LocalPrescriptionRecord) => void
 }) {
   return (
     <section className="panel record-list">
@@ -421,8 +423,16 @@ export function PrescriptionsTab({
             }
           } catch {}
 
+          const handleClick = () => {
+            if (onViewPrescription) {
+              onViewPrescription(r)
+            } else {
+              go("preview")
+            }
+          }
+
           return (
-            <button key={r.id} onClick={() => go("preview")}>
+            <button key={r.id} onClick={handleClick}>
               <span className="record-icon">
                 <FileText size={18} />
               </span>
@@ -435,8 +445,20 @@ export function PrescriptionsTab({
                   {itemCount === 1 ? "medicine" : "medicines"}
                 </small>
               </span>
-              <StatusPill tone="success">
-                {r.status === "ACTIVE" ? "Finalized" : r.status}
+              <StatusPill
+                tone={
+                  r.status === "ACTIVE"
+                    ? "success"
+                    : r.status === "SUPERSEDED"
+                      ? "info"
+                      : "warning"
+                }
+              >
+                {r.status === "ACTIVE"
+                  ? "Finalized"
+                  : r.status === "SUPERSEDED"
+                    ? "Superseded"
+                    : r.status}
               </StatusPill>
               <ChevronRight size={17} />
             </button>

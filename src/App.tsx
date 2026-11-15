@@ -76,6 +76,28 @@ import {
   type LocalConsultationRecord,
 } from "./desktop/desktop-bridge"
 import stockReportData from "./data/stock-report-18-10-26.json"
+import {
+  resolvePrescriptionPreviewNavigation,
+  resolveBillPreviewNavigation,
+  shouldClearHistoricalPrescriptionOnNavigation,
+  reconstructHistoricalPrescription,
+  computePrescriptionPreviewState,
+  executePrescriptionRevision,
+  type PrescriptionPreviewReturnPage,
+  type BillPreviewReturnPage,
+  type ViewingHistoricalPrescriptionState,
+} from "./routing/prescriptionRouting"
+
+export type { PrescriptionPreviewReturnPage, BillPreviewReturnPage, ViewingHistoricalPrescriptionState }
+
+export interface AppProps {
+  initialPage?: Page
+  initialDesktopSession?: DesktopSessionContext | null
+  initialSelectedPatient?: Patient
+  initialViewingHistoricalPrescription?: ViewingHistoricalPrescriptionState | null
+  initialPrescriptionPreviewReturnPage?: PrescriptionPreviewReturnPage
+  initialPatientProfileTab?: string
+}
 
 const SAMPLE_PREVIEW_PATIENT: Patient = {
   id: "sample-patient-preview",
@@ -167,11 +189,18 @@ const SAMPLE_PREVIEW_BILL: BillData = {
   ],
 }
 
-export default function App() {
-  const [page, setPage] = useState<Page>("login")
+export default function App({
+  initialPage = "login",
+  initialDesktopSession = null,
+  initialSelectedPatient,
+  initialViewingHistoricalPrescription = null,
+  initialPrescriptionPreviewReturnPage = "consultation",
+  initialPatientProfileTab = "Overview",
+}: AppProps = {}) {
+  const [page, setPage] = useState<Page>(initialPage)
   const [desktopSession, setDesktopSession] =
-    useState<DesktopSessionContext | null>(null)
-  const desktopSessionRef = useRef<DesktopSessionContext | null>(null)
+    useState<DesktopSessionContext | null>(initialDesktopSession)
+  const desktopSessionRef = useRef<DesktopSessionContext | null>(initialDesktopSession)
   const [onboardingDoctor, setOnboardingDoctor] = useState<{
     id: string
     email: string
@@ -198,7 +227,8 @@ export default function App() {
     isTauriDesktop() ? [] : initialPatients,
   )
   const [selectedPatient, setSelectedPatient] = useState<Patient>(() =>
-    isTauriDesktop()
+    initialSelectedPatient ||
+    (isTauriDesktop()
       ? {
           id: "PT-INIT",
           name: "No patient selected",
@@ -210,7 +240,7 @@ export default function App() {
           allergies: [],
           conditions: [],
         }
-      : initialPatients[0],
+      : initialPatients[0]),
   )
   const [editingPatient, setEditingPatient] = useState<Patient | null>(null)
   const [patientSaveFeedback, setPatientSaveFeedback] =
@@ -218,15 +248,10 @@ export default function App() {
   const [settingsKey, setSettingsKey] = useState(0)
   const [settingsInitialTab, setSettingsInitialTab] = useState("Doctor profile")
   const [prescriptionPreviewReturnPage, setPrescriptionPreviewReturnPage] =
-    useState<"consultation" | "settings" | "patient-profile">("consultation")
+    useState<PrescriptionPreviewReturnPage>(initialPrescriptionPreviewReturnPage)
   const [viewingHistoricalPrescription, setViewingHistoricalPrescription] =
-    useState<{
-      record: LocalPrescriptionRecord
-      consultationData: ConsultationData
-      vitals: Vitals
-      itemsError?: string | null
-    } | null>(null)
-  const [patientProfileTab, setPatientProfileTab] = useState("Overview")
+    useState<ViewingHistoricalPrescriptionState | null>(initialViewingHistoricalPrescription)
+  const [patientProfileTab, setPatientProfileTab] = useState(initialPatientProfileTab)
   const [billPreviewReturnPage, setBillPreviewReturnPage] =
     useState<"bill-form" | "settings" | "patient-profile">("bill-form")
   const [vitals, setVitals] = useState<Vitals>({
@@ -694,36 +719,25 @@ export default function App() {
     }
 
     if (next === "preview") {
-      if (page === "settings") {
-        setPrescriptionPreviewReturnPage("settings")
-        setSettingsInitialTab("Prescription layout")
+      const { returnPage, clearHistorical, settingsTab } =
+        resolvePrescriptionPreviewNavigation(page, prescriptionPreviewReturnPage)
+      setPrescriptionPreviewReturnPage(returnPage)
+      if (settingsTab) {
+        setSettingsInitialTab(settingsTab)
+      }
+      if (clearHistorical) {
         setViewingHistoricalPrescription(null)
-      } else if (page === "patient-profile") {
-        setPrescriptionPreviewReturnPage("patient-profile")
-      } else if (page === "consultation") {
-        setPrescriptionPreviewReturnPage("consultation")
-        setViewingHistoricalPrescription(null)
-      } else {
-        setPrescriptionPreviewReturnPage((prev) =>
-          prev === "patient-profile" || prev === "settings"
-            ? prev
-            : "consultation",
-        )
       }
     }
-    if (next !== "preview" && next !== "patient-profile") {
+    if (shouldClearHistoricalPrescriptionOnNavigation(next)) {
       setViewingHistoricalPrescription(null)
     }
     if (next === "bill-preview") {
-      if (page === "settings") {
-        setBillPreviewReturnPage("settings")
-        setSettingsInitialTab("Bill layout")
-      } else if (page === "patient-profile") {
-        setBillPreviewReturnPage("patient-profile")
-      } else {
-        setBillPreviewReturnPage((prev) =>
-          prev === "patient-profile" ? "patient-profile" : "bill-form",
-        )
+      const { returnPage, settingsTab } =
+        resolveBillPreviewNavigation(page, billPreviewReturnPage)
+      setBillPreviewReturnPage(returnPage)
+      if (settingsTab) {
+        setSettingsInitialTab(settingsTab)
       }
     }
     if (next === "patient-form") {
@@ -832,26 +846,7 @@ export default function App() {
     const targetPatient = patient || selectedPatient
     setSelectedPatient(targetPatient)
 
-    // 1. Parse medicines from items_json
-    let parsedMedicines: Medicine[] = []
-    let itemsError: string | null = null
-    try {
-      if (rx.items_json && rx.items_json.trim().length > 0) {
-        const parsed = JSON.parse(rx.items_json)
-        if (Array.isArray(parsed)) {
-          parsedMedicines = parsed
-        } else {
-          itemsError = `Prescription record ${rx.prescription_number || rx.id} contains invalid medicine structure (expected a list).`
-        }
-      } else {
-        itemsError = `Prescription record ${rx.prescription_number || rx.id} has no medicine data recorded.`
-      }
-    } catch (e) {
-      console.error("Failed to parse prescription items JSON:", e)
-      itemsError = `Failed to parse medicines for prescription ${rx.prescription_number || rx.id}: invalid JSON.`
-    }
-
-    // 2. Fetch associated consultation to restore diagnosis, chief complaint, vitals, advice
+    // Fetch associated consultation to restore diagnosis, chief complaint, vitals, advice
     let matchedConsultation: LocalConsultationRecord | undefined
     if (isTauriDesktop() && desktopSession?.clinic_id) {
       try {
@@ -869,51 +864,11 @@ export default function App() {
       }
     }
 
-    let parsedVitals: Vitals = {
-      systolic: "",
-      diastolic: "",
-      heartRate: "",
-      spo2: "",
-      temperature: "",
-      height: "",
-      weight: "",
-    }
-    let followUpDate = ""
-    let followUpInstructions = ""
-    let symptomDuration = ""
-
-    if (matchedConsultation?.clinical_snapshot_json) {
-      try {
-        const snapshot = JSON.parse(matchedConsultation.clinical_snapshot_json)
-        if (snapshot.vitals) {
-          parsedVitals = { ...parsedVitals, ...snapshot.vitals }
-        }
-        if (snapshot.followUpDate) followUpDate = snapshot.followUpDate
-        if (snapshot.followUpInstructions)
-          followUpInstructions = snapshot.followUpInstructions
-        if (snapshot.symptomDuration) symptomDuration = snapshot.symptomDuration
-      } catch {}
-    }
-
-    const reconstructedConsultation: ConsultationData = {
-      date: rx.created_at
-        ? rx.created_at.slice(0, 10)
-        : matchedConsultation?.consultation_date ||
-          new Date().toISOString().slice(0, 10),
-      time: rx.created_at
-        ? new Date(rx.created_at).toLocaleTimeString([], {
-            hour: "2-digit",
-            minute: "2-digit",
-            hour12: true,
-          })
-        : "",
-      chiefComplaint: matchedConsultation?.chief_complaint || "",
-      symptomDuration,
-      diagnosis: matchedConsultation?.diagnosis || "",
-      medicines: parsedMedicines,
-      followUpDate,
-      followUpInstructions,
-    }
+    const {
+      consultationData: reconstructedConsultation,
+      vitals: parsedVitals,
+      itemsError,
+    } = reconstructHistoricalPrescription(rx, matchedConsultation)
 
     setViewingHistoricalPrescription({
       record: rx,
@@ -939,34 +894,13 @@ export default function App() {
       )
     }
 
-    const currentRecord = viewingHistoricalPrescription.record
-
-    const newPrescriptionId = await reviseLocalPrescription({
-      clinic_id: desktopSession.clinic_id,
-      prescription_id: currentRecord.id,
-      expected_revision_number: currentRecord.revision_number,
-      items_json: JSON.stringify(medicines),
-      reason_for_revision: reasonForRevision,
+    const newRecord = await executePrescriptionRevision({
+      currentRecord: viewingHistoricalPrescription.record,
+      clinicId: desktopSession.clinic_id,
+      patientId: selectedPatient.id,
+      medicines,
+      reasonForRevision,
     })
-
-    if (!newPrescriptionId) {
-      throw new Error("Failed to revise prescription: no revision ID returned.")
-    }
-
-    // Re-query latest prescriptions to obtain the updated record
-    const updatedList = await getLocalPrescriptions(
-      desktopSession.clinic_id,
-      selectedPatient.id,
-    )
-    const newRecord =
-      updatedList.find((r) => r.id === newPrescriptionId) ||
-      {
-        ...currentRecord,
-        id: newPrescriptionId,
-        revision_number: currentRecord.revision_number + 1,
-        status: "ACTIVE",
-        items_json: JSON.stringify(medicines),
-      } as LocalPrescriptionRecord
 
     // Update the active historical viewing prescription state without touching global consultationData draft
     setViewingHistoricalPrescription({
@@ -1763,10 +1697,10 @@ export default function App() {
       />
     )
   } else if (page === "preview") {
-    const isSamplePreview = prescriptionPreviewReturnPage === "settings"
-    const isHistorical =
-      viewingHistoricalPrescription &&
-      prescriptionPreviewReturnPage === "patient-profile"
+    const { isSamplePreview, isHistorical } = computePrescriptionPreviewState(
+      prescriptionPreviewReturnPage,
+      viewingHistoricalPrescription,
+    )
     content = (
       <PrescriptionPreview
         go={go}
@@ -1775,14 +1709,14 @@ export default function App() {
           isSamplePreview
             ? SAMPLE_PREVIEW_VITALS
             : isHistorical
-              ? viewingHistoricalPrescription.vitals
+              ? viewingHistoricalPrescription!.vitals
               : vitals
         }
         data={
           isSamplePreview
             ? SAMPLE_PREVIEW_CONSULTATION
             : isHistorical
-              ? viewingHistoricalPrescription.consultationData
+              ? viewingHistoricalPrescription!.consultationData
               : consultationData
         }
         bannerVisible={prescriptionBannerVisible}
@@ -1794,13 +1728,13 @@ export default function App() {
         returnPage={prescriptionPreviewReturnPage}
         desktopSession={desktopSession}
         prescriptionRecord={
-          isHistorical ? viewingHistoricalPrescription.record : null
+          isHistorical ? viewingHistoricalPrescription!.record : null
         }
         onRevisePrescription={
           isHistorical ? handleRevisePrescription : undefined
         }
         itemsError={
-          isHistorical ? viewingHistoricalPrescription.itemsError : null
+          isHistorical ? viewingHistoricalPrescription!.itemsError : null
         }
       />
     )

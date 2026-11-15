@@ -37,10 +37,7 @@ import {
 import { cn } from "./utils/cn"
 
 // Components
-import {
-  IconButton,
-  ShortcutGuideModal,
-} from "./components/common"
+import { IconButton, ShortcutGuideModal } from "./components/common"
 import { Sidebar, Logo } from "./components/layout"
 import { Login, Register, Setup } from "./components/auth"
 import { Dashboard } from "./components/dashboard"
@@ -385,7 +382,10 @@ export default function App() {
       if (typeof window !== "undefined" && window.localStorage) {
         const key = `cliniqo_last_patient_seq_${desktopSession?.clinic_id || "default"}`
         window.localStorage.setItem(key, String(effectiveMaxSeq))
-        window.localStorage.setItem("cliniqo_last_patient_seq", String(effectiveMaxSeq))
+        window.localStorage.setItem(
+          "cliniqo_last_patient_seq",
+          String(effectiveMaxSeq),
+        )
       }
     }
   }, [effectiveMaxSeq, maxAllocatedSeq, desktopSession?.clinic_id])
@@ -694,16 +694,37 @@ export default function App() {
     }
 
     if (next === "preview") {
-      const fromSettings = page === "settings"
-      setPrescriptionPreviewReturnPage(
-        fromSettings ? "settings" : "consultation",
-      )
-      if (fromSettings) setSettingsInitialTab("Prescription layout")
+      if (page === "settings") {
+        setPrescriptionPreviewReturnPage("settings")
+        setSettingsInitialTab("Prescription layout")
+        setViewingHistoricalPrescription(null)
+      } else if (page === "patient-profile") {
+        setPrescriptionPreviewReturnPage("patient-profile")
+      } else if (page === "consultation") {
+        setPrescriptionPreviewReturnPage("consultation")
+        setViewingHistoricalPrescription(null)
+      } else {
+        setPrescriptionPreviewReturnPage((prev) =>
+          prev === "patient-profile" || prev === "settings"
+            ? prev
+            : "consultation",
+        )
+      }
+    }
+    if (next !== "preview" && next !== "patient-profile") {
+      setViewingHistoricalPrescription(null)
     }
     if (next === "bill-preview") {
-      const fromSettings = page === "settings"
-      setBillPreviewReturnPage(fromSettings ? "settings" : "bill-form")
-      if (fromSettings) setSettingsInitialTab("Bill layout")
+      if (page === "settings") {
+        setBillPreviewReturnPage("settings")
+        setSettingsInitialTab("Bill layout")
+      } else if (page === "patient-profile") {
+        setBillPreviewReturnPage("patient-profile")
+      } else {
+        setBillPreviewReturnPage((prev) =>
+          prev === "patient-profile" ? "patient-profile" : "bill-form",
+        )
+      }
     }
     if (next === "patient-form") {
       setEditingPatient(
@@ -770,6 +791,7 @@ export default function App() {
       height: "",
       weight: "",
     })
+    setViewingHistoricalPrescription(null)
     setPatientProfileTab("Overview")
     go("patient-profile")
   }
@@ -784,6 +806,7 @@ export default function App() {
     try {
       setSelectedPatient(patient)
       setPatientSaveFeedback(null)
+      setViewingHistoricalPrescription(null)
       setConsultationData(createEmptyConsultationData())
       setVitals({
         systolic: "",
@@ -868,8 +891,7 @@ export default function App() {
         if (snapshot.followUpDate) followUpDate = snapshot.followUpDate
         if (snapshot.followUpInstructions)
           followUpInstructions = snapshot.followUpInstructions
-        if (snapshot.symptomDuration)
-          symptomDuration = snapshot.symptomDuration
+        if (snapshot.symptomDuration) symptomDuration = snapshot.symptomDuration
       } catch {}
     }
 
@@ -908,8 +930,14 @@ export default function App() {
     medicines: Medicine[],
     reasonForRevision: string,
   ) => {
-    if (!viewingHistoricalPrescription?.record) return
-    if (!isTauriDesktop() || !desktopSession?.clinic_id) return
+    if (!viewingHistoricalPrescription?.record) {
+      throw new Error("No active historical prescription selected.")
+    }
+    if (!isTauriDesktop() || !desktopSession?.clinic_id) {
+      throw new Error(
+        "Active clinic session is required to revise prescriptions.",
+      )
+    }
 
     const currentRecord = viewingHistoricalPrescription.record
 
@@ -921,33 +949,35 @@ export default function App() {
       reason_for_revision: reasonForRevision,
     })
 
-    if (newPrescriptionId) {
-      // Re-query latest prescriptions to obtain the updated record
-      const updatedList = await getLocalPrescriptions(
-        desktopSession.clinic_id,
-        selectedPatient.id,
-      )
-      const newRecord =
-        updatedList.find((r) => r.id === newPrescriptionId) ||
-        ({
-          ...currentRecord,
-          id: newPrescriptionId,
-          revision_number: currentRecord.revision_number + 1,
-          status: "ACTIVE",
-          items_json: JSON.stringify(medicines),
-        } as LocalPrescriptionRecord)
-
-      // Update the active historical viewing prescription state without touching global consultationData draft
-      setViewingHistoricalPrescription({
-        record: newRecord,
-        consultationData: {
-          ...viewingHistoricalPrescription.consultationData,
-          medicines,
-        },
-        vitals: viewingHistoricalPrescription.vitals,
-        itemsError: null,
-      })
+    if (!newPrescriptionId) {
+      throw new Error("Failed to revise prescription: no revision ID returned.")
     }
+
+    // Re-query latest prescriptions to obtain the updated record
+    const updatedList = await getLocalPrescriptions(
+      desktopSession.clinic_id,
+      selectedPatient.id,
+    )
+    const newRecord =
+      updatedList.find((r) => r.id === newPrescriptionId) ||
+      {
+        ...currentRecord,
+        id: newPrescriptionId,
+        revision_number: currentRecord.revision_number + 1,
+        status: "ACTIVE",
+        items_json: JSON.stringify(medicines),
+      } as LocalPrescriptionRecord
+
+    // Update the active historical viewing prescription state without touching global consultationData draft
+    setViewingHistoricalPrescription({
+      record: newRecord,
+      consultationData: {
+        ...viewingHistoricalPrescription.consultationData,
+        medicines,
+      },
+      vitals: viewingHistoricalPrescription.vitals,
+      itemsError: null,
+    })
   }
 
   const editPatient = (patient: Patient) => {
@@ -1067,9 +1097,9 @@ export default function App() {
             patient.patientCode ||
             (wasEditing
               ? patient.id
-              : (/^[A-Z]{3}-\d{4}$/.test(patient.id)
-                  ? patient.id
-                  : nextPatientId))
+              : /^[A-Z]{3}-\d{4}$/.test(patient.id)
+                ? patient.id
+                : nextPatientId)
 
           const notesObj = {
             registeredAt: patient.registeredAt,
@@ -1151,7 +1181,10 @@ export default function App() {
           if (typeof window !== "undefined" && window.localStorage) {
             const key = `cliniqo_last_patient_seq_${desktopSession?.clinic_id || "default"}`
             window.localStorage.setItem(key, String(allocatedSeq))
-            window.localStorage.setItem("cliniqo_last_patient_seq", String(allocatedSeq))
+            window.localStorage.setItem(
+              "cliniqo_last_patient_seq",
+              String(allocatedSeq),
+            )
           }
         }
       }
@@ -1731,7 +1764,9 @@ export default function App() {
     )
   } else if (page === "preview") {
     const isSamplePreview = prescriptionPreviewReturnPage === "settings"
-    const isHistorical = viewingHistoricalPrescription && prescriptionPreviewReturnPage === "patient-profile"
+    const isHistorical =
+      viewingHistoricalPrescription &&
+      prescriptionPreviewReturnPage === "patient-profile"
     content = (
       <PrescriptionPreview
         go={go}
@@ -1758,9 +1793,15 @@ export default function App() {
         showAllergyWarning={showAllergyWarning}
         returnPage={prescriptionPreviewReturnPage}
         desktopSession={desktopSession}
-        prescriptionRecord={isHistorical ? viewingHistoricalPrescription.record : null}
-        onRevisePrescription={isHistorical ? handleRevisePrescription : undefined}
-        itemsError={isHistorical ? viewingHistoricalPrescription.itemsError : null}
+        prescriptionRecord={
+          isHistorical ? viewingHistoricalPrescription.record : null
+        }
+        onRevisePrescription={
+          isHistorical ? handleRevisePrescription : undefined
+        }
+        itemsError={
+          isHistorical ? viewingHistoricalPrescription.itemsError : null
+        }
       />
     )
   } else if (page === "bill-form") {

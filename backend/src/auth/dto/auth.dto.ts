@@ -55,6 +55,14 @@ export class RegisterDto {
   @IsOptional()
   @IsString({ message: "Gender must be a string." })
   gender?: string
+
+  @IsOptional()
+  @IsString({ message: "Session type must be a string." })
+  sessionType?: "WEB_STANDARD" | "DESKTOP_PERSISTENT"
+
+  @IsOptional()
+  @IsString({ message: "Device ID must be a string." })
+  deviceId?: string
 }
 
 export class UpdateDoctorProfileDto {
@@ -87,6 +95,14 @@ export class UpdateDoctorProfileDto {
   @IsOptional()
   @IsString({ message: "Gender must be a string." })
   gender?: string
+
+  @IsOptional()
+  @IsString({ message: "Session type must be a string." })
+  sessionType?: "WEB_STANDARD" | "DESKTOP_PERSISTENT"
+
+  @IsOptional()
+  @IsString({ message: "Device ID must be a string." })
+  deviceId?: string
 }
 
 /**
@@ -130,6 +146,14 @@ export class LoginDto {
   @IsNotEmpty({ message: "Password cannot be empty." })
   @MaxLength(128, { message: "Password cannot exceed 128 characters." })
   password: string
+
+  @IsOptional()
+  @IsString({ message: "Session type must be a string." })
+  sessionType?: "WEB_STANDARD" | "DESKTOP_PERSISTENT"
+
+  @IsOptional()
+  @IsString({ message: "Device ID must be a string." })
+  deviceId?: string
 }
 
 export class RefreshTokenDto {
@@ -139,6 +163,14 @@ export class RefreshTokenDto {
     message: "Refresh token must be a 64-character hexadecimal string.",
   })
   refreshToken: string
+
+  @IsOptional()
+  @IsString({ message: "Device ID must be a string." })
+  deviceId?: string
+
+  @IsOptional()
+  @IsString({ message: "Idempotency key must be a string." })
+  idempotencyKey?: string
 }
 
 export class ForgotPasswordDto {

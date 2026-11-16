@@ -75,7 +75,8 @@ impl KeyManager {
         Ok(DatabaseEncryptionKey::new(key))
     }
 
-    /// Securely persists an opaque refresh token using Windows DPAPI encryption
+    /// Securely persists an opaque refresh token using atomic temporary file write,
+    /// fsync, and atomic rename. Also keeps a previous copy in .bak for crash recovery.
     pub fn save_refresh_token(&self, refresh_token: &str) -> Result<(), CryptoError> {
         let trimmed = refresh_token.trim();
         if trimmed.is_empty() {
@@ -88,49 +89,152 @@ impl KeyManager {
             .map_err(|e| CryptoError::KeyStoreError(format!("Failed to create key directory: {e}")))?;
 
         let token_file = self.key_dir.join("refresh_token.protected");
+        let backup_file = self.key_dir.join("refresh_token.protected.bak");
         let protected_bytes = self.protect_data(trimmed.as_bytes())?;
 
-        fs::write(&token_file, &protected_bytes)
-            .map_err(|e| CryptoError::KeyStoreError(format!("Failed to persist protected refresh token: {e}")))?;
+        // 1. If existing protected token file exists, backup before replacement
+        if token_file.exists() {
+            let _ = fs::copy(&token_file, &backup_file);
+        }
 
-        log::info!("Opaque refresh token successfully persisted to secure DPAPI store.");
+        // 2. Write to atomic temporary file in same directory
+        let tmp_filename = format!("refresh_token.tmp.{}", uuid::Uuid::new_v4());
+        let tmp_path = self.key_dir.join(&tmp_filename);
+
+        {
+            use std::io::Write;
+            let mut file = fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&tmp_path)
+                .map_err(|e| CryptoError::KeyStoreError(format!("Failed to create temp token file: {e}")))?;
+
+            file.write_all(&protected_bytes)
+                .map_err(|e| CryptoError::KeyStoreError(format!("Failed to write to temp token file: {e}")))?;
+
+            file.sync_all()
+                .map_err(|e| CryptoError::KeyStoreError(format!("Failed to flush temp token file: {e}")))?;
+        }
+
+        // 3. Atomic rename to destination
+        fs::rename(&tmp_path, &token_file)
+            .map_err(|e| CryptoError::KeyStoreError(format!("Failed to atomically replace protected token file: {e}")))?;
+
+        log::info!("Opaque refresh token successfully persisted to secure DPAPI store via atomic crash-safe write.");
         Ok(())
     }
 
-    /// Loads and decrypts the persisted refresh token, returning None if no token is stored
+    /// Loads and decrypts the persisted refresh token, with automatic recovery from .bak if .protected is corrupted
     pub fn load_refresh_token(&self) -> Result<Option<String>, CryptoError> {
         let token_file = self.key_dir.join("refresh_token.protected");
-        if !token_file.exists() {
-            return Ok(None);
+        let backup_file = self.key_dir.join("refresh_token.protected.bak");
+
+        let try_load_file = |path: &Path| -> Result<Option<String>, CryptoError> {
+            if !path.exists() {
+                return Ok(None);
+            }
+            let protected_bytes = fs::read(path)
+                .map_err(|e| CryptoError::KeyStoreError(format!("Failed to read file {}: {e}", path.display())))?;
+            let mut unprotected = self.unprotect_data(&protected_bytes)?;
+            let token_str = String::from_utf8(unprotected.clone()).map_err(|_| {
+                unprotected.zeroize();
+                CryptoError::KeyStoreError("Corrupted refresh token: invalid UTF-8 encoding".to_string())
+            })?;
+            unprotected.zeroize();
+            Ok(Some(token_str))
+        };
+
+        // Try primary token file
+        let primary_res = try_load_file(&token_file);
+        if let Ok(Some(tok)) = &primary_res {
+            if !tok.trim().is_empty() {
+                return Ok(Some(tok.clone()));
+            }
         }
 
-        let protected_bytes = fs::read(&token_file)
-            .map_err(|e| CryptoError::KeyStoreError(format!("Failed to read protected refresh token: {e}")))?;
+        // If primary was corrupted or missing, attempt recovery from backup store
+        if backup_file.exists() {
+            if let Ok(Some(bak_tok)) = try_load_file(&backup_file) {
+                if !bak_tok.trim().is_empty() {
+                    log::info!("Successfully recovered valid refresh token from backup store.");
+                    let _ = fs::copy(&backup_file, &token_file);
+                    return Ok(Some(bak_tok));
+                }
+            }
+        }
 
-        let mut unprotected = self.unprotect_data(&protected_bytes)?;
-        let token_str = String::from_utf8(unprotected.clone()).map_err(|_| {
-            unprotected.zeroize();
-            CryptoError::KeyStoreError("Corrupted refresh token: invalid UTF-8 encoding".to_string())
-        })?;
+        // If primary failed with corruption/decryption error and backup recovery failed, fail closed
+        if let Err(e) = primary_res {
+            log::error!("Primary refresh token corrupted and backup recovery failed: {e}");
+            return Err(e);
+        }
 
-        unprotected.zeroize();
-        Ok(Some(token_str))
+        Ok(None)
+    }
+
+    /// Returns the stable device identifier for this installation, generating one if not present
+    pub fn get_or_create_device_id(&self) -> Result<String, CryptoError> {
+        fs::create_dir_all(&self.key_dir)
+            .map_err(|e| CryptoError::KeyStoreError(format!("Failed to create key directory: {e}")))?;
+
+        let id_file = self.key_dir.join("device_id.txt");
+        if id_file.exists() {
+            if let Ok(content) = fs::read_to_string(&id_file) {
+                let trimmed = content.trim();
+                if !trimmed.is_empty() {
+                    return Ok(trimmed.to_string());
+                }
+            }
+        }
+
+        let new_id = uuid::Uuid::new_v4().to_string();
+        let tmp_file = self.key_dir.join(format!("device_id.tmp.{}", uuid::Uuid::new_v4()));
+        {
+            use std::io::Write;
+            let mut f = fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&tmp_file)
+                .map_err(|e| CryptoError::KeyStoreError(format!("Failed to create temp device_id file: {e}")))?;
+            f.write_all(new_id.as_bytes())
+                .map_err(|e| CryptoError::KeyStoreError(format!("Failed to write temp device_id: {e}")))?;
+            f.sync_all()
+                .map_err(|e| CryptoError::KeyStoreError(format!("Failed to flush temp device_id: {e}")))?;
+        }
+        fs::rename(&tmp_file, &id_file)
+            .map_err(|e| CryptoError::KeyStoreError(format!("Failed to atomically save device_id: {e}")))?;
+
+        Ok(new_id)
     }
 
     /// Securely zeroes and removes persisted refresh token and active clinic context upon logout
     pub fn clear_refresh_token(&self) -> Result<(), CryptoError> {
         let token_file = self.key_dir.join("refresh_token.protected");
-        if token_file.exists() {
-            // Overwrite file with zeroes before deletion to prevent remnant recovery
-            if let Ok(metadata) = fs::metadata(&token_file) {
-                let len = metadata.len() as usize;
-                let zeroes = vec![0u8; len];
-                let _ = fs::write(&token_file, &zeroes);
+        let backup_file = self.key_dir.join("refresh_token.protected.bak");
+
+        for file in [&token_file, &backup_file] {
+            if file.exists() {
+                // Overwrite file with zeroes before deletion to prevent remnant recovery
+                if let Ok(metadata) = fs::metadata(file) {
+                    let len = metadata.len() as usize;
+                    let zeroes = vec![0u8; len];
+                    let _ = fs::write(file, &zeroes);
+                }
+                let _ = fs::remove_file(file);
             }
-            fs::remove_file(&token_file)
-                .map_err(|e| CryptoError::KeyStoreError(format!("Failed to remove protected refresh token: {e}")))?;
-            log::info!("Persisted refresh token securely zeroized and removed.");
         }
+
+        // Clean up any stray temporary files
+        if let Ok(entries) = fs::read_dir(&self.key_dir) {
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                if name.starts_with("refresh_token.tmp.") {
+                    let _ = fs::remove_file(entry.path());
+                }
+            }
+        }
+
+        log::info!("Persisted refresh token securely zeroized and removed.");
         let _ = self.clear_active_clinic_id();
         Ok(())
     }
@@ -495,6 +599,54 @@ mod tests {
 
         let loaded = key_mgr.load_backend_public_key().expect("load public key succeeds");
         assert_eq!(loaded, Some((2, pem.to_string())));
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_refresh_token_backup_recovery_on_corruption() {
+        let temp_dir = std::env::temp_dir().join(format!("cliniqo_test_bak_rec_{}", uuid::Uuid::new_v4()));
+        let key_mgr = KeyManager::new(&temp_dir);
+
+        // 1. Save first valid token
+        key_mgr.save_refresh_token("token_alpha_1").expect("save token alpha succeeds");
+
+        // 2. Save second token - this promotes alpha to .protected.bak
+        key_mgr.save_refresh_token("token_beta_2").expect("save token beta succeeds");
+
+        let keys_dir = temp_dir.join("keys");
+        let token_file = keys_dir.join("refresh_token.protected");
+        let backup_file = keys_dir.join("refresh_token.protected.bak");
+        assert!(token_file.exists());
+        assert!(backup_file.exists());
+
+        // 3. Corrupt primary token file
+        fs::write(&token_file, b"corrupted_primary_data").unwrap();
+
+        // 4. load_refresh_token should automatically recover alpha from backup
+        let recovered = key_mgr.load_refresh_token().expect("recovery from backup succeeds");
+        assert_eq!(recovered, Some("token_alpha_1".to_string()));
+
+        // 5. Subsequent load should find restored primary file
+        let reloaded = key_mgr.load_refresh_token().expect("load from restored file succeeds");
+        assert_eq!(reloaded, Some("token_alpha_1".to_string()));
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_device_id_generation_and_persistence() {
+        let temp_dir = std::env::temp_dir().join(format!("cliniqo_test_dev_id_{}", uuid::Uuid::new_v4()));
+        let key_mgr = KeyManager::new(&temp_dir);
+
+        // 1. Initial generation
+        let id1 = key_mgr.get_or_create_device_id().expect("generate device id");
+        assert!(!id1.trim().is_empty());
+        assert!(uuid::Uuid::parse_str(&id1).is_ok(), "device id must be valid UUID");
+
+        // 2. Subsequent load must return identical stable device ID
+        let id2 = key_mgr.get_or_create_device_id().expect("read existing device id");
+        assert_eq!(id1, id2, "device id must remain stable across calls");
 
         let _ = fs::remove_dir_all(&temp_dir);
     }

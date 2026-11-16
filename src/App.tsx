@@ -58,6 +58,7 @@ import {
   getDesktopSession,
   hasPersistedRefreshToken,
   refreshDesktopSession,
+  restoreOfflineDesktopSession,
   logoutDesktopSession,
   getLocalPatients,
   getNextPatientCode,
@@ -567,11 +568,54 @@ export default function App({
     if (!isTauriDesktop()) return
 
     let mounted = true
+
+    const applyRestoredSession = async (restored: {
+      session: DesktopSessionContext
+      clinics: any[]
+      active_clinic_id: string
+    }) => {
+      desktopSessionRef.current = restored.session
+      setDesktopSession(restored.session)
+      if (restored.clinics.length > 0 && restored.session.clinic_id) {
+        try {
+          const localPatients = await getLocalPatients(
+            restored.session.clinic_id,
+          )
+          if (localPatients && localPatients.length > 0) {
+            const mapped = localPatients.map(mapLocalRecordToPatient)
+            setPatientRecords(mapped)
+            setSelectedPatient(mapped[0])
+          } else {
+            setPatientRecords([])
+          }
+        } catch (err) {
+          console.warn("[Cliniqo Desktop] Failed to load local patients:", err)
+        }
+        setPage((curr) =>
+          curr === "login" || curr === "register" ? "dashboard" : curr,
+        )
+        loadAndMergeLocalFormulary(restored.session.clinic_id).catch(() => {})
+        startCatalogueSync().catch(() => {})
+      } else {
+        // Incomplete onboarding: restored refresh token valid, but 0 clinics -> resume setup!
+        const doctorData = {
+          id: restored.session.doctor_id,
+          email: restored.session.doctor_email,
+          fullName: restored.session.doctor_name,
+          accessToken: "",
+        }
+        onboardingDoctorRef.current = doctorData
+        setOnboardingDoctor(doctorData)
+        setPage("setup")
+      }
+      setIsRestoringSession(false)
+    }
+
     async function bootstrapDesktopSession() {
       try {
         const active = await getDesktopSession()
         const nowSec = Math.floor(Date.now() / 1000)
-        if (active && active.expires_at > nowSec) {
+        if (active && (active.is_offline || active.expires_at > nowSec)) {
           if (mounted) {
             desktopSessionRef.current = active
             setDesktopSession(active)
@@ -617,46 +661,14 @@ export default function App({
         if (hasToken) {
           const restored = await refreshDesktopSession()
           if (restored && mounted) {
-            desktopSessionRef.current = restored.session
-            setDesktopSession(restored.session)
-            if (restored.clinics.length > 0 && restored.session.clinic_id) {
-              try {
-                const localPatients = await getLocalPatients(
-                  restored.session.clinic_id,
-                )
-                if (localPatients && localPatients.length > 0) {
-                  const mapped = localPatients.map(mapLocalRecordToPatient)
-                  setPatientRecords(mapped)
-                  setSelectedPatient(mapped[0])
-                } else {
-                  setPatientRecords([])
-                }
-              } catch (err) {
-                console.warn(
-                  "[Cliniqo Desktop] Failed to load local patients:",
-                  err,
-                )
-              }
-              setPage((curr) =>
-                curr === "login" || curr === "register" ? "dashboard" : curr,
-              )
-              loadAndMergeLocalFormulary(restored.session.clinic_id).catch(
-                () => {},
-              )
-              startCatalogueSync().catch(() => {})
-            } else {
-              // Incomplete onboarding: restored refresh token valid, but 0 clinics -> resume setup!
-              const doctorData = {
-                id: restored.session.doctor_id,
-                email: restored.session.doctor_email,
-                fullName: restored.session.doctor_name,
-                accessToken: "",
-              }
-              onboardingDoctorRef.current = doctorData
-              setOnboardingDoctor(doctorData)
-              setPage("setup")
-            }
-            setIsRestoringSession(false)
+            await applyRestoredSession(restored)
+            return
+          }
+
+          // Fallback to offline session restoration if online refresh couldn't proceed
+          const offlineRestored = await restoreOfflineDesktopSession()
+          if (offlineRestored && mounted) {
+            await applyRestoredSession(offlineRestored)
             return
           }
         }
@@ -672,11 +684,22 @@ export default function App({
       } catch (err) {
         console.warn("[Cliniqo Desktop] Session bootstrap error:", err)
         if (mounted) {
-          desktopSessionRef.current = null
-          setDesktopSession(null)
-          onboardingDoctorRef.current = null
-          setOnboardingDoctor(null)
-          setPage("login")
+          try {
+            const offlineRestored = await restoreOfflineDesktopSession()
+            if (offlineRestored) {
+              await applyRestoredSession(offlineRestored)
+              return
+            }
+          } catch {}
+
+          const hasToken = await hasPersistedRefreshToken().catch(() => false)
+          if (!hasToken) {
+            desktopSessionRef.current = null
+            setDesktopSession(null)
+            onboardingDoctorRef.current = null
+            setOnboardingDoctor(null)
+            setPage("login")
+          }
           setIsRestoringSession(false)
         }
       }
@@ -687,6 +710,28 @@ export default function App({
       mounted = false
     }
   }, [])
+
+  // Proactive background session renewal before access token expiry
+  useEffect(() => {
+    if (!isTauriDesktop()) return
+    const interval = setInterval(async () => {
+      const current = desktopSessionRef.current || desktopSession
+      if (!current || current.is_offline) return
+      const nowSec = Math.floor(Date.now() / 1000)
+      if (current.expires_at - nowSec < 180) {
+        try {
+          const refreshed = await refreshDesktopSession()
+          if (refreshed?.session) {
+            desktopSessionRef.current = refreshed.session
+            setDesktopSession(refreshed.session)
+          }
+        } catch (e) {
+          console.warn("[Cliniqo Desktop] Background proactive refresh:", e)
+        }
+      }
+    }, 60000)
+    return () => clearInterval(interval)
+  }, [desktopSession])
 
   useEffect(() => {
     document.documentElement.classList.toggle("dark", darkMode)

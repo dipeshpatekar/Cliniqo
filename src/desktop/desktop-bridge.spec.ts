@@ -1245,4 +1245,83 @@ describe("Desktop Bridge (Tauri 2 Frontend Integration)", () => {
       expect(result.status_message).toContain("preserved")
     })
   })
+
+  describe("Persistent Desktop Authentication Bridge", () => {
+    it("restoreOfflineDesktopSession invokes native Tauri command in desktop mode", async () => {
+      win.__TAURI_INTERNALS__ = {}
+      const mockOfflineResult = {
+        session: {
+          doctor_id: "doc_persist_1",
+          clinic_id: "clinic_persist_1",
+          doctor_email: "persist@clinic.com",
+          doctor_name: "Dr. Persistent",
+          role: "OWNER",
+          expires_at: Math.floor(Date.now() / 1000) + 31536000,
+          is_offline: true,
+        },
+        clinics: [
+          {
+            id: "clinic_persist_1",
+            name: "Persistent Clinic",
+            slug: "persistent-clinic",
+            role: "OWNER",
+            status: "ACTIVE",
+          },
+        ],
+        active_clinic_id: "clinic_persist_1",
+      }
+
+      vi.doMock("@tauri-apps/api/core", () => ({
+        invoke: vi.fn().mockImplementation((cmd: string) => {
+          if (cmd === "restore_offline_desktop_session") {
+            return Promise.resolve(mockOfflineResult)
+          }
+          return Promise.resolve(null)
+        }),
+      }))
+
+      const { restoreOfflineDesktopSession } = await import("./desktop-bridge")
+      const result = await restoreOfflineDesktopSession()
+
+      expect(result).toEqual(mockOfflineResult)
+      expect(result?.session.is_offline).toBe(true)
+      vi.doUnmock("@tauri-apps/api/core")
+    })
+
+    it("refreshDesktopSession falls back to offline session when network fails", async () => {
+      win.__TAURI_INTERNALS__ = {}
+      const mockOfflineResult = {
+        session: {
+          doctor_id: "doc_persist_1",
+          clinic_id: "clinic_persist_1",
+          doctor_email: "persist@clinic.com",
+          doctor_name: "Dr. Persistent",
+          role: "OWNER",
+          expires_at: Math.floor(Date.now() / 1000) + 31536000,
+          is_offline: true,
+        },
+        clinics: [],
+        active_clinic_id: "clinic_persist_1",
+      }
+
+      vi.doMock("@tauri-apps/api/core", () => ({
+        invoke: vi.fn().mockImplementation((cmd: string) => {
+          if (cmd === "refresh_desktop_session") {
+            return Promise.reject("Network error: failed to resolve host")
+          }
+          if (cmd === "restore_offline_desktop_session") {
+            return Promise.resolve(mockOfflineResult)
+          }
+          return Promise.resolve(null)
+        }),
+      }))
+
+      const { refreshDesktopSession } = await import("./desktop-bridge")
+      const result = await refreshDesktopSession()
+
+      expect(result).toEqual(mockOfflineResult)
+      expect(result?.session.is_offline).toBe(true)
+      vi.doUnmock("@tauri-apps/api/core")
+    })
+  })
 })

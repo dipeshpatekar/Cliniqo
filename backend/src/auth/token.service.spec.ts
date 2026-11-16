@@ -10,7 +10,7 @@ import {
   normalizePemKey,
 } from "./token.service.js"
 import { ConfigService } from "../config/config.service.js"
-import { DoctorStatus } from "./auth.constants.js"
+import { DoctorStatus, SessionType } from "./auth.constants.js"
 
 describe("TokenService", () => {
   let tokenService: TokenService
@@ -765,6 +765,216 @@ describe("TokenService", () => {
             { deviceId: "   ", idempotencyKey: testIdempotencyKey },
           ),
         ).rejects.toThrow("Potential token reuse detected")
+      })
+    })
+
+    describe("MongoDB findOneAndUpdate CAS path", () => {
+      const casDeviceId = "win-desktop-device-cas-1"
+      const casIdempotencyKey = "client-cas-idempotency-key-12345"
+
+      it("should handle two concurrent refresh requests via atomic CAS without revoking family", async () => {
+        const initialToken = "a1b2c3d4".repeat(8)
+        const initialHash = hashOpaqueToken(initialToken)
+        const familyId = "fam-concurrent-cas-test"
+
+        const activeDoctor = {
+          _id: doctorId,
+          email: "dr.cas@clinic.com",
+          fullName: "Dr. CAS Concurrency",
+          status: DoctorStatus.ACTIVE,
+        }
+        mockDoctorModel.findById.mockResolvedValue(activeDoctor)
+
+        // In-memory simulation of MongoDB collection
+        const dbSessions = new Map<string, any>()
+        dbSessions.set(initialHash, {
+          doctorId,
+          familyId,
+          tokenHash: initialHash,
+          sessionType: SessionType.DESKTOP_PERSISTENT,
+          deviceId: casDeviceId,
+          isRevoked: false,
+          revokedAt: null,
+          replacedByTokenHash: null,
+          rotationReceiptHash: null,
+          encryptedSuccessorToken: null,
+        })
+
+        mockSessionModel.findOne = vi.fn().mockImplementation(async (query: any) => {
+          if (query.tokenHash) {
+            const doc = dbSessions.get(query.tokenHash)
+            if (!doc) return null
+            if (query.familyId && doc.familyId !== query.familyId) return null
+            if (query.isRevoked !== undefined && doc.isRevoked !== query.isRevoked) return null
+            return { ...doc }
+          }
+          return null
+        })
+
+        // Atomic CAS simulation: matches only if { tokenHash, isRevoked: false }
+        mockSessionModel.findOneAndUpdate = vi.fn().mockImplementation(async (filter: any, update: any) => {
+          const doc = dbSessions.get(filter.tokenHash)
+          if (!doc) return null
+          if (filter.isRevoked !== undefined && doc.isRevoked !== filter.isRevoked) {
+            return null // CAS failed: another request already updated/revoked it
+          }
+          const previousState = { ...doc }
+          if (update.$set) {
+            Object.assign(doc, update.$set)
+          }
+          return previousState
+        })
+
+        mockSessionModel.create = vi.fn().mockImplementation(async (doc: any) => {
+          const created = { ...doc, isRevoked: false }
+          dbSessions.set(doc.tokenHash, created)
+          return created
+        })
+
+        // Fire two concurrent refresh requests with the same token, deviceId and idempotencyKey
+        const [resultA, resultB] = await Promise.all([
+          tokenService.rotateRefreshSession(
+            initialToken,
+            { userAgent: "ClientA/1.0", ipAddress: "127.0.0.1" },
+            { deviceId: casDeviceId, idempotencyKey: casIdempotencyKey },
+          ),
+          tokenService.rotateRefreshSession(
+            initialToken,
+            { userAgent: "ClientB/1.0", ipAddress: "127.0.0.1" },
+            { deviceId: casDeviceId, idempotencyKey: casIdempotencyKey },
+          ),
+        ])
+
+        // 1. Both requests must receive the exact same rotated successor refresh token
+        expect(resultA.refreshToken).toBeDefined()
+        expect(resultB.refreshToken).toBeDefined()
+        expect(resultA.refreshToken).toBe(resultB.refreshToken)
+
+        // 2. Both requests must receive valid access tokens
+        expect(resultA.accessToken).toBeDefined()
+        expect(resultB.accessToken).toBeDefined()
+
+        // 3. findOneAndUpdate was called by both requests (one succeeded, one failed CAS)
+        expect(mockSessionModel.findOneAndUpdate).toHaveBeenCalledTimes(2)
+
+        // 4. Exactly one successor session document was created in the database
+        expect(mockSessionModel.create).toHaveBeenCalledTimes(1)
+
+        // 5. Successor document in DB is active and belongs to the same family and device
+        const successorHash = hashOpaqueToken(resultA.refreshToken)
+        const successorDoc = dbSessions.get(successorHash)
+        expect(successorDoc).toBeDefined()
+        expect(successorDoc.isRevoked).toBe(false)
+        expect(successorDoc.familyId).toBe(familyId)
+        expect(successorDoc.deviceId).toBe(casDeviceId)
+
+        // 6. Session family was NOT revoked (no false token-reuse detection)
+        expect(mockSessionModel.updateMany).not.toHaveBeenCalled()
+      })
+
+      it("should recover from successor-creation failure right after findOneAndUpdate CAS update upon client retry", async () => {
+        const initialToken = "e5f6a7b8".repeat(8)
+        const initialHash = hashOpaqueToken(initialToken)
+        const familyId = "fam-cas-crash-recovery"
+
+        const activeDoctor = {
+          _id: doctorId,
+          email: "dr.fault@clinic.com",
+          fullName: "Dr. Fault Injection",
+          status: DoctorStatus.ACTIVE,
+        }
+        mockDoctorModel.findById.mockResolvedValue(activeDoctor)
+
+        const dbSessions = new Map<string, any>()
+        dbSessions.set(initialHash, {
+          doctorId,
+          familyId,
+          tokenHash: initialHash,
+          sessionType: SessionType.DESKTOP_PERSISTENT,
+          deviceId: casDeviceId,
+          isRevoked: false,
+          revokedAt: null,
+          replacedByTokenHash: null,
+          rotationReceiptHash: null,
+          encryptedSuccessorToken: null,
+        })
+
+        mockSessionModel.findOne = vi.fn().mockImplementation(async (query: any) => {
+          if (query.tokenHash) {
+            const doc = dbSessions.get(query.tokenHash)
+            if (!doc) return null
+            if (query.familyId && doc.familyId !== query.familyId) return null
+            if (query.isRevoked !== undefined && doc.isRevoked !== query.isRevoked) return null
+            return { ...doc }
+          }
+          return null
+        })
+
+        mockSessionModel.findOneAndUpdate = vi.fn().mockImplementation(async (filter: any, update: any) => {
+          const doc = dbSessions.get(filter.tokenHash)
+          if (!doc) return null
+          if (filter.isRevoked !== undefined && doc.isRevoked !== filter.isRevoked) {
+            return null
+          }
+          const previousState = { ...doc }
+          if (update.$set) {
+            Object.assign(doc, update.$set)
+          }
+          return previousState
+        })
+
+        // FAULT INJECTION: Simulate failure right after CAS update during sessionModel.create
+        // (e.g., database connection reset, out-of-memory, or app crash)
+        let createAttempt = 0
+        mockSessionModel.create = vi.fn().mockImplementation(async (doc: any) => {
+          createAttempt++
+          if (createAttempt === 1) {
+            throw new Error("MongoDB network timeout during successor session create")
+          }
+          const created = { ...doc, isRevoked: false }
+          dbSessions.set(doc.tokenHash, created)
+          return created
+        })
+
+        // 1. Initial attempt fails due to injected error on create
+        await expect(
+          tokenService.rotateRefreshSession(
+            initialToken,
+            undefined,
+            { deviceId: casDeviceId, idempotencyKey: casIdempotencyKey },
+          ),
+        ).rejects.toThrow("MongoDB network timeout during successor session create")
+
+        // At this point: old token is marked revoked with receipt in DB, but successor was NOT saved!
+        const oldDocAfterCrash = dbSessions.get(initialHash)
+        expect(oldDocAfterCrash.isRevoked).toBe(true)
+        expect(oldDocAfterCrash.replacedByTokenHash).toBeDefined()
+        expect(oldDocAfterCrash.rotationReceiptHash).toBeDefined()
+        expect(oldDocAfterCrash.encryptedSuccessorToken).toBeDefined()
+        // Confirm no successor document in DB
+        expect(dbSessions.get(oldDocAfterCrash.replacedByTokenHash)).toBeUndefined()
+
+        // 2. Client retries (e.g. after network restore or application restart) with exact same credentials
+        const retryResult = await tokenService.rotateRefreshSession(
+          initialToken,
+          undefined,
+          { deviceId: casDeviceId, idempotencyKey: casIdempotencyKey },
+        )
+
+        // 3. Retry succeeds and recovers the exact successor token matching the CAS receipt
+        expect(retryResult.refreshToken).toBeDefined()
+        expect(hashOpaqueToken(retryResult.refreshToken)).toBe(oldDocAfterCrash.replacedByTokenHash)
+        expect(retryResult.accessToken).toBeDefined()
+
+        // 4. Successor document was created during recovery and is unrevoked
+        const successorDoc = dbSessions.get(oldDocAfterCrash.replacedByTokenHash)
+        expect(successorDoc).toBeDefined()
+        expect(successorDoc.isRevoked).toBe(false)
+        expect(successorDoc.familyId).toBe(familyId)
+        expect(successorDoc.deviceId).toBe(casDeviceId)
+
+        // 5. Family was NOT revoked
+        expect(mockSessionModel.updateMany).not.toHaveBeenCalled()
       })
     })
   })

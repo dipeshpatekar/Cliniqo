@@ -556,7 +556,7 @@ mod tests {
         };
 
         // Export one-click backup
-        let export_res = BackupManager::export_backup(&db, clinic_id, None, None)
+        let export_res = BackupManager::export_backup(&db, clinic_id, None, Some(&temp_dir.join("Documents")))
             .expect("Export backup succeeds");
 
         assert!(export_res.success);
@@ -631,7 +631,7 @@ mod tests {
         }
 
         // Export password-protected backup
-        let export_res = BackupManager::export_backup(&db, clinic_id, Some(passphrase), None)
+        let export_res = BackupManager::export_backup(&db, clinic_id, Some(passphrase), Some(&temp_dir.join("Documents")))
             .expect("Export succeeds");
 
         let backup_path = export_res.backup_file_path.unwrap();
@@ -658,7 +658,7 @@ mod tests {
         let (db, temp_dir) = setup_test_db("cliniqo_test_backup_tamper");
         let clinic_id = "clinic_gamma";
 
-        let export_res = BackupManager::export_backup(&db, clinic_id, None, None).unwrap();
+        let export_res = BackupManager::export_backup(&db, clinic_id, None, Some(&temp_dir.join("Documents"))).unwrap();
         let backup_path = export_res.backup_file_path.unwrap();
         let mut backup_bytes = fs::read(&backup_path).unwrap();
 
@@ -709,7 +709,7 @@ mod tests {
         }
 
         // Export backup
-        let export_res = BackupManager::export_backup(&db, clinic_id, None, None).unwrap();
+        let export_res = BackupManager::export_backup(&db, clinic_id, None, Some(&temp_dir.join("Documents"))).unwrap();
         assert_eq!(export_res.manifest.patients_count, 1);
         assert_eq!(export_res.manifest.outbox_count, 1);
 

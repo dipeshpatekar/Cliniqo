@@ -338,6 +338,14 @@ export function PatientForm({
                   </div>
                   <p style={{ margin: 0, fontSize: "13px", opacity: 0.9 }}>
                     {saveError.message}
+                    {saveError.sqlite_error_code &&
+                      !saveError.message.includes(
+                        saveError.sqlite_error_code,
+                      ) && (
+                        <span style={{ marginLeft: "4px", opacity: 0.8 }}>
+                          (Code: {saveError.sqlite_error_code})
+                        </span>
+                      )}
                     {saveError.category === "DATABASE_BUSY" &&
                       " The database was busy syncing. Click Retry to complete your save."}
                   </p>

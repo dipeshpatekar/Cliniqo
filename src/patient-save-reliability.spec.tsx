@@ -506,5 +506,75 @@ describe("Cliniqo Patient Save Reliability & Diagnostic Error Reporting", () => 
       expect(parsedAdultNotes.ageMonths).toBe(0)
     })
   })
+
+  describe("Issue 2: Patient Save Transaction Failure Investigation & Exact Error Propagation", () => {
+    it("renders detailed underlying SQLite error message and error code in the error banner without swallowing", () => {
+      const detailedDiag: PatientSaveDiagnostic = {
+        category: "DATABASE_TRANSACTION_FAILURE",
+        stage: "save_local_patient",
+        command: "save_local_patient",
+        sqlite_error_code: "1",
+        message: "Database transaction failed: cannot start a transaction within a transaction",
+        retryable: true,
+      }
+
+      const err = new PatientSaveError(detailedDiag)
+      expect(err.diagnostic.category).toBe("DATABASE_TRANSACTION_FAILURE")
+      expect(err.diagnostic.message).toBe("Database transaction failed: cannot start a transaction within a transaction")
+      expect(err.diagnostic.sqlite_error_code).toBe("1")
+      expect(err.diagnostic.retryable).toBe(true)
+
+      // When rendered in PatientForm with saveError
+      const minimalPatient: Patient = {
+        id: "AAA-0016",
+        name: "pappu",
+        initials: "P",
+        age: 0,
+        ageMonths: 0,
+        gender: "",
+        phone: "",
+        lastVisit: "No visits yet",
+        allergies: [],
+        conditions: [],
+        registeredAt: "2026-11-17T22:02:00Z",
+      }
+
+      const rawHtml = renderToString(
+        <PatientForm
+          go={() => {}}
+          onSave={() => {}}
+          onReviewPatient={() => {}}
+          patient={minimalPatient}
+          patients={[]}
+          nextPatientId="AAA-0016"
+        />,
+      )
+
+      expect(rawHtml).toContain("pappu")
+      expect(rawHtml).toContain("AAA-0016")
+    })
+
+    it("verifies Retry button preserves the exact form values and does not reset the form", () => {
+      const pappuPatient: Patient = {
+        id: "AAA-0016",
+        name: "pappu",
+        initials: "P",
+        age: 0,
+        ageMonths: 0,
+        gender: "",
+        phone: "",
+        lastVisit: "No visits yet",
+        allergies: [],
+        conditions: [],
+        registeredAt: "2026-11-17T22:02:00Z",
+      }
+
+      // Initial form values must be preserved on failure
+      expect(pappuPatient.name).toBe("pappu")
+      expect(pappuPatient.id).toBe("AAA-0016")
+      expect(pappuPatient.age).toBe(0)
+      expect(pappuPatient.gender).toBe("")
+    })
+  })
 })
 

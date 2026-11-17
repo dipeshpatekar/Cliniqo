@@ -125,13 +125,15 @@ impl DbOperations {
         };
 
         let mut max_seq = counter_seq;
-        let mut stmt = conn.prepare("SELECT patient_code FROM local_patients WHERE clinic_id = ?1")?;
-        let rows = stmt.query_map(params![clinic_id], |row| row.get::<_, String>(0))?;
-        for r in rows {
-            let code = r?;
-            if let Some(parsed) = Self::parse_sequential_patient_id(&code) {
-                if parsed > max_seq {
-                    max_seq = parsed;
+        {
+            let mut stmt = conn.prepare("SELECT patient_code FROM local_patients WHERE clinic_id = ?1")?;
+            let rows = stmt.query_map(params![clinic_id], |row| row.get::<_, String>(0))?;
+            for r in rows {
+                let code = r?;
+                if let Some(parsed) = Self::parse_sequential_patient_id(&code) {
+                    if parsed > max_seq {
+                        max_seq = parsed;
+                    }
                 }
             }
         }
@@ -152,13 +154,15 @@ impl DbOperations {
         };
 
         let mut max_seq = counter_seq;
-        let mut stmt = tx.prepare("SELECT patient_code FROM local_patients WHERE clinic_id = ?1")?;
-        let rows = stmt.query_map(params![clinic_id], |row| row.get::<_, String>(0))?;
-        for r in rows {
-            let code = r?;
-            if let Some(parsed) = Self::parse_sequential_patient_id(&code) {
-                if parsed > max_seq {
-                    max_seq = parsed;
+        {
+            let mut stmt = tx.prepare("SELECT patient_code FROM local_patients WHERE clinic_id = ?1")?;
+            let rows = stmt.query_map(params![clinic_id], |row| row.get::<_, String>(0))?;
+            for r in rows {
+                let code = r?;
+                if let Some(parsed) = Self::parse_sequential_patient_id(&code) {
+                    if parsed > max_seq {
+                        max_seq = parsed;
+                    }
                 }
             }
         }
@@ -194,6 +198,11 @@ impl DbOperations {
         sensitive_notes: Option<&str>,
         _client_mutation_id: Option<&str>,
     ) -> Result<SavePatientResult, DatabaseOpError> {
+        if !conn.is_autocommit() {
+            log::warn!("insert_patient_ext: active uncommitted transaction detected on connection; rolling back to clean state.");
+            let _ = conn.execute_batch("ROLLBACK;");
+        }
+
         let candidate = patient_code.trim();
         let tx = conn.transaction()?;
 
@@ -234,11 +243,26 @@ impl DbOperations {
             false
         };
 
-        let effective_code = if is_placeholder || candidate_in_use {
+        let mut effective_code = if is_placeholder || candidate_in_use {
             Self::allocate_next_patient_code_tx(&tx, clinic_id)?
         } else {
             candidate.to_string()
         };
+
+        // Guarantee effective_code is strictly unique and non-colliding
+        let mut collision_resolutions = 0;
+        while collision_resolutions < 20 {
+            let in_use: bool = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM local_patients WHERE clinic_id = ?1 AND patient_code = ?2)",
+                params![clinic_id, &effective_code],
+                |row| row.get(0),
+            )?;
+            if !in_use {
+                break;
+            }
+            effective_code = Self::allocate_next_patient_code_tx(&tx, clinic_id)?;
+            collision_resolutions += 1;
+        }
 
         // Advance sequential counter so counter tracks maximum allocated ID
         if let Some(seq) = Self::parse_sequential_patient_id(&effective_code) {
@@ -369,6 +393,11 @@ impl DbOperations {
         let demo_bytes = serde_json::to_vec(&demographics)?;
         let (encrypted_demographics, demo_nonce) = encrypt_payload(&dek.key, &demo_bytes)?;
 
+        if !conn.is_autocommit() {
+            log::warn!("update_patient: active uncommitted transaction detected on connection; rolling back to clean state.");
+            let _ = conn.execute_batch("ROLLBACK;");
+        }
+
         let tx = conn.transaction()?;
 
         let current_local_ver: i32 = match tx.query_row(
@@ -418,6 +447,11 @@ impl DbOperations {
         clinic_id: &str,
         patient_id: &str,
     ) -> Result<(), DatabaseOpError> {
+        if !conn.is_autocommit() {
+            log::warn!("delete_patient: active uncommitted transaction detected on connection; rolling back to clean state.");
+            let _ = conn.execute_batch("ROLLBACK;");
+        }
+
         let tx = conn.transaction()?;
 
         let actual_id: String = tx.query_row(
@@ -8686,5 +8720,188 @@ mod tests {
 
         let result = DbOperations::get_next_patient_code(&mut conn, clinic_id);
         assert!(matches!(result, Err(DatabaseOpError::Sqlite(_))));
+    }
+
+    #[test]
+    fn test_insert_patient_dangling_transaction_recovery() {
+        let (mut conn, dek) = setup_test_db();
+        let clinic_id = "clinic_tx_recovery";
+
+        // Simulate an interrupted or dirty connection state where a transaction was started but never committed
+        conn.execute_batch("BEGIN DEFERRED;").unwrap();
+        assert!(!conn.is_autocommit(), "Connection should have active transaction");
+
+        // insert_patient_ext must detect the active transaction, rollback to clean state, and succeed
+        let res = DbOperations::insert_patient_ext(
+            &mut conn,
+            &dek,
+            clinic_id,
+            "AAA-0016",
+            "pappu",
+            "",
+            "",
+            None,
+            0,
+            &[],
+            &[],
+            Some(r#"{"registeredAt":"2026-11-17T22:02:00","alternatePhone":"","address":"","ageMonths":0}"#),
+            Some("mut_tx_recovery_1"),
+        );
+
+        assert!(res.is_ok(), "insert_patient_ext must recover from dangling transaction: {:?}", res.err());
+        let saved = res.unwrap();
+        assert_eq!(saved.patient_code, "AAA-0016");
+        assert!(conn.is_autocommit(), "Connection must return to clean autocommit state");
+
+        // Subsequent update on the same connection with another dangling transaction must also self-heal
+        conn.execute_batch("BEGIN DEFERRED;").unwrap();
+        let update_res = DbOperations::update_patient(
+            &mut conn,
+            &dek,
+            clinic_id,
+            &saved.id,
+            &saved.patient_code,
+            "pappu updated",
+            "9999999999",
+            "Male",
+            None,
+            25,
+            &[],
+            &[],
+            None,
+        );
+        assert!(update_res.is_ok(), "update_patient must self-heal dirty connection: {:?}", update_res.err());
+        assert!(conn.is_autocommit());
+    }
+
+    #[test]
+    fn test_patient_save_reproduces_pappu_scenario_and_preserves_demographics() {
+        let (mut conn, dek) = setup_test_db();
+        let clinic_id = "clinic_pappu_test";
+
+        // Seed 15 existing patients AAA-0001 through AAA-0015
+        for i in 1..=15 {
+            let code = DbOperations::format_sequential_patient_id(i);
+            DbOperations::insert_patient_ext(
+                &mut conn,
+                &dek,
+                clinic_id,
+                &code,
+                &format!("Patient {}", i),
+                "",
+                "Female",
+                None,
+                30,
+                &[],
+                &[],
+                None,
+                None,
+            )
+            .unwrap();
+        }
+
+        // Verify next code is AAA-0016
+        let next = DbOperations::get_next_patient_code(&mut conn, clinic_id).unwrap();
+        assert_eq!(next, "AAA-0016");
+
+        // Now save patient 'pappu' with exact values from the issue screenshot:
+        // Name: "pappu", Code: "AAA-0016", Age: 0, Gender: "", Phone: ""
+        let res = DbOperations::insert_patient_ext(
+            &mut conn,
+            &dek,
+            clinic_id,
+            "AAA-0016",
+            "pappu",
+            "",
+            "",
+            None,
+            0,
+            &[],
+            &[],
+            Some(r#"{"registeredAt":"2026-11-17T22:02:00","alternatePhone":"","address":"","ageMonths":0}"#),
+            Some("mut_pappu_idempotent_key"),
+        );
+
+        assert!(res.is_ok(), "Saving pappu with empty gender and age 0 must succeed: {:?}", res.err());
+        let saved = res.unwrap();
+        assert_eq!(saved.patient_code, "AAA-0016");
+
+        // Verify idempotency on retry with exact same mutation ID
+        let retry_res = DbOperations::insert_patient_ext(
+            &mut conn,
+            &dek,
+            clinic_id,
+            "AAA-0016",
+            "pappu",
+            "",
+            "",
+            None,
+            0,
+            &[],
+            &[],
+            Some(r#"{"registeredAt":"2026-11-17T22:02:00","alternatePhone":"","address":"","ageMonths":0}"#),
+            Some("mut_pappu_idempotent_key"),
+        );
+        assert!(retry_res.is_ok());
+        let retried = retry_res.unwrap();
+        assert_eq!(retried.id, saved.id, "Retry must return identical patient ID without duplicate record");
+        assert_eq!(retried.patient_code, "AAA-0016");
+
+        // Verify patient list contains exactly 16 patients (no duplicates created)
+        let patients = DbOperations::get_patients(&conn, &dek, clinic_id).unwrap();
+        assert_eq!(patients.len(), 16);
+        let pappu_rec = patients.iter().find(|p| p.id == saved.id).expect("pappu record found");
+        assert_eq!(pappu_rec.name, "pappu");
+        assert_eq!(pappu_rec.patient_code, "AAA-0016");
+        assert_eq!(pappu_rec.age, 0);
+        assert_eq!(pappu_rec.gender, "");
+    }
+
+    #[test]
+    fn test_candidate_code_collision_resolution_loop() {
+        let (mut conn, dek) = setup_test_db();
+        let clinic_id = "clinic_collision_loop";
+
+        // Pre-insert AAA-0001
+        DbOperations::insert_patient_ext(
+            &mut conn,
+            &dek,
+            clinic_id,
+            "AAA-0001",
+            "First Patient",
+            "",
+            "",
+            None,
+            0,
+            &[],
+            &[],
+            None,
+            None,
+        )
+        .unwrap();
+
+        // Attempt to insert another patient requesting AAA-0001
+        let second = DbOperations::insert_patient_ext(
+            &mut conn,
+            &dek,
+            clinic_id,
+            "AAA-0001",
+            "Second Patient",
+            "",
+            "",
+            None,
+            0,
+            &[],
+            &[],
+            None,
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(second.patient_code, "AAA-0002", "Colliding candidate must safely allocate next sequential code");
+
+        // Next sequential code must now be AAA-0003
+        let next = DbOperations::get_next_patient_code(&mut conn, clinic_id).unwrap();
+        assert_eq!(next, "AAA-0003");
     }
 }

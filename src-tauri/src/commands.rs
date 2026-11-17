@@ -1617,83 +1617,112 @@ impl PatientSaveDiagnostic {
     pub fn from_db_error(stage: &str, err: &crate::db::operations::DatabaseOpError) -> Self {
         use crate::db::operations::DatabaseOpError;
         match err {
-            DatabaseOpError::Sqlite(rusqlite::Error::SqliteFailure(ffi_err, _)) => {
-                let code = ffi_err.code;
-                let ext = ffi_err.extended_code;
-                if code == rusqlite::ffi::ErrorCode::DatabaseBusy
-                    || code == rusqlite::ffi::ErrorCode::DatabaseLocked
-                    || ext == 5
-                    || ext == 6
-                    || ext == 261
-                    || ext == 517
-                {
-                    Self {
-                        category: "DATABASE_BUSY".to_string(),
-                        stage: stage.to_string(),
-                        command: "save_local_patient".to_string(),
-                        sqlite_error_code: Some(format!("{ext}")),
-                        message: "Database busy lock contention. Retry in progress.".to_string(),
-                        retryable: true,
-                    }
-                } else if code == rusqlite::ffi::ErrorCode::DiskFull || ext == 13 {
-                    Self {
-                        category: "DATABASE_FULL".to_string(),
-                        stage: stage.to_string(),
-                        command: "save_local_patient".to_string(),
-                        sqlite_error_code: Some(format!("{ext}")),
-                        message: "Disk storage full. Free space and retry.".to_string(),
-                        retryable: false,
-                    }
-                } else if code == rusqlite::ffi::ErrorCode::ConstraintViolation || (ext & 0xff) == 19 {
-                    Self {
-                        category: "DATABASE_CONSTRAINT".to_string(),
-                        stage: stage.to_string(),
-                        command: "save_local_patient".to_string(),
-                        sqlite_error_code: Some(format!("{ext}")),
-                        message: "Database constraint prevented saving record.".to_string(),
-                        retryable: false,
-                    }
-                } else {
-                    Self {
-                        category: "DATABASE_TRANSACTION_FAILURE".to_string(),
-                        stage: stage.to_string(),
-                        command: "save_local_patient".to_string(),
-                        sqlite_error_code: Some(format!("{ext}")),
-                        message: "Database transaction failed.".to_string(),
-                        retryable: true,
+            DatabaseOpError::Sqlite(rusqlite_err) => match rusqlite_err {
+                rusqlite::Error::SqliteFailure(ffi_err, sqlite_msg) => {
+                    let code = ffi_err.code;
+                    let ext = ffi_err.extended_code;
+                    let detail = sqlite_msg
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|m| !m.is_empty());
+
+                    if code == rusqlite::ffi::ErrorCode::DatabaseBusy
+                        || code == rusqlite::ffi::ErrorCode::DatabaseLocked
+                        || (ext & 0xff) == 5
+                        || (ext & 0xff) == 6
+                        || ext == 2826
+                        || ext == 3850
+                        || ext == 2058
+                    {
+                        Self {
+                            category: "DATABASE_BUSY".to_string(),
+                            stage: stage.to_string(),
+                            command: "save_local_patient".to_string(),
+                            sqlite_error_code: Some(format!("{ext}")),
+                            message: detail
+                                .map(|m| format!("Database busy: {m}"))
+                                .unwrap_or_else(|| "Database busy lock contention. Retry in progress.".to_string()),
+                            retryable: true,
+                        }
+                    } else if code == rusqlite::ffi::ErrorCode::DiskFull || ext == 13 {
+                        Self {
+                            category: "DATABASE_FULL".to_string(),
+                            stage: stage.to_string(),
+                            command: "save_local_patient".to_string(),
+                            sqlite_error_code: Some(format!("{ext}")),
+                            message: detail
+                                .map(|m| format!("Disk storage full: {m}"))
+                                .unwrap_or_else(|| "Disk storage full. Free space and retry.".to_string()),
+                            retryable: false,
+                        }
+                    } else if code == rusqlite::ffi::ErrorCode::ConstraintViolation || (ext & 0xff) == 19 {
+                        Self {
+                            category: "DATABASE_CONSTRAINT".to_string(),
+                            stage: stage.to_string(),
+                            command: "save_local_patient".to_string(),
+                            sqlite_error_code: Some(format!("{ext}")),
+                            message: detail
+                                .map(|m| format!("Database constraint violation: {m}"))
+                                .unwrap_or_else(|| "Database constraint prevented saving record.".to_string()),
+                            retryable: false,
+                        }
+                    } else {
+                        let err_msg = detail
+                            .map(|m| format!("Database transaction failed: {m}"))
+                            .unwrap_or_else(|| format!("Database transaction failed (code: {ext})."));
+                        Self {
+                            category: "DATABASE_TRANSACTION_FAILURE".to_string(),
+                            stage: stage.to_string(),
+                            command: "save_local_patient".to_string(),
+                            sqlite_error_code: Some(format!("{ext}")),
+                            message: err_msg,
+                            retryable: true,
+                        }
                     }
                 }
-            }
-            DatabaseOpError::PatientNotFound(_) => Self {
+                other => Self {
+                    category: "DATABASE_TRANSACTION_FAILURE".to_string(),
+                    stage: stage.to_string(),
+                    command: "save_local_patient".to_string(),
+                    sqlite_error_code: None,
+                    message: format!("Database transaction failed: {other}"),
+                    retryable: true,
+                },
+            },
+            DatabaseOpError::PatientNotFound(msg) => Self {
                 category: "DATABASE_CONSTRAINT".to_string(),
                 stage: stage.to_string(),
                 command: "save_local_patient".to_string(),
                 sqlite_error_code: None,
-                message: "Patient record not found for update.".to_string(),
+                message: if !msg.trim().is_empty() {
+                    msg.clone()
+                } else {
+                    "Patient record not found for update.".to_string()
+                },
                 retryable: false,
             },
-            DatabaseOpError::Crypto(_) => Self {
+            DatabaseOpError::Crypto(crypto_err) => Self {
                 category: "ENCRYPTION_FAILURE".to_string(),
                 stage: stage.to_string(),
                 command: "save_local_patient".to_string(),
                 sqlite_error_code: None,
-                message: "Cryptographic encryption failure.".to_string(),
+                message: format!("Cryptographic encryption failure: {crypto_err}"),
                 retryable: false,
             },
-            DatabaseOpError::Serialization(_) => Self {
+            DatabaseOpError::Serialization(ser_err) => Self {
                 category: "DATABASE_TRANSACTION_FAILURE".to_string(),
                 stage: stage.to_string(),
                 command: "save_local_patient".to_string(),
                 sqlite_error_code: None,
-                message: "Payload serialization failure.".to_string(),
+                message: format!("Payload serialization failure: {ser_err}"),
                 retryable: false,
             },
-            _ => Self {
+            other_op_err => Self {
                 category: "UNKNOWN_SAVE_FAILURE".to_string(),
                 stage: stage.to_string(),
                 command: "save_local_patient".to_string(),
                 sqlite_error_code: None,
-                message: "Unexpected save failure occurred.".to_string(),
+                message: format!("Unexpected save failure: {other_op_err}"),
                 retryable: true,
             },
         }
@@ -1708,10 +1737,11 @@ fn is_sqlite_busy_error(err: &crate::db::operations::DatabaseOpError) -> bool {
             let ext = ffi_err.extended_code;
             code == rusqlite::ffi::ErrorCode::DatabaseBusy
                 || code == rusqlite::ffi::ErrorCode::DatabaseLocked
-                || ext == 5
-                || ext == 6
-                || ext == 261
-                || ext == 517
+                || (ext & 0xff) == 5
+                || (ext & 0xff) == 6
+                || ext == 2826
+                || ext == 3850
+                || ext == 2058
         }
         _ => false,
     }
@@ -1806,12 +1836,17 @@ pub async fn save_local_patient(
 
     // 2. Perform database save with bounded retry for transient busy lock contention
     let mut retries = 0;
-    const MAX_BUSY_RETRIES: u32 = 3;
+    const MAX_BUSY_RETRIES: u32 = 5;
     let dek = state.db.get_dek();
 
     loop {
         let save_once = || -> Result<crate::db::operations::SavePatientResult, crate::db::operations::DatabaseOpError> {
             let mut conn = state.db.get_connection();
+
+            if !conn.is_autocommit() {
+                log::warn!("save_local_patient: active uncommitted transaction detected on connection; rolling back to clean autocommit state.");
+                let _ = conn.execute_batch("ROLLBACK;");
+            }
 
             if let Some(ref pid) = args.id {
                 let patient_row: Option<(String, String)> = conn
@@ -3058,8 +3093,33 @@ D1d0B/9iI/8p4iH21N3W7B3gT9D9e/9Y2Z3b4K5L6M7N8P9Q0R1S2T3U4V5W6X7Y
         let not_found_err = DatabaseOpError::PatientNotFound("missing_id".to_string());
         let not_found_diag = PatientSaveDiagnostic::from_db_error("update_lookup", &not_found_err);
         assert_eq!(not_found_diag.category, "DATABASE_CONSTRAINT");
-        assert_eq!(not_found_diag.message, "Patient record not found for update.");
+        assert_eq!(not_found_diag.message, "missing_id");
         assert!(!not_found_diag.retryable);
+
+        // 6. Generic SQLite transaction failure with detailed error message preserved
+        let tx_fail_ffi = rusqlite::ffi::Error {
+            code: rusqlite::ffi::ErrorCode::Unknown,
+            extended_code: 1,
+        };
+        let tx_fail_err = DatabaseOpError::Sqlite(rusqlite::Error::SqliteFailure(
+            tx_fail_ffi,
+            Some("cannot start a transaction within a transaction".to_string()),
+        ));
+        let tx_fail_diag = PatientSaveDiagnostic::from_db_error("tx_begin", &tx_fail_err);
+        assert_eq!(tx_fail_diag.category, "DATABASE_TRANSACTION_FAILURE");
+        assert_eq!(
+            tx_fail_diag.message,
+            "Database transaction failed: cannot start a transaction within a transaction"
+        );
+        assert_eq!(tx_fail_diag.sqlite_error_code.as_deref(), Some("1"));
+        assert!(tx_fail_diag.retryable);
+
+        // 7. Generic SQLite transaction failure without message retains code
+        let tx_fail_no_msg = DatabaseOpError::Sqlite(rusqlite::Error::SqliteFailure(tx_fail_ffi, None));
+        let tx_fail_no_msg_diag = PatientSaveDiagnostic::from_db_error("tx_begin", &tx_fail_no_msg);
+        assert_eq!(tx_fail_no_msg_diag.category, "DATABASE_TRANSACTION_FAILURE");
+        assert_eq!(tx_fail_no_msg_diag.message, "Database transaction failed (code: 1).");
+        assert!(tx_fail_no_msg_diag.retryable);
     }
 
     #[test]

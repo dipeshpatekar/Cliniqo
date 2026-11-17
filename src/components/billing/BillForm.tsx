@@ -223,6 +223,30 @@ export function BillForm({
         onFinalized?.(finalizedRecord)
       } else {
         onChange({ ...bill, status: "FINALIZED" })
+        onFinalized?.({
+          id: bill.id || `inv-${Date.now()}`,
+          server_id: null,
+          clinic_id: desktopSession?.clinic_id || "web-clinic",
+          patient_id: patient.id,
+          consultation_id: bill.consultationId || null,
+          invoice_number: bill.invoiceNumber,
+          invoice_date: invoiceDate,
+          status: "FINALIZED",
+          payment_status: bill.paymentStatus || "Unpaid",
+          subtotal_paise: subtotalPaise,
+          discount_paise: discountPaise,
+          tax_rate_percent: taxRatePercent,
+          tax_paise: taxPaise,
+          total_paise: totalPaise,
+          items,
+          notes: bill.notes || null,
+          payment_notes: null,
+          sync_status: "PENDING",
+          server_version: 0,
+          local_version: 1,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        })
       }
 
       // Automatically navigate to Bill Preview page

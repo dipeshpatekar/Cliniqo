@@ -105,6 +105,7 @@ export type ConsultationData = {
   followUpInstructions: string
   allergies?: string[]
   conditions?: string[]
+  prescriptionNumber?: string
 }
 
 export type PatientFormFieldPreferences = {

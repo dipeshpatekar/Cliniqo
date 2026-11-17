@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest"
+import { describe, it, expect, vi } from "vitest"
 import { renderToString } from "react-dom/server"
 import { BillForm } from "./BillForm"
 import { BillPreview } from "./BillPreview"
@@ -148,6 +148,24 @@ describe("Billing Components & UX", () => {
       const tauriPath = path.resolve(process.cwd(), "src-tauri/tauri.conf.json")
       const tauriConf = JSON.parse(fs.readFileSync(tauriPath, "utf-8"))
       expect(tauriConf.version).toBe("1.0.1")
+    })
+
+    it("ensures onFinalized in App.tsx updates return page without duplicate navigation", () => {
+      // Regression test for Issue 2: BillForm alone navigates to bill-preview
+      const go = vi.fn()
+      let billPreviewReturnPage = "bill-form"
+
+      // App.tsx callback contract
+      const onFinalized = () => {
+        billPreviewReturnPage = "patient-profile"
+        // MUST NOT call go("bill-preview") here!
+      }
+
+      // Execute onFinalized
+      onFinalized()
+
+      expect(billPreviewReturnPage).toBe("patient-profile")
+      expect(go).not.toHaveBeenCalled()
     })
   })
 

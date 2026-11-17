@@ -22,6 +22,7 @@ import {
   complaintOptions,
 } from "../../types"
 import { validateMedicineFormulation } from "../../utils/billing"
+import type { LocalPrescriptionRecord } from "../../desktop/desktop-bridge"
 
 describe("Consultation Components & UX", () => {
   const samplePatient: Patient = {
@@ -1527,6 +1528,123 @@ describe("Consultation Components & UX", () => {
 
       // Verified: because finalize was not executed, storage remains clean
       expect(loadCustomChiefComplaints(abandonedClinic)).toEqual([])
+    })
+  })
+
+  describe("Prescription Finalization & RX Number Accuracy (Issue 25)", () => {
+    const mockFinalizedRx: LocalPrescriptionRecord = {
+      id: "rx-uuid-actual-1",
+      server_id: null,
+      clinic_id: "clinic-test-1",
+      consultation_id: "c-uuid-1",
+      patient_id: samplePatient.id,
+      doctor_id: "doc-test-1",
+      prescription_number: "RX-884920",
+      revision_number: 1,
+      status: "ACTIVE",
+      items_json: JSON.stringify(sampleData.medicines),
+      sync_status: "PENDING",
+      server_version: 0,
+      local_version: 1,
+      created_at: "2026-11-17T11:34:00Z",
+    }
+
+    it("displays actual generated RX number instead of RX-PREVIEW in newly opened preview after consultation", () => {
+      const html = renderToString(
+        <PrescriptionPreview
+          go={() => {}}
+          patient={samplePatient}
+          vitals={sampleVitals}
+          data={sampleData}
+          bannerVisible={true}
+          bannerImage={null}
+          signatureImage={null}
+          showClinicLogo={true}
+          showClinicEmail={true}
+          showAllergyWarning={true}
+          returnPage="consultation"
+          prescriptionRecord={mockFinalizedRx}
+        />,
+      ).replace(/<!-- -->/g, "")
+
+      // Must display the actual RX number from SQLite record
+      expect(html).toContain("RX-884920")
+      // Must NOT show placeholder RX-PREVIEW
+      expect(html).not.toContain("RX-PREVIEW")
+      // Header and note must show finalized persisted status
+      expect(html).toContain("Prescription RX-884920")
+      expect(html).toContain("Finalized prescription <strong>RX-884920</strong>. Persisted to local encrypted storage.")
+    })
+
+    it("displays fallback prescriptionNumber from consultation data if present", () => {
+      const dataWithRx: ConsultationData = {
+        ...sampleData,
+        prescriptionNumber: "RX-773311",
+      }
+
+      const html = renderToString(
+        <PrescriptionPreview
+          go={() => {}}
+          patient={samplePatient}
+          vitals={sampleVitals}
+          data={dataWithRx}
+          bannerVisible={true}
+          bannerImage={null}
+          signatureImage={null}
+          showClinicLogo={true}
+          showClinicEmail={true}
+          showAllergyWarning={true}
+          returnPage="consultation"
+        />,
+      ).replace(/<!-- -->/g, "")
+
+      expect(html).toContain("RX-773311")
+      expect(html).not.toContain("RX-PREVIEW")
+    })
+
+    it("displays RX-PREVIEW only when no finalized prescription record or number exists (unfinalized live session)", () => {
+      const html = renderToString(
+        <PrescriptionPreview
+          go={() => {}}
+          patient={samplePatient}
+          vitals={sampleVitals}
+          data={sampleData}
+          bannerVisible={true}
+          bannerImage={null}
+          signatureImage={null}
+          showClinicLogo={true}
+          showClinicEmail={true}
+          showAllergyWarning={true}
+          returnPage="consultation"
+        />,
+      ).replace(/<!-- -->/g, "")
+
+      expect(html).toContain("RX-PREVIEW")
+      expect(html).toContain("Local session preview · Not persisted")
+    })
+
+    it("preserves the exact same RX number when viewed from Patient Information -> Prescriptions", () => {
+      const html = renderToString(
+        <PrescriptionPreview
+          go={() => {}}
+          patient={samplePatient}
+          vitals={sampleVitals}
+          data={sampleData}
+          bannerVisible={true}
+          bannerImage={null}
+          signatureImage={null}
+          showClinicLogo={true}
+          showClinicEmail={true}
+          showAllergyWarning={true}
+          returnPage="patient-profile"
+          prescriptionRecord={mockFinalizedRx}
+        />,
+      ).replace(/<!-- -->/g, "")
+
+      // Preserves same RX number
+      expect(html).toContain("RX-884920")
+      expect(html).not.toContain("RX-PREVIEW")
+      expect(html).toContain("Viewing finalized historical prescription <strong>RX-884920</strong>")
     })
   })
 })

@@ -154,7 +154,9 @@ export function PrescriptionPreview({
           returnPage === "settings"
             ? "Sample preview · Layout changes apply to all future prescriptions"
             : prescriptionRecord
-              ? `${prescriptionRecord.revision_number > 1 ? `Revision ${prescriptionRecord.revision_number}` : "Original"} · Finalized ${formatDateDDMMYYYY(prescriptionRecord.created_at)} · Read-only historical record`
+              ? returnPage === "patient-profile"
+                ? `${prescriptionRecord.revision_number > 1 ? `Revision ${prescriptionRecord.revision_number}` : "Original"} · Finalized ${formatDateDDMMYYYY(prescriptionRecord.created_at)} · Read-only historical record`
+                : `${prescriptionRecord.prescription_number} · Finalized ${formatDateDDMMYYYY(prescriptionRecord.created_at || new Date().toISOString())}`
               : "Local session preview · Not persisted"
         }
       >
@@ -227,26 +229,38 @@ export function PrescriptionPreview({
           <div className="preview-note">
             <AlertCircle size={17} />
             <span>
-              Viewing finalized historical prescription{" "}
-              <strong>{prescriptionRecord.prescription_number}</strong> (
-              {prescriptionRecord.revision_number > 1
-                ? `Revision ${prescriptionRecord.revision_number}`
-                : "Original"}
-              , {prescriptionRecord.status}).
-              {prescriptionRecord.status === "ACTIVE"
-                ? " Click 'Edit prescription' to append an immutable revision."
-                : " Historical revisions are read-only."}
+              {returnPage === "patient-profile" ? (
+                <>
+                  Viewing finalized historical prescription{" "}
+                  <strong>{prescriptionRecord.prescription_number}</strong> (
+                  {prescriptionRecord.revision_number > 1
+                    ? `Revision ${prescriptionRecord.revision_number}`
+                    : "Original"}
+                  , {prescriptionRecord.status}).
+                  {prescriptionRecord.status === "ACTIVE"
+                    ? " Click 'Edit prescription' to append an immutable revision."
+                    : " Historical revisions are read-only."}
+                </>
+              ) : (
+                <>
+                  Finalized prescription{" "}
+                  <strong>{prescriptionRecord.prescription_number}</strong>.
+                  Persisted to local encrypted storage.
+                </>
+              )}
             </span>
-            {prescriptionRecord.status === "ACTIVE" && onRevisePrescription && (
-              <Button
-                size="sm"
-                variant="ghost"
-                onClick={() => setShowEditModal(true)}
-                icon={Edit3}
-              >
-                Edit prescription
-              </Button>
-            )}
+            {returnPage === "patient-profile" &&
+              prescriptionRecord.status === "ACTIVE" &&
+              onRevisePrescription && (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => setShowEditModal(true)}
+                  icon={Edit3}
+                >
+                  Edit prescription
+                </Button>
+              )}
           </div>
         ) : (
           <div className="preview-note">
@@ -397,7 +411,7 @@ export function PrescriptionPreview({
                   ? prescriptionRecord.revision_number > 1
                     ? `${prescriptionRecord.prescription_number} (Rev ${prescriptionRecord.revision_number})`
                     : prescriptionRecord.prescription_number
-                  : "RX-PREVIEW"}
+                  : data.prescriptionNumber || "RX-PREVIEW"}
               </strong>
             </div>
             <div>

@@ -263,6 +263,8 @@ export default function App({
   const [viewingHistoricalPrescription, setViewingHistoricalPrescription] =
     useState<ViewingHistoricalPrescriptionState | null>(initialViewingHistoricalPrescription)
   const [patientProfileTab, setPatientProfileTab] = useState(initialPatientProfileTab)
+  const [activeConsultationPrescriptionRecord, setActiveConsultationPrescriptionRecord] =
+    useState<LocalPrescriptionRecord | null>(null)
   const [billPreviewReturnPage, setBillPreviewReturnPage] =
     useState<"bill-form" | "settings" | "patient-profile">("bill-form")
   const [vitals, setVitals] = useState<Vitals>({
@@ -1055,6 +1057,7 @@ export default function App({
       weight: "",
     })
     setViewingHistoricalPrescription(null)
+    setActiveConsultationPrescriptionRecord(null)
     setPatientProfileTab("Overview")
     go("patient-profile")
   }
@@ -1070,6 +1073,7 @@ export default function App({
       setSelectedPatient(patient)
       setPatientSaveFeedback(null)
       setViewingHistoricalPrescription(null)
+      setActiveConsultationPrescriptionRecord(null)
       setConsultationData(createEmptyConsultationData())
       setVitals({
         systolic: "",
@@ -1966,7 +1970,7 @@ export default function App({
         onUpdatePatientMedicalInfo={updatePatientMedicalInfo}
         customChiefComplaints={customChiefComplaints}
         onAddCustomChiefComplaint={handleAddCustomChiefComplaint}
-        onFinalized={(_consultationId, finalizedTimestamp) => {
+        onFinalized={(_consultationId, finalizedTimestamp, rxRecord) => {
           if (consultationData.chiefComplaint?.trim()) {
             handleAddCustomChiefComplaint(consultationData.chiefComplaint)
           }
@@ -1982,6 +1986,9 @@ export default function App({
                 : p,
             ),
           )
+          if (rxRecord) {
+            setActiveConsultationPrescriptionRecord(rxRecord)
+          }
         }}
       />
     )
@@ -2018,7 +2025,9 @@ export default function App({
         returnPage={prescriptionPreviewReturnPage}
         desktopSession={desktopSession}
         prescriptionRecord={
-          isHistorical ? viewingHistoricalPrescription!.record : null
+          isHistorical
+            ? viewingHistoricalPrescription!.record
+            : activeConsultationPrescriptionRecord
         }
         onRevisePrescription={
           isHistorical ? handleRevisePrescription : undefined
@@ -2038,7 +2047,6 @@ export default function App({
         desktopSession={desktopSession}
         onFinalized={() => {
           setBillPreviewReturnPage("patient-profile")
-          go("bill-preview")
         }}
       />
     )

@@ -116,6 +116,7 @@ pub fn run() {
             commands::get_sync_conflicts,
             commands::resolve_sync_conflict,
             commands::save_local_invoice,
+            commands::get_next_invoice_number,
             commands::get_local_invoices,
             commands::get_local_invoice_by_id,
             commands::finalize_local_invoice,

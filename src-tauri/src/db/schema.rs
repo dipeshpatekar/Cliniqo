@@ -427,6 +427,15 @@ CREATE TABLE IF NOT EXISTS local_seq_counters (
     last_seq INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (clinic_id, sequence_name)
 );
+
+CREATE TABLE IF NOT EXISTS local_mutation_idempotency (
+    clinic_id TEXT NOT NULL,
+    idempotency_key TEXT NOT NULL,
+    entity_id TEXT NOT NULL,
+    patient_code TEXT NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (clinic_id, idempotency_key)
+);
 "#;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

@@ -54,7 +54,7 @@ export function SyncSettings({ onOpenConflictModal }: SyncSettingsProps) {
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   // Updater state
-  const [appVersion, setAppVersion] = useState<string>("1.0.1")
+  const [appVersion, setAppVersion] = useState<string>("1.0.2")
   const [isCheckingUpdate, setIsCheckingUpdate] = useState(false)
   const [updateResult, setUpdateResult] = useState<UpdateCheckResult | null>(null)
   const [updateError, setUpdateError] = useState<string | null>(null)
@@ -238,105 +238,9 @@ export function SyncSettings({ onOpenConflictModal }: SyncSettingsProps) {
     }
   }
 
-  const isLive = nativeStatus?.is_running ?? false
-  const tone =
-    nativeStatus?.status === "SYNCING"
-      ? "info"
-      : nativeStatus?.status === "OFFLINE"
-        ? "warning"
-        : nativeStatus?.status === "ERROR"
-          ? "danger"
-          : "success"
-
   return (
     <div className="space-y-6">
-      {/* SECTION 1: Synchronization Engine Status */}
-      <section className="settings-section">
-        <div className="settings-title with-status">
-          <div>
-            <h2>Native Synchronization Engine</h2>
-          </div>
-          <StatusPill tone={tone}>
-            {nativeStatus?.status || (isLive ? "RUNNING" : "STANDBY")}
-          </StatusPill>
-        </div>
-
-        <div className="sync-hero">
-          <span>
-            <Cloud size={24} />
-          </span>
-          <div>
-            <strong>
-              {nativeStatus?.active_clinic_id
-                ? `Active Clinic: ${displayClinic}`
-                : "Active Clinic Workspace"}
-            </strong>
-            <p>
-              {nativeStatus?.last_synced_at
-                ? `Last synchronized: ${formatDateTimeDDMMYYYY(
-                    nativeStatus.last_synced_at,
-                  )}`
-                : "Local encrypted database active with automatic cloud sync"}
-            </p>
-          </div>
-        </div>
-
-        <div className="grid grid-cols-3 gap-3 my-4">
-          <div className="rounded-lg border border-slate-200 dark:border-slate-800 p-3 bg-slate-50 dark:bg-slate-900/50">
-            <span className="text-xs text-slate-500 uppercase tracking-wider block">
-              Pending Mutations
-            </span>
-            <span className="text-xl font-bold text-slate-800 dark:text-slate-100">
-              {nativeStatus?.pending_mutations ?? 0}
-            </span>
-          </div>
-          <div className="rounded-lg border border-slate-200 dark:border-slate-800 p-3 bg-slate-50 dark:bg-slate-900/50">
-            <span className="text-xs text-slate-500 uppercase tracking-wider block">
-              In-Flight Jobs
-            </span>
-            <span className="text-xl font-bold text-slate-800 dark:text-slate-100">
-              {nativeStatus?.in_flight_mutations ?? 0}
-            </span>
-          </div>
-          <div className="rounded-lg border border-slate-200 dark:border-slate-800 p-3 bg-slate-50 dark:bg-slate-900/50">
-            <span className="text-xs text-slate-500 uppercase tracking-wider block">
-              Conflicts Recorded
-            </span>
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "space-between",
-                marginTop: "4px",
-              }}
-            >
-              <span className="text-xl font-bold text-amber-600 dark:text-amber-400">
-                {nativeStatus?.conflicts_count ?? 0}
-              </span>
-              {onOpenConflictModal && (
-                <button
-                  className="btn btn-sm btn-secondary"
-                  style={{ fontSize: "11px", padding: "2px 8px" }}
-                  onClick={onOpenConflictModal}
-                >
-                  Review Conflicts
-                </button>
-              )}
-            </div>
-          </div>
-        </div>
-
-        {nativeStatus?.last_error && (
-          <div className="info-callout text-amber-700 bg-amber-50 dark:bg-amber-950/40 border-amber-200 dark:border-amber-900 mb-3">
-            <AlertCircle size={17} />
-            <p>
-              <strong>Sync Alert:</strong> {nativeStatus.last_error}
-            </p>
-          </div>
-        )}
-      </section>
-
-      {/* SECTION 2: Encrypted Backup & Restore */}
+      {/* SECTION: Encrypted Backup & Restore */}
       <section className="settings-section">
         <div className="settings-title with-status">
           <div>

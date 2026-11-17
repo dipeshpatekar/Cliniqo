@@ -57,52 +57,39 @@ export function InvoicesTab({
           <p className="text-sm">Loading encrypted invoice records...</p>
         </div>
       ) : invoices.length > 0 ? (
-        invoices.map((inv) => (
-          <button key={inv.id} onClick={() => onStartBill?.(patient, inv)}>
-            <span className="record-icon">
-              <ReceiptIndianRupee size={18} />
-            </span>
-            <span>
-              <strong>
-                {inv.invoice_number} · ₹
-                {(inv.total_paise / 100).toLocaleString("en-IN", {
-                  minimumFractionDigits: 2,
-                })}
-              </strong>
-              <small>
-                {inv.created_at ? formatDateDDMMYYYY(inv.created_at) : "Today"}{" "}
-                · {inv.items ? inv.items.length : 0}{" "}
-                {inv.items && inv.items.length === 1 ? "item" : "items"}
-              </small>
-            </span>
-            <div style={{ display: "flex", gap: "6px" }}>
-              <StatusPill
-                tone={inv.status === "FINALIZED" ? "success" : "warning"}
-              >
-                {inv.status === "FINALIZED" ? "Finalized" : "Draft"}
-              </StatusPill>
-              <StatusPill
-                tone={inv.payment_status === "PAID" ? "success" : "neutral"}
-              >
-                {inv.payment_status === "PAID" ? "Paid" : "Unpaid"}
-              </StatusPill>
-              {inv.sync_status && (
-                <StatusPill
-                  tone={
-                    inv.sync_status === "SYNCED"
-                      ? "success"
-                      : inv.sync_status === "CONFLICT"
-                        ? "danger"
-                        : "warning"
-                  }
-                >
-                  {inv.sync_status}
+        invoices.map((inv, idx) => {
+          const match = inv.invoice_number.match(/INV-\d+-(\d+)/i)
+          const seqPrefix = match
+            ? `#${match[1].padStart(3, "0")}`
+            : `#${String(idx + 1).padStart(3, "0")}`
+          const isPaid = (inv.payment_status || "").toUpperCase() === "PAID"
+          return (
+            <button key={inv.id} onClick={() => onStartBill?.(patient, inv)}>
+              <span className="record-icon">
+                <ReceiptIndianRupee size={18} />
+              </span>
+              <span>
+                <strong>
+                  {seqPrefix} · {inv.invoice_number} · ₹
+                  {(inv.total_paise / 100).toLocaleString("en-IN", {
+                    minimumFractionDigits: 2,
+                  })}
+                </strong>
+                <small>
+                  {inv.created_at ? formatDateDDMMYYYY(inv.created_at) : "Today"}{" "}
+                  · {inv.items ? inv.items.length : 0}{" "}
+                  {inv.items && inv.items.length === 1 ? "item" : "items"}
+                </small>
+              </span>
+              <div style={{ display: "flex", gap: "6px" }}>
+                <StatusPill tone={isPaid ? "success" : "neutral"}>
+                  {isPaid ? "Paid" : "Unpaid"}
                 </StatusPill>
-              )}
-            </div>
-            <ChevronRight size={17} />
-          </button>
-        ))
+              </div>
+              <ChevronRight size={17} />
+            </button>
+          )
+        })
       ) : (
         <div className="empty-state compact">
           <ReceiptIndianRupee size={25} />

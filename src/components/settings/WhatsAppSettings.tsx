@@ -17,12 +17,14 @@ export function WhatsAppSettings() {
         <div>
           <strong>WhatsApp Business provider</strong>
         </div>
-        <span
-          className="btn btn-sm btn-secondary cursor-default select-none pointer-events-none opacity-85"
+        <button
+          type="button"
+          disabled
+          className="btn btn-sm btn-secondary opacity-50 cursor-not-allowed select-none"
           aria-disabled="true"
         >
-          UI checked
-        </span>
+          Connect
+        </button>
       </div>
       <h3 className="subsection-title">Delivery history</h3>
       <div className="empty-state compact">

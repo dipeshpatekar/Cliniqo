@@ -80,6 +80,7 @@ import {
   importInventoryStock,
   getLocalConsultations,
   reviseLocalPrescription,
+  getNextInvoiceNumber,
   type DesktopSessionContext,
   type LocalInvoiceRecord,
   type LocalPrescriptionRecord,
@@ -1174,7 +1175,7 @@ export default function App({
     window.scrollTo({ top: 0, behavior: "instant" })
   }
 
-  const startBill = (
+  const startBill = async (
     patient: Patient,
     existingInvoice?: LocalInvoiceRecord,
   ) => {
@@ -1219,7 +1220,9 @@ export default function App({
           : new Date().toISOString().slice(0, 10),
         status: existingInvoice.status as "DRAFT" | "FINALIZED" | "CANCELLED",
         paymentStatus:
-          existingInvoice.payment_status === "PAID" ? "Paid" : "Unpaid",
+          (existingInvoice.payment_status || "").toUpperCase() === "PAID"
+            ? "Paid"
+            : "Unpaid",
         discount:
           Math.round(
             ((Number(existingInvoice.discount_paise) || 0) / 100) * 100,
@@ -1248,9 +1251,19 @@ export default function App({
     }
 
     const currentYear = new Date().getFullYear()
-    const patientNum = patient.id.replace(/\D/g, "") || "1001"
+    let invoiceNumber = `INV-${currentYear}-0001`
+    const activeClinicId = desktopSession?.clinic_id || (desktopSession as any)?.clinicId || "clinic_local"
+    try {
+      const nextNum = await getNextInvoiceNumber(activeClinicId)
+      if (nextNum && nextNum.trim().length > 0) {
+        invoiceNumber = nextNum
+      }
+    } catch (err) {
+      console.warn("Failed to get next invoice number, fallback to default", err)
+    }
+
     setBillData({
-      invoiceNumber: `INV-${currentYear}-${patientNum}`,
+      invoiceNumber,
       date: new Date().toISOString().slice(0, 10),
       status: "DRAFT",
       paymentStatus: "Unpaid",

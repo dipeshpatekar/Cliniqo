@@ -357,22 +357,28 @@ async fn run_sync_loop(
         };
 
         match pending_batch {
-            Ok(batch) if !batch.is_empty() => {
-                had_push_activity = true;
-                let batch_ids: Vec<String> = batch.iter().map(|b| b.id.clone()).collect();
-                let mutation_items: Vec<SyncMutationItem> = batch
-                    .iter()
-                    .map(|b| SyncMutationItem {
-                        outbox_id: b.id.clone(),
-                        entity_type: b.entity_type.clone(),
-                        action: b.action.clone(),
-                        idempotency_key: b.idempotency_key.clone(),
-                        entity_id: b.entity_id.clone(),
-                        server_id: b.server_id.clone(),
-                        client_version: b.client_version,
-                        payload: b.payload.clone(),
-                    })
+            Ok(batch) => {
+                let non_clinical_batch: Vec<_> = batch
+                    .into_iter()
+                    .filter(|b| !matches!(b.entity_type.as_str(), "PATIENT" | "CONSULTATION" | "PRESCRIPTION" | "PRESCRIPTION_REVISION" | "INVOICE"))
                     .collect();
+
+                if !non_clinical_batch.is_empty() {
+                    had_push_activity = true;
+                    let batch_ids: Vec<String> = non_clinical_batch.iter().map(|b| b.id.clone()).collect();
+                    let mutation_items: Vec<SyncMutationItem> = non_clinical_batch
+                        .iter()
+                        .map(|b| SyncMutationItem {
+                            outbox_id: b.id.clone(),
+                            entity_type: b.entity_type.clone(),
+                            action: b.action.clone(),
+                            idempotency_key: b.idempotency_key.clone(),
+                            entity_id: b.entity_id.clone(),
+                            server_id: b.server_id.clone(),
+                            client_version: b.client_version,
+                            payload: b.payload.clone(),
+                        })
+                        .collect();
 
                 let push_url = format!("{base_url}/sync/push");
                 let push_req = client
@@ -459,10 +465,8 @@ async fn run_sync_loop(
                     }
                 }
             }
-            Ok(_) => {
-                // No pending mutations to push
-            }
-            Err(e) => {
+        }
+        Err(e) => {
                 log::error!("Database error reading pending outbox batch: {e}");
                 loop_error = Some(format!("Database error: {e}"));
             }
@@ -760,49 +764,33 @@ mod tests {
         session_mgr.set_test_session(clinic_id, "doc_ok", "valid_jwt_token");
 
         // Enqueue a local patient
-        let pat_id = {
-            let mut conn = db.get_connection();
-            let dek = db.get_dek();
-            DbOperations::insert_patient(
-                &mut conn,
-                dek,
-                clinic_id,
-                "PC-OK-1",
-                "Patient Success",
-                "9811100001",
-                "FEMALE",
-                None,
-                30,
-                &[],
-                &[],
-                None,
-            )
-            .unwrap()
-        };
-
-        let pat_outbox_id = {
+        let item_id = "prof_http_ok_1".to_string();
+        let outbox_id = "outbox_prof_1".to_string();
+        {
             let conn = db.get_connection();
-            conn.query_row(
-                "SELECT id FROM local_sync_outbox WHERE clinic_id = ?1",
-                params![clinic_id],
-                |r| r.get::<_, String>(0),
+            let dek = db.get_dek();
+            let payload = serde_json::json!({ "name": "Test Clinic" });
+            let (enc_payload, nonce) = crate::crypto::encrypt_payload(&dek.key, payload.to_string().as_bytes()).unwrap();
+            conn.execute(
+                "INSERT INTO local_sync_outbox (id, clinic_id, entity_type, entity_id, action, idempotency_key, encrypted_payload, nonce, sync_status) VALUES (?1, ?2, 'CLINIC_PROFILE', ?3, 'UPDATE', 'idem_prof_1', ?4, ?5, 'PENDING')",
+                params![&outbox_id, clinic_id, &item_id, enc_payload, nonce],
             )
-            .unwrap()
-        };
+            .unwrap();
+        }
 
-        let pat_id_clone = pat_id.clone();
-        let pat_outbox_clone = pat_outbox_id.clone();
+        let item_id_clone = item_id.clone();
+        let outbox_clone = outbox_id.clone();
         let (mock_url, server_handle) = setup_mock_server(move |method, path, _body| {
             if method == "POST" && path == "/sync/push" {
                 let resp = serde_json::json!({
                     "processedAt": "2026-10-28T00:00:00Z",
                     "clinicId": "clinic_http_ok",
                     "results": [{
-                        "outboxId": pat_outbox_clone,
+                        "outboxId": outbox_clone,
                         "status": "APPLIED",
-                        "entityType": "PATIENT",
-                        "entityId": pat_id_clone,
-                        "serverId": "srv_pat_1",
+                        "entityType": "CLINIC_PROFILE",
+                        "entityId": item_id_clone,
+                        "serverId": "srv_prof_1",
                         "serverVersion": 1
                     }]
                 });
@@ -854,48 +842,32 @@ mod tests {
 
         session_mgr.set_test_session(clinic_id, "doc_conflict", "valid_jwt_token");
 
-        let pat_id = {
-            let mut conn = db.get_connection();
-            let dek = db.get_dek();
-            DbOperations::insert_patient(
-                &mut conn,
-                dek,
-                clinic_id,
-                "PC-CONF-1",
-                "Patient Conflict",
-                "9811100002",
-                "MALE",
-                None,
-                40,
-                &[],
-                &[],
-                None,
-            )
-            .unwrap()
-        };
-
-        let pat_outbox_id = {
+        let item_id = "prof_http_conf_1".to_string();
+        let outbox_id = "outbox_prof_conf_1".to_string();
+        {
             let conn = db.get_connection();
-            conn.query_row(
-                "SELECT id FROM local_sync_outbox WHERE clinic_id = ?1",
-                params![clinic_id],
-                |r| r.get::<_, String>(0),
+            let dek = db.get_dek();
+            let payload = serde_json::json!({ "name": "Conflicting Clinic" });
+            let (enc_payload, nonce) = crate::crypto::encrypt_payload(&dek.key, payload.to_string().as_bytes()).unwrap();
+            conn.execute(
+                "INSERT INTO local_sync_outbox (id, clinic_id, entity_type, entity_id, action, idempotency_key, encrypted_payload, nonce, sync_status) VALUES (?1, ?2, 'CLINIC_PROFILE', ?3, 'UPDATE', 'idem_prof_conf_1', ?4, ?5, 'PENDING')",
+                params![&outbox_id, clinic_id, &item_id, enc_payload, nonce],
             )
-            .unwrap()
-        };
+            .unwrap();
+        }
 
-        let pat_id_clone = pat_id.clone();
-        let pat_outbox_clone = pat_outbox_id.clone();
+        let item_id_clone = item_id.clone();
+        let outbox_clone = outbox_id.clone();
         let (mock_url, server_handle) = setup_mock_server(move |method, path, _body| {
             if method == "POST" && path == "/sync/push" {
                 let resp = serde_json::json!({
                     "processedAt": "2026-10-28T00:00:00Z",
                     "clinicId": "clinic_http_conflict",
                     "results": [{
-                        "outboxId": pat_outbox_clone,
+                        "outboxId": outbox_clone,
                         "status": "CONFLICT",
-                        "entityType": "PATIENT",
-                        "entityId": pat_id_clone,
+                        "entityType": "CLINIC_PROFILE",
+                        "entityId": item_id_clone,
                         "serverId": "srv_conf_1",
                         "serverVersion": 3,
                         "error": "Concurrent remote modification",
@@ -937,7 +909,7 @@ mod tests {
         let conn = db.get_connection();
         let conflicts = DbOperations::get_conflicts(&conn, None).unwrap();
         assert_eq!(conflicts.len(), 1);
-        assert_eq!(conflicts[0].entity_id, pat_id);
+        assert_eq!(conflicts[0].entity_id, item_id);
         assert_eq!(conflicts[0].conflict_reason, "CONCURRENT_MODIFICATION");
         assert_eq!(conflicts[0].status, "OPEN");
     }
@@ -954,21 +926,10 @@ mod tests {
         session_mgr.set_test_session(clinic_id, "doc_401", "expired_token");
 
         {
-            let mut conn = db.get_connection();
-            let dek = db.get_dek();
-            DbOperations::insert_patient(
-                &mut conn,
-                dek,
-                clinic_id,
-                "PC-401-1",
-                "Patient 401",
-                "9811100003",
-                "MALE",
-                None,
-                50,
-                &[],
-                &[],
-                None,
+            let conn = db.get_connection();
+            conn.execute(
+                "INSERT INTO local_sync_outbox (id, clinic_id, entity_type, entity_id, action, idempotency_key, encrypted_payload, nonce, sync_status) VALUES ('outbox_401_1', ?1, 'CLINIC_PROFILE', 'prof_401_1', 'UPDATE', 'idem_401_1', X'00', X'00', 'PENDING')",
+                params![clinic_id],
             )
             .unwrap();
         }
@@ -1010,21 +971,10 @@ mod tests {
         session_mgr.set_test_session(clinic_id, "doc_500", "valid_token");
 
         {
-            let mut conn = db.get_connection();
-            let dek = db.get_dek();
-            DbOperations::insert_patient(
-                &mut conn,
-                dek,
-                clinic_id,
-                "PC-500-1",
-                "Patient 500",
-                "9811100004",
-                "FEMALE",
-                None,
-                45,
-                &[],
-                &[],
-                None,
+            let conn = db.get_connection();
+            conn.execute(
+                "INSERT INTO local_sync_outbox (id, clinic_id, entity_type, entity_id, action, idempotency_key, encrypted_payload, nonce, sync_status) VALUES ('outbox_500_1', ?1, 'CLINIC_PROFILE', 'prof_500_1', 'UPDATE', 'idem_500_1', X'00', X'00', 'PENDING')",
+                params![clinic_id],
             )
             .unwrap();
         }
@@ -1066,21 +1016,10 @@ mod tests {
         session_mgr.set_test_session(clinic_id, "doc_cancel", "valid_token");
 
         {
-            let mut conn = db.get_connection();
-            let dek = db.get_dek();
-            DbOperations::insert_patient(
-                &mut conn,
-                dek,
-                clinic_id,
-                "PC-CANCEL-1",
-                "Patient Cancel",
-                "9811100005",
-                "MALE",
-                None,
-                55,
-                &[],
-                &[],
-                None,
+            let conn = db.get_connection();
+            conn.execute(
+                "INSERT INTO local_sync_outbox (id, clinic_id, entity_type, entity_id, action, idempotency_key, encrypted_payload, nonce, sync_status) VALUES ('outbox_cancel_1', ?1, 'CLINIC_PROFILE', 'prof_cancel_1', 'UPDATE', 'idem_cancel_1', X'00', X'00', 'PENDING')",
+                params![clinic_id],
             )
             .unwrap();
         }

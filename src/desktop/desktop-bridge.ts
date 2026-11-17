@@ -1100,6 +1100,21 @@ export async function saveLocalInvoice(
   return invokeTauri<string>("save_local_invoice", { args: payload })
 }
 
+export async function getNextInvoiceNumber(clinicId: string): Promise<string> {
+  if (isTauriDesktop()) {
+    try {
+      const res = await invokeTauri<string>("get_next_invoice_number", { clinicId })
+      if (res && res.trim()) {
+        return res.trim()
+      }
+    } catch (err) {
+      console.warn("Failed to get next sequential invoice number from desktop bridge:", err)
+    }
+  }
+  const currentYear = new Date().getFullYear()
+  return `INV-${currentYear}-0001`
+}
+
 export async function getLocalInvoices(
   clinicId: string,
   patientId?: string | null,
@@ -2393,7 +2408,7 @@ export async function exportEncryptedBackup(
     version: 1,
     clinic_id: clinicId,
     created_at: new Date().toISOString(),
-    app_version: "1.0.1",
+    app_version: "1.0.2",
     schema_version: 12,
     patients_count: 5,
     consultations_count: 8,
@@ -2447,7 +2462,7 @@ export async function restoreEncryptedBackup(options: {
       version: 1,
       clinic_id: options.clinicId || "clinic_demo",
       created_at: new Date().toISOString(),
-      app_version: "1.0.1",
+      app_version: "1.0.2",
       schema_version: 12,
       patients_count: 5,
       consultations_count: 8,
@@ -2497,7 +2512,7 @@ export async function checkAppUpdate(endpoint?: string): Promise<UpdateCheckResu
 
   return {
     available: false,
-    current_version: "1.0.1",
+    current_version: "1.0.2",
     target_version: null,
     release_notes: null,
     pub_date: null,

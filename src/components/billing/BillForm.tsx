@@ -142,7 +142,10 @@ export function BillForm({
           invoice_number: bill.invoiceNumber,
           invoice_date: invoiceDate,
           status: "DRAFT",
-          payment_status: bill.paymentStatus || "Unpaid",
+          payment_status:
+            (bill.paymentStatus || "Unpaid").toUpperCase() === "PAID"
+              ? "PAID"
+              : "UNPAID",
           items,
           discount_paise: discountPaise,
           tax_rate_percent: taxRatePercent,
@@ -189,7 +192,10 @@ export function BillForm({
           invoice_number: bill.invoiceNumber,
           invoice_date: invoiceDate,
           status: "DRAFT",
-          payment_status: bill.paymentStatus || "Unpaid",
+          payment_status:
+            (bill.paymentStatus || "Unpaid").toUpperCase() === "PAID"
+              ? "PAID"
+              : "UNPAID",
           items,
           discount_paise: discountPaise,
           tax_rate_percent: taxRatePercent,
@@ -216,6 +222,10 @@ export function BillForm({
           id: finalizedRecord.id,
           date: finalizedRecord.invoice_date || invoiceDate,
           status: "FINALIZED",
+          paymentStatus:
+            (finalizedRecord.payment_status || bill.paymentStatus || "Unpaid").toUpperCase() === "PAID"
+              ? "Paid"
+              : "Unpaid",
           discount: discountRupees,
           taxRatePercent: taxRatePercent,
         }
@@ -232,7 +242,10 @@ export function BillForm({
           invoice_number: bill.invoiceNumber,
           invoice_date: invoiceDate,
           status: "FINALIZED",
-          payment_status: bill.paymentStatus || "Unpaid",
+          payment_status:
+            (bill.paymentStatus || "Unpaid").toUpperCase() === "PAID"
+              ? "PAID"
+              : "UNPAID",
           subtotal_paise: subtotalPaise,
           discount_paise: discountPaise,
           tax_rate_percent: taxRatePercent,

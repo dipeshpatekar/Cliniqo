@@ -192,42 +192,36 @@ impl DbOperations {
         allergies: &[String],
         conditions: &[String],
         sensitive_notes: Option<&str>,
-        client_mutation_id: Option<&str>,
+        _client_mutation_id: Option<&str>,
     ) -> Result<SavePatientResult, DatabaseOpError> {
-        let idempotency_key = match client_mutation_id {
-            Some(cid) if !cid.trim().is_empty() => format!("client-patient-create-{}", cid.trim()),
-            _ => format!("local-patient-create-{}", Uuid::new_v4()),
-        };
-
+        let candidate = patient_code.trim();
         let tx = conn.transaction()?;
 
         // 1. Check idempotency: If this exact client mutation was already processed, return existing patient!
-        let existing_result: Option<(String, String)> = tx
-            .query_row(
-                r#"
-                SELECT p.id, p.patient_code 
-                FROM local_sync_outbox o
-                JOIN local_patients p ON p.id = o.entity_id
-                WHERE o.clinic_id = ?1 AND o.idempotency_key = ?2
-                LIMIT 1
-                "#,
-                params![clinic_id, &idempotency_key],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .optional()?;
+        if let Some(ref cid) = _client_mutation_id {
+            let trimmed = cid.trim();
+            if !trimmed.is_empty() {
+                let existing_mutation: Option<(String, String)> = tx
+                    .query_row(
+                        "SELECT entity_id, patient_code FROM local_mutation_idempotency WHERE clinic_id = ?1 AND idempotency_key = ?2 LIMIT 1",
+                        params![clinic_id, trimmed],
+                        |row| Ok((row.get(0)?, row.get(1)?)),
+                    )
+                    .optional()?;
 
-        if let Some((existing_id, existing_code)) = existing_result {
-            log::info!("Idempotent patient creation matched existing record (mutation id: {:?})", client_mutation_id);
-            tx.commit()?;
-            return Ok(SavePatientResult {
-                id: existing_id,
-                patient_code: existing_code,
-            });
+                if let Some((existing_id, existing_code)) = existing_mutation {
+                    log::info!("Idempotent patient creation matched existing record (mutation id: {:?})", trimmed);
+                    tx.commit()?;
+                    return Ok(SavePatientResult {
+                        id: existing_id,
+                        patient_code: existing_code,
+                    });
+                }
+            }
         }
 
         // 2. Resolve canonical patient code:
         // A placeholder or already-in-use candidate code must safely allocate next sequential code.
-        let candidate = patient_code.trim();
         let is_placeholder = candidate.is_empty() || candidate == "PT-INIT";
 
         let candidate_in_use: bool = if !is_placeholder {
@@ -276,27 +270,12 @@ impl DbOperations {
         let demo_bytes = serde_json::to_vec(&demographics)?;
         let (encrypted_demographics, demo_nonce) = encrypt_payload(&dek.key, &demo_bytes)?;
 
-        // 4. Pack and encrypt sync outbox mutation payload
-        let outbox_payload = json!({
-            "patientId": effective_code,
-            "name": name,
-            "phone": phone,
-            "gender": gender,
-            "dateOfBirth": date_of_birth,
-            "age": age,
-            "allergies": allergies,
-            "conditions": conditions,
-        })
-        .to_string();
-
-        let (encrypted_outbox, outbox_nonce) = encrypt_payload(&dek.key, outbox_payload.as_bytes())?;
-
-        // 5. Insert patient record
+        // 4. Insert patient record (clinical data remains local only)
         tx.execute(
             r#"
             INSERT INTO local_patients (
                 id, clinic_id, patient_code, encrypted_demographics, nonce, sync_status, local_version
-            ) VALUES (?1, ?2, ?3, ?4, ?5, 'PENDING', 1)
+            ) VALUES (?1, ?2, ?3, ?4, ?5, 'LOCAL_ONLY', 1)
             "#,
             params![
                 patient_id,
@@ -307,16 +286,15 @@ impl DbOperations {
             ],
         )?;
 
-        // 6. Insert outbox record atomically in the SAME transaction
-        let outbox_id = Uuid::new_v4().to_string();
-        tx.execute(
-            r#"
-            INSERT INTO local_sync_outbox (
-                id, clinic_id, entity_type, entity_id, action, idempotency_key, encrypted_payload, nonce, sync_status
-            ) VALUES (?1, ?2, 'PATIENT', ?3, 'CREATE', ?4, ?5, ?6, 'PENDING')
-            "#,
-            params![outbox_id, clinic_id, patient_id, idempotency_key, encrypted_outbox, outbox_nonce],
-        )?;
+        if let Some(ref cid) = _client_mutation_id {
+            let trimmed = cid.trim();
+            if !trimmed.is_empty() {
+                let _ = tx.execute(
+                    "INSERT OR REPLACE INTO local_mutation_idempotency (clinic_id, idempotency_key, entity_id, patient_code) VALUES (?1, ?2, ?3, ?4)",
+                    params![clinic_id, trimmed, &patient_id, &effective_code],
+                );
+            }
+        }
 
         // Commit transaction
         tx.commit()?;
@@ -391,20 +369,6 @@ impl DbOperations {
         let demo_bytes = serde_json::to_vec(&demographics)?;
         let (encrypted_demographics, demo_nonce) = encrypt_payload(&dek.key, &demo_bytes)?;
 
-        let outbox_payload = json!({
-            "patientId": patient_code,
-            "name": name,
-            "phone": phone,
-            "gender": gender,
-            "dateOfBirth": date_of_birth,
-            "age": age,
-            "allergies": allergies,
-            "conditions": conditions,
-        })
-        .to_string();
-
-        let (encrypted_outbox, outbox_nonce) = encrypt_payload(&dek.key, outbox_payload.as_bytes())?;
-
         let tx = conn.transaction()?;
 
         let current_local_ver: i32 = match tx.query_row(
@@ -429,7 +393,7 @@ impl DbOperations {
             SET patient_code = ?1,
                 encrypted_demographics = ?2,
                 nonce = ?3,
-                sync_status = 'PENDING',
+                sync_status = 'LOCAL_ONLY',
                 local_version = ?4,
                 updated_at = CURRENT_TIMESTAMP
             WHERE clinic_id = ?5 AND id = ?6
@@ -443,69 +407,28 @@ impl DbOperations {
             )));
         }
 
-        let outbox_id = Uuid::new_v4().to_string();
-        let idempotency_key = format!("local-patient-update-{patient_id}-{new_ver}");
-
-        tx.execute(
-            r#"
-            INSERT INTO local_sync_outbox (
-                id, clinic_id, entity_type, entity_id, action, idempotency_key, encrypted_payload, nonce, sync_status
-            ) VALUES (?1, ?2, 'PATIENT', ?3, 'UPDATE', ?4, ?5, ?6, 'PENDING')
-            "#,
-            params![outbox_id, clinic_id, patient_id, idempotency_key, encrypted_outbox, outbox_nonce],
-        )?;
-
         tx.commit()?;
         Ok(())
     }
 
-    /// Deletes a patient record locally. An outbox item for DELETE is atomically enqueued.
+    /// Deletes a patient record locally. Clinical data remains local only.
     pub fn delete_patient(
         conn: &mut Connection,
-        dek: &DatabaseEncryptionKey,
+        _dek: &DatabaseEncryptionKey,
         clinic_id: &str,
         patient_id: &str,
     ) -> Result<(), DatabaseOpError> {
         let tx = conn.transaction()?;
 
-        let (actual_id, server_id, patient_code, current_local_ver): (
-            String,
-            Option<String>,
-            Option<String>,
-            i32,
-        ) = tx.query_row(
-            "SELECT id, server_id, patient_code, local_version FROM local_patients WHERE clinic_id = ?1 AND (id = ?2 OR patient_code = ?2) LIMIT 1",
+        let actual_id: String = tx.query_row(
+            "SELECT id FROM local_patients WHERE clinic_id = ?1 AND (id = ?2 OR patient_code = ?2) LIMIT 1",
             params![clinic_id, patient_id],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            |row| row.get(0),
         )?;
-
-        let new_ver = current_local_ver + 1;
 
         tx.execute(
             "DELETE FROM local_patients WHERE clinic_id = ?1 AND id = ?2",
             params![clinic_id, actual_id],
-        )?;
-
-        let outbox_id = Uuid::new_v4().to_string();
-        let idempotency_key = format!("local-patient-delete-{actual_id}-{new_ver}");
-
-        let mut payload_map = serde_json::Map::new();
-        if let Some(ref sid) = server_id {
-            payload_map.insert("serverId".to_string(), serde_json::Value::String(sid.clone()));
-        }
-        if let Some(ref code) = patient_code {
-            payload_map.insert("patientCode".to_string(), serde_json::Value::String(code.clone()));
-        }
-        let payload_json = serde_json::Value::Object(payload_map).to_string();
-        let (encrypted_outbox, outbox_nonce) = encrypt_payload(&dek.key, payload_json.as_bytes())?;
-
-        tx.execute(
-            r#"
-            INSERT INTO local_sync_outbox (
-                id, clinic_id, entity_type, entity_id, action, idempotency_key, encrypted_payload, nonce, sync_status
-            ) VALUES (?1, ?2, 'PATIENT', ?3, 'DELETE', ?4, ?5, ?6, 'PENDING')
-            "#,
-            params![outbox_id, clinic_id, actual_id, idempotency_key, encrypted_outbox, outbox_nonce],
         )?;
 
         tx.commit()?;
@@ -629,7 +552,6 @@ impl DbOperations {
         clinical_snapshot_json: Option<&str>,
     ) -> Result<String, DatabaseOpError> {
         let consultation_id = Uuid::new_v4().to_string();
-        let idempotency_key = format!("local-consultation-create-{consultation_id}");
 
         // 1. Pack and encrypt clinical details
         let clinical_data = ClinicalData {
@@ -641,18 +563,6 @@ impl DbOperations {
         let clinical_bytes = serde_json::to_vec(&clinical_data)?;
         let (encrypted_clinical, clinical_nonce) = encrypt_payload(&dek.key, &clinical_bytes)?;
 
-        // 2. Pack and encrypt outbox mutation payload
-        let outbox_payload = json!({
-            "patientId": patient_id,
-            "doctorId": doctor_id,
-            "consultationDate": consultation_date,
-            "chiefComplaint": chief_complaint,
-            "diagnosis": diagnosis,
-        })
-        .to_string();
-
-        let (encrypted_outbox, outbox_nonce) = encrypt_payload(&dek.key, outbox_payload.as_bytes())?;
-
         let tx = conn.transaction()?;
 
         tx.execute(
@@ -660,7 +570,7 @@ impl DbOperations {
             INSERT INTO local_consultations (
                 id, clinic_id, patient_id, doctor_id, consultation_date, status,
                 encrypted_clinical_data, nonce, sync_status, local_version
-            ) VALUES (?1, ?2, ?3, ?4, ?5, 'DRAFT', ?6, ?7, 'PENDING', 1)
+            ) VALUES (?1, ?2, ?3, ?4, ?5, 'DRAFT', ?6, ?7, 'LOCAL_ONLY', 1)
             "#,
             params![
                 consultation_id,
@@ -671,16 +581,6 @@ impl DbOperations {
                 encrypted_clinical,
                 clinical_nonce,
             ],
-        )?;
-
-        let outbox_id = Uuid::new_v4().to_string();
-        tx.execute(
-            r#"
-            INSERT INTO local_sync_outbox (
-                id, clinic_id, entity_type, entity_id, action, idempotency_key, encrypted_payload, nonce, sync_status
-            ) VALUES (?1, ?2, 'CONSULTATION', ?3, 'CREATE', ?4, ?5, ?6, 'PENDING')
-            "#,
-            params![outbox_id, clinic_id, consultation_id, idempotency_key, encrypted_outbox, outbox_nonce],
         )?;
 
         tx.commit()?;
@@ -821,24 +721,8 @@ impl DbOperations {
         }
 
         let prescription_id = Uuid::new_v4().to_string();
-        let idempotency_key = format!("local-prescription-create-{prescription_id}");
 
         let (encrypted_items, nonce) = encrypt_payload(&dek.key, items_json.as_bytes())?;
-
-        let parsed_items: serde_json::Value = serde_json::from_str(items_json)
-            .unwrap_or_else(|_| serde_json::json!([]));
-
-        let outbox_payload = json!({
-            "consultationId": consultation_id,
-            "patientId": patient_id,
-            "doctorId": doctor_id,
-            "prescriptionNumber": prescription_number,
-            "itemsJson": items_json,
-            "items": parsed_items,
-        })
-        .to_string();
-
-        let (encrypted_outbox, outbox_nonce) = encrypt_payload(&dek.key, outbox_payload.as_bytes())?;
 
         let tx = conn.transaction()?;
 
@@ -857,7 +741,7 @@ impl DbOperations {
             INSERT INTO local_prescriptions (
                 id, clinic_id, consultation_id, patient_id, doctor_id,
                 prescription_number, revision_number, status, encrypted_items, nonce, sync_status, local_version
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, 'ACTIVE', ?7, ?8, 'PENDING', 1)
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, 'ACTIVE', ?7, ?8, 'LOCAL_ONLY', 1)
             "#,
             params![
                 prescription_id,
@@ -869,16 +753,6 @@ impl DbOperations {
                 encrypted_items,
                 nonce,
             ],
-        )?;
-
-        let outbox_id = Uuid::new_v4().to_string();
-        tx.execute(
-            r#"
-            INSERT INTO local_sync_outbox (
-                id, clinic_id, entity_type, entity_id, action, idempotency_key, encrypted_payload, nonce, sync_status
-            ) VALUES (?1, ?2, 'PRESCRIPTION', ?3, 'CREATE', ?4, ?5, ?6, 'PENDING')
-            "#,
-            params![outbox_id, clinic_id, prescription_id, idempotency_key, encrypted_outbox, outbox_nonce],
         )?;
 
         tx.commit()?;
@@ -1135,7 +1009,7 @@ impl DbOperations {
                 id, server_id, clinic_id, consultation_id, patient_id, doctor_id,
                 prescription_number, revision_number, status, encrypted_items, nonce,
                 sync_status, server_version, local_version, created_at, updated_at
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'ACTIVE', ?9, ?10, 'PENDING', ?11, ?12, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'ACTIVE', ?9, ?10, 'LOCAL_ONLY', ?11, ?12, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
             "#,
             params![
                 new_prescription_id,
@@ -1150,39 +1024,6 @@ impl DbOperations {
                 nonce,
                 server_ver,
                 new_local_version,
-            ],
-        )?;
-
-        // 3. Queue outbox REVISE mutation
-        let outbox_payload = json!({
-            "prescriptionId": prescription_id,
-            "prescriptionNumber": prescription_number,
-            "serverId": server_id,
-            "expectedRevisionNumber": expected_revision_number,
-            "expectedVersion": server_ver,
-            "reasonForRevision": reason_for_revision.trim(),
-            "items": parsed_items,
-        })
-        .to_string();
-
-        let (encrypted_outbox, outbox_nonce) =
-            encrypt_payload(&dek.key, outbox_payload.as_bytes())?;
-        let outbox_id = Uuid::new_v4().to_string();
-        let idempotency_key = format!("prescription-revise-{new_prescription_id}-r{next_revision_number}");
-
-        tx.execute(
-            r#"
-            INSERT INTO local_sync_outbox (
-                id, clinic_id, entity_type, entity_id, action, idempotency_key, encrypted_payload, nonce, sync_status
-            ) VALUES (?1, ?2, 'PRESCRIPTION', ?3, 'REVISE', ?4, ?5, ?6, 'PENDING')
-            "#,
-            params![
-                outbox_id,
-                clinic_id,
-                new_prescription_id,
-                idempotency_key,
-                encrypted_outbox,
-                outbox_nonce,
             ],
         )?;
 
@@ -1235,10 +1076,23 @@ impl DbOperations {
         })
     }
 
-    /// Recovers abandoned IN_FLIGHT jobs back to PENDING on application startup.
+    /// Recovers abandoned IN_FLIGHT jobs back to PENDING on application startup,
+    /// and cancels any queued clinical mutations so clinical data remains local only.
     pub fn recover_in_flight_jobs(conn: &mut Connection) -> Result<usize, DatabaseOpError> {
+        // Discard any clinical mutations that were previously queued in local_sync_outbox
+        let _ = conn.execute(
+            "UPDATE local_sync_outbox SET sync_status = 'CANCELLED', last_error = 'Clinical data cloud sync disabled' WHERE entity_type IN ('PATIENT', 'CONSULTATION', 'PRESCRIPTION', 'PRESCRIPTION_REVISION', 'INVOICE') AND sync_status IN ('PENDING', 'IN_FLIGHT')",
+            [],
+        );
+
+        // Auto-resolve any legacy clinical sync conflicts to clear stale conflict counts
+        let _ = conn.execute(
+            "UPDATE local_sync_conflicts SET status = 'RESOLVED', resolution_strategy = 'USE_LOCAL', resolved_at = CURRENT_TIMESTAMP WHERE entity_type IN ('PATIENT', 'CONSULTATION', 'PRESCRIPTION', 'PRESCRIPTION_REVISION', 'INVOICE') AND status = 'OPEN'",
+            [],
+        );
+
         let rows = conn.execute(
-            "UPDATE local_sync_outbox SET sync_status = 'PENDING' WHERE sync_status = 'IN_FLIGHT'",
+            "UPDATE local_sync_outbox SET sync_status = 'PENDING' WHERE sync_status = 'IN_FLIGHT' AND entity_type NOT IN ('PATIENT', 'CONSULTATION', 'PRESCRIPTION', 'PRESCRIPTION_REVISION', 'INVOICE')",
             [],
         )?;
         if rows > 0 {
@@ -1744,19 +1598,44 @@ impl DbOperations {
                     params![outbox_id],
                 )?;
 
-                // Enqueue new outbox mutation with monotonic version
-                let new_outbox_id = Uuid::new_v4().to_string();
-                let idempotency_key = format!("local-{}-{}-resolve-uselocal-v{}", entity_type.to_lowercase(), entity_id, target_version);
-                let (enc_outbox, outbox_nonce) = encrypt_payload(&dek.key, client_json.to_string().as_bytes())?;
+                let is_clinical = matches!(entity_type.as_str(), "PATIENT" | "CONSULTATION" | "PRESCRIPTION" | "PRESCRIPTION_REVISION" | "INVOICE");
+                if !is_clinical {
+                    // Enqueue new outbox mutation with monotonic version for non-clinical data
+                    let new_outbox_id = Uuid::new_v4().to_string();
+                    let idempotency_key = format!("local-{}-{}-resolve-uselocal-v{}", entity_type.to_lowercase(), entity_id, target_version);
+                    let (enc_outbox, outbox_nonce) = encrypt_payload(&dek.key, client_json.to_string().as_bytes())?;
 
-                tx.execute(
-                    r#"
-                    INSERT INTO local_sync_outbox (
-                        id, clinic_id, entity_type, entity_id, action, idempotency_key, encrypted_payload, nonce, sync_status, retry_count
-                    ) VALUES (?1, ?2, ?3, ?4, 'UPDATE', ?5, ?6, ?7, 'PENDING', 0)
-                    "#,
-                    params![new_outbox_id, clinic_id, entity_type, entity_id, idempotency_key, enc_outbox, outbox_nonce],
-                )?;
+                    tx.execute(
+                        r#"
+                        INSERT INTO local_sync_outbox (
+                            id, clinic_id, entity_type, entity_id, action, idempotency_key, encrypted_payload, nonce, sync_status, retry_count
+                        ) VALUES (?1, ?2, ?3, ?4, 'UPDATE', ?5, ?6, ?7, 'PENDING', 0)
+                        "#,
+                        params![new_outbox_id, clinic_id, entity_type, entity_id, idempotency_key, enc_outbox, outbox_nonce],
+                    )?;
+                } else {
+                    match entity_type.as_str() {
+                        "PATIENT" => {
+                            tx.execute(
+                                "UPDATE local_patients SET sync_status = 'LOCAL_ONLY' WHERE clinic_id = ?1 AND (id = ?2 OR server_id = ?2)",
+                                params![clinic_id, entity_id],
+                            )?;
+                        }
+                        "CONSULTATION" => {
+                            tx.execute(
+                                "UPDATE local_consultations SET sync_status = 'LOCAL_ONLY' WHERE clinic_id = ?1 AND (id = ?2 OR server_id = ?2)",
+                                params![clinic_id, entity_id],
+                            )?;
+                        }
+                        "PRESCRIPTION" | "PRESCRIPTION_REVISION" => {
+                            tx.execute(
+                                "UPDATE local_prescriptions SET sync_status = 'LOCAL_ONLY' WHERE clinic_id = ?1 AND (id = ?2 OR server_id = ?2)",
+                                params![clinic_id, entity_id],
+                            )?;
+                        }
+                        _ => {}
+                    }
+                }
 
                 tx.execute(
                     r#"
@@ -1900,19 +1779,44 @@ impl DbOperations {
                     params![outbox_id],
                 )?;
 
-                // Enqueue new outbox mutation with merged payload
-                let new_outbox_id = Uuid::new_v4().to_string();
-                let idempotency_key = format!("local-{}-{}-resolve-merge-v{}", entity_type.to_lowercase(), entity_id, target_version);
-                let (enc_outbox, outbox_nonce) = encrypt_payload(&dek.key, payload_str.as_bytes())?;
+                let is_clinical = matches!(entity_type.as_str(), "PATIENT" | "CONSULTATION" | "PRESCRIPTION" | "PRESCRIPTION_REVISION" | "INVOICE");
+                if !is_clinical {
+                    // Enqueue new outbox mutation with merged payload
+                    let new_outbox_id = Uuid::new_v4().to_string();
+                    let idempotency_key = format!("local-{}-{}-resolve-merge-v{}", entity_type.to_lowercase(), entity_id, target_version);
+                    let (enc_outbox, outbox_nonce) = encrypt_payload(&dek.key, payload_str.as_bytes())?;
 
-                tx.execute(
-                    r#"
-                    INSERT INTO local_sync_outbox (
-                        id, clinic_id, entity_type, entity_id, action, idempotency_key, encrypted_payload, nonce, sync_status, retry_count
-                    ) VALUES (?1, ?2, ?3, ?4, 'UPDATE', ?5, ?6, ?7, 'PENDING', 0)
-                    "#,
-                    params![new_outbox_id, clinic_id, entity_type, entity_id, idempotency_key, enc_outbox, outbox_nonce],
-                )?;
+                    tx.execute(
+                        r#"
+                        INSERT INTO local_sync_outbox (
+                            id, clinic_id, entity_type, entity_id, action, idempotency_key, encrypted_payload, nonce, sync_status, retry_count
+                        ) VALUES (?1, ?2, ?3, ?4, 'UPDATE', ?5, ?6, ?7, 'PENDING', 0)
+                        "#,
+                        params![new_outbox_id, clinic_id, entity_type, entity_id, idempotency_key, enc_outbox, outbox_nonce],
+                    )?;
+                } else {
+                    match entity_type.as_str() {
+                        "PATIENT" => {
+                            tx.execute(
+                                "UPDATE local_patients SET sync_status = 'LOCAL_ONLY' WHERE clinic_id = ?1 AND (id = ?2 OR server_id = ?2)",
+                                params![clinic_id, entity_id],
+                            )?;
+                        }
+                        "CONSULTATION" => {
+                            tx.execute(
+                                "UPDATE local_consultations SET sync_status = 'LOCAL_ONLY' WHERE clinic_id = ?1 AND (id = ?2 OR server_id = ?2)",
+                                params![clinic_id, entity_id],
+                            )?;
+                        }
+                        "PRESCRIPTION" | "PRESCRIPTION_REVISION" => {
+                            tx.execute(
+                                "UPDATE local_prescriptions SET sync_status = 'LOCAL_ONLY' WHERE clinic_id = ?1 AND (id = ?2 OR server_id = ?2)",
+                                params![clinic_id, entity_id],
+                            )?;
+                        }
+                        _ => {}
+                    }
+                }
 
                 tx.execute(
                     r#"
@@ -1956,31 +1860,15 @@ impl DbOperations {
                     };
 
                     if let Some((pat_id, doc_id, c_date, status, enc_clinical, nonce)) = local_consult {
-                        // 1. Insert new cloned consultation
+                        // 1. Insert new cloned consultation (local-only)
                         tx.execute(
                             r#"
                             INSERT INTO local_consultations (
                                 id, clinic_id, patient_id, doctor_id, consultation_date, status,
                                 encrypted_clinical_data, nonce, sync_status, server_version, local_version
-                            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'PENDING', 1, 1)
+                            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'LOCAL_ONLY', 1, 1)
                             "#,
                             params![new_consultation_id, clinic_id, pat_id, doc_id, c_date, status, enc_clinical, nonce],
-                        )?;
-
-                        // 2. Enqueue CREATE outbox for the new consultation
-                        let new_outbox_id = Uuid::new_v4().to_string();
-                        let idempotency_key = format!("local-consultation-create-{}", new_consultation_id);
-                        let client_json: serde_json::Value = serde_json::from_str(&client_payload_str)
-                            .unwrap_or_else(|_| json!({}));
-                        let (enc_payload, out_nonce) = encrypt_payload(&dek.key, client_json.to_string().as_bytes())?;
-
-                        tx.execute(
-                            r#"
-                            INSERT INTO local_sync_outbox (
-                                id, clinic_id, entity_type, entity_id, action, idempotency_key, encrypted_payload, nonce, sync_status, retry_count
-                            ) VALUES (?1, ?2, 'CONSULTATION', ?3, 'CREATE', ?4, ?5, ?6, 'PENDING', 0)
-                            "#,
-                            params![new_outbox_id, clinic_id, new_consultation_id, idempotency_key, enc_payload, out_nonce],
                         )?;
                     }
                 }
@@ -2086,6 +1974,7 @@ impl DbOperations {
                        encrypted_payload, nonce, retry_count
                 FROM local_sync_outbox
                 WHERE clinic_id = ?1 AND sync_status = 'PENDING'
+                  AND entity_type NOT IN ('PATIENT', 'CONSULTATION', 'PRESCRIPTION', 'PRESCRIPTION_REVISION', 'INVOICE')
                 ORDER BY created_at ASC
                 LIMIT ?2
                 "#,
@@ -2476,6 +2365,14 @@ impl DbOperations {
         for item in changes {
             if item.seq > highest_seq {
                 highest_seq = item.seq;
+            }
+
+            // Clinical records remain local only: do not apply remote changes
+            if matches!(
+                item.entity_type.as_str(),
+                "PATIENT" | "CONSULTATION" | "PRESCRIPTION" | "PRESCRIPTION_REVISION" | "INVOICE"
+            ) {
+                continue;
             }
 
             // 1. Check for local conflict: is there an un-synced outbox item for this entity?
@@ -3027,12 +2924,106 @@ impl DbOperations {
         Ok(final_seq)
     }
 
-    /// Saves an invoice draft or update with encrypted billing data and outbox synchronization.
+    /// Extracts the sequential integer suffix from an invoice number like "INV-2026-0001".
+    pub fn parse_invoice_sequence(invoice_num: &str) -> Option<u32> {
+        let trimmed = invoice_num.trim();
+        if !trimmed.starts_with("INV-") {
+            return None;
+        }
+        let parts: Vec<&str> = trimmed.split('-').collect();
+        if parts.len() < 3 {
+            return None;
+        }
+        parts.last().and_then(|num_str| num_str.parse::<u32>().ok())
+    }
+
+    /// Computes the next sequential invoice number for a clinic without modifying counter state.
+    pub fn get_next_invoice_number(conn: &Connection, clinic_id: &str) -> Result<String, DatabaseOpError> {
+        let current_year = chrono::Utc::now().format("%Y").to_string();
+        let seq_name = format!("invoice_{}", current_year);
+
+        let counter_seq: u32 = match conn.query_row(
+            "SELECT last_seq FROM local_seq_counters WHERE clinic_id = ?1 AND sequence_name = ?2",
+            params![clinic_id, &seq_name],
+            |row| row.get(0),
+        ) {
+            Ok(seq) => seq,
+            Err(rusqlite::Error::QueryReturnedNoRows) => 0,
+            Err(e) => return Err(DatabaseOpError::Sqlite(e)),
+        };
+
+        let mut max_seq = counter_seq;
+        let prefix = format!("INV-{}-%", current_year);
+        let mut stmt = conn.prepare(
+            "SELECT invoice_number FROM local_invoices_v2 WHERE clinic_id = ?1 AND invoice_number LIKE ?2",
+        )?;
+        let rows = stmt.query_map(params![clinic_id, &prefix], |row| row.get::<_, String>(0))?;
+        for r in rows {
+            let num = r?;
+            if let Some(parsed) = Self::parse_invoice_sequence(&num) {
+                if parsed > max_seq {
+                    max_seq = parsed;
+                }
+            }
+        }
+
+        let next_seq = max_seq + 1;
+        Ok(format!("INV-{}-{:04}", current_year, next_seq))
+    }
+
+    /// Allocates and increments the next sequential invoice number within an active transaction.
+    pub fn allocate_next_invoice_number_tx(
+        tx: &rusqlite::Transaction,
+        clinic_id: &str,
+    ) -> Result<String, DatabaseOpError> {
+        let current_year = chrono::Utc::now().format("%Y").to_string();
+        let seq_name = format!("invoice_{}", current_year);
+
+        let counter_seq: u32 = match tx.query_row(
+            "SELECT last_seq FROM local_seq_counters WHERE clinic_id = ?1 AND sequence_name = ?2",
+            params![clinic_id, &seq_name],
+            |row| row.get(0),
+        ) {
+            Ok(seq) => seq,
+            Err(rusqlite::Error::QueryReturnedNoRows) => 0,
+            Err(e) => return Err(DatabaseOpError::Sqlite(e)),
+        };
+
+        let mut max_seq = counter_seq;
+        let prefix = format!("INV-{}-%", current_year);
+        let mut stmt = tx.prepare(
+            "SELECT invoice_number FROM local_invoices_v2 WHERE clinic_id = ?1 AND invoice_number LIKE ?2",
+        )?;
+        let rows = stmt.query_map(params![clinic_id, &prefix], |row| row.get::<_, String>(0))?;
+        for r in rows {
+            let num = r?;
+            if let Some(parsed) = Self::parse_invoice_sequence(&num) {
+                if parsed > max_seq {
+                    max_seq = parsed;
+                }
+            }
+        }
+
+        let next_seq = max_seq + 1;
+        tx.execute(
+            r#"
+            INSERT INTO local_seq_counters (clinic_id, sequence_name, last_seq)
+            VALUES (?1, ?2, ?3)
+            ON CONFLICT(clinic_id, sequence_name) DO UPDATE SET
+            last_seq = excluded.last_seq
+            "#,
+            params![clinic_id, &seq_name, next_seq],
+        )?;
+
+        Ok(format!("INV-{}-{:04}", current_year, next_seq))
+    }
+
+    /// Saves an invoice draft or update with encrypted billing data.
     /// Performs strict integer minor-unit calculations and clamps discount to prevent negative totals.
     pub fn save_invoice(
         conn: &mut Connection,
         dek: &DatabaseEncryptionKey,
-        doctor_id: &str,
+        _doctor_id: &str,
         args: SaveInvoiceArgs,
     ) -> Result<String, DatabaseOpError> {
         if args.items.is_empty() {
@@ -3094,7 +3085,10 @@ impl DbOperations {
 
         let invoice_id = args.id.unwrap_or_else(|| Uuid::new_v4().to_string());
         let status = args.status.unwrap_or_else(|| "DRAFT".to_string());
-        let payment_status = args.payment_status.unwrap_or_else(|| "UNPAID".to_string());
+        let payment_status = match args.payment_status.as_deref().unwrap_or("UNPAID").trim() {
+            s if s.eq_ignore_ascii_case("paid") => "PAID".to_string(),
+            _ => "UNPAID".to_string(),
+        };
 
         let billing_data = EncryptedBillingData {
             items: validated_items.clone(),
@@ -3131,6 +3125,53 @@ impl DbOperations {
             None => (true, 1),
         };
 
+        let effective_invoice_number = if is_new {
+            let candidate = args.invoice_number.trim();
+            let is_invalid = candidate.is_empty()
+                || candidate == "INV-PREVIEW"
+                || candidate.starts_with("INV-SAMPLE")
+                || candidate.len() > 25;
+
+            let candidate_in_use: bool = if !is_invalid {
+                tx.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM local_invoices_v2 WHERE clinic_id = ?1 AND invoice_number = ?2)",
+                    params![args.clinic_id, candidate],
+                    |row| row.get(0),
+                )
+                .unwrap_or(false)
+            } else {
+                true
+            };
+
+            if candidate_in_use || is_invalid {
+                Self::allocate_next_invoice_number_tx(&tx, &args.clinic_id)?
+            } else {
+                if let Some(parsed) = Self::parse_invoice_sequence(candidate) {
+                    if candidate.len() >= 8 {
+                        let year = &candidate[4..8];
+                        let seq_name = format!("invoice_{}", year);
+                        let _ = tx.execute(
+                            r#"
+                            INSERT INTO local_seq_counters (clinic_id, sequence_name, last_seq)
+                            VALUES (?1, ?2, ?3)
+                            ON CONFLICT(clinic_id, sequence_name) DO UPDATE SET
+                            last_seq = MAX(local_seq_counters.last_seq, excluded.last_seq)
+                            "#,
+                            params![args.clinic_id, seq_name, parsed],
+                        );
+                    }
+                }
+                candidate.to_string()
+            }
+        } else {
+            // Always preserve existing assigned invoice number when editing an existing draft
+            tx.query_row(
+                "SELECT invoice_number FROM local_invoices_v2 WHERE clinic_id = ?1 AND id = ?2",
+                params![args.clinic_id, invoice_id],
+                |row| row.get(0),
+            )?
+        };
+
         if is_new {
             tx.execute(
                 r#"
@@ -3144,7 +3185,7 @@ impl DbOperations {
                     ?1, NULL, ?2, ?3, ?4,
                     ?5, ?6, ?7, ?8,
                     ?9, ?10, ?11, ?12, ?13,
-                    ?14, ?15, 'PENDING', 1, ?16,
+                    ?14, ?15, 'LOCAL_ONLY', 1, ?16,
                     CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
                 )
                 "#,
@@ -3153,7 +3194,7 @@ impl DbOperations {
                     args.clinic_id,
                     args.patient_id,
                     args.consultation_id,
-                    args.invoice_number,
+                    effective_invoice_number,
                     args.invoice_date,
                     status,
                     payment_status,
@@ -3183,12 +3224,12 @@ impl DbOperations {
                     encrypted_billing_data = ?10,
                     nonce = ?11,
                     local_version = ?12,
-                    sync_status = 'PENDING',
+                    sync_status = 'LOCAL_ONLY',
                     updated_at = CURRENT_TIMESTAMP
                 WHERE clinic_id = ?13 AND id = ?14
                 "#,
                 params![
-                    args.invoice_number,
+                    effective_invoice_number,
                     args.invoice_date,
                     status,
                     payment_status,
@@ -3205,49 +3246,6 @@ impl DbOperations {
                 ],
             )?;
         }
-
-        // Outbox entry (encrypted payload)
-        let outbox_payload = json!({
-            "patientId": args.patient_id,
-            "consultationId": args.consultation_id,
-            "invoiceNumber": args.invoice_number,
-            "invoiceDate": args.invoice_date,
-            "status": status,
-            "paymentStatus": payment_status,
-            "subtotalPaise": subtotal_paise,
-            "discountPaise": discount_paise,
-            "taxRatePercent": tax_rate,
-            "taxPaise": tax_paise,
-            "totalPaise": total_paise,
-            "items": validated_items,
-            "notes": args.notes,
-            "doctorId": doctor_id,
-            "version": new_version,
-        });
-        let outbox_bytes = serde_json::to_vec(&outbox_payload)?;
-        let (enc_outbox, nonce_outbox) = encrypt_payload(&dek.key, &outbox_bytes)?;
-
-        let outbox_id = Uuid::new_v4().to_string();
-        let idempotency_key = format!("invoice-mutation-{}-v{}", invoice_id, new_version);
-        let action = if is_new { "CREATE" } else { "UPDATE" };
-
-        tx.execute(
-            r#"
-            INSERT INTO local_sync_outbox (
-                id, clinic_id, entity_type, entity_id, action,
-                idempotency_key, encrypted_payload, nonce, sync_status
-            ) VALUES (?1, ?2, 'INVOICE', ?3, ?4, ?5, ?6, ?7, 'PENDING')
-            "#,
-            params![
-                outbox_id,
-                args.clinic_id,
-                invoice_id,
-                action,
-                idempotency_key,
-                enc_outbox,
-                nonce_outbox,
-            ],
-        )?;
 
         tx.commit()?;
         Ok(invoice_id)
@@ -3411,7 +3409,7 @@ impl DbOperations {
         conn: &mut Connection,
         dek: &DatabaseEncryptionKey,
         clinic_id: &str,
-        doctor_id: &str,
+        _doctor_id: &str,
         invoice_id: &str,
     ) -> Result<InvoiceRecord, DatabaseOpError> {
         let tx = conn.transaction()?;
@@ -3441,37 +3439,8 @@ impl DbOperations {
             )?;
 
             tx.execute(
-                "UPDATE local_invoices_v2 SET status = 'FINALIZED', local_version = ?1, sync_status = 'PENDING', updated_at = CURRENT_TIMESTAMP WHERE clinic_id = ?2 AND id = ?3",
+                "UPDATE local_invoices_v2 SET status = 'FINALIZED', local_version = ?1, sync_status = 'LOCAL_ONLY', updated_at = CURRENT_TIMESTAMP WHERE clinic_id = ?2 AND id = ?3",
                 params![new_version, clinic_id, invoice_id],
-            )?;
-
-            let outbox_payload = json!({
-                "invoiceId": invoice_id,
-                "status": "FINALIZED",
-                "finalizedBy": doctor_id,
-                "version": new_version,
-            });
-            let outbox_bytes = serde_json::to_vec(&outbox_payload)?;
-            let (enc_outbox, nonce_outbox) = encrypt_payload(&dek.key, &outbox_bytes)?;
-
-            let outbox_id = Uuid::new_v4().to_string();
-            let idempotency_key = format!("invoice-finalize-{}-v{}", invoice_id, new_version);
-
-            tx.execute(
-                r#"
-                INSERT INTO local_sync_outbox (
-                    id, clinic_id, entity_type, entity_id, action,
-                    idempotency_key, encrypted_payload, nonce, sync_status
-                ) VALUES (?1, ?2, 'INVOICE', ?3, 'FINALIZE', ?4, ?5, ?6, 'PENDING')
-                "#,
-                params![
-                    outbox_id,
-                    clinic_id,
-                    invoice_id,
-                    idempotency_key,
-                    enc_outbox,
-                    nonce_outbox,
-                ],
             )?;
         }
 
@@ -5132,11 +5101,23 @@ mod tests {
     fn test_recover_in_flight_jobs() {
         let (mut conn, _dek) = setup_test_db();
 
+        // Non-clinical outbox item should be recovered to PENDING
         conn.execute(
             r#"
             INSERT INTO local_sync_outbox (
                 id, clinic_id, entity_type, entity_id, action, idempotency_key, encrypted_payload, nonce, sync_status
-            ) VALUES ('outbox_1', 'clinic_1', 'PATIENT', 'pat_1', 'CREATE', 'idem_1', X'00', X'00', 'IN_FLIGHT')
+            ) VALUES ('outbox_1', 'clinic_1', 'CLINIC_PROFILE', 'pat_1', 'UPDATE', 'idem_1', X'00', X'00', 'IN_FLIGHT')
+            "#,
+            [],
+        )
+        .unwrap();
+
+        // Clinical outbox item should be cancelled to stop cloud sync
+        conn.execute(
+            r#"
+            INSERT INTO local_sync_outbox (
+                id, clinic_id, entity_type, entity_id, action, idempotency_key, encrypted_payload, nonce, sync_status
+            ) VALUES ('outbox_clinical', 'clinic_1', 'PATIENT', 'pat_2', 'CREATE', 'idem_2', X'00', X'00', 'IN_FLIGHT')
             "#,
             [],
         )
@@ -5148,6 +5129,11 @@ mod tests {
         let summary = DbOperations::get_outbox_summary(&conn, "clinic_1").unwrap();
         assert_eq!(summary.pending_count, 1);
         assert_eq!(summary.in_flight_count, 0);
+
+        let clinical_status: String = conn
+            .query_row("SELECT sync_status FROM local_sync_outbox WHERE id = 'outbox_clinical'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(clinical_status, "CANCELLED");
     }
 
     #[test]
@@ -5310,26 +5296,14 @@ mod tests {
         let (mut conn, dek) = setup_test_db();
         let clinic_id = "clinic_recovery_test";
 
-        DbOperations::insert_patient(
-            &mut conn,
-            &dek,
-            clinic_id,
-            "P-101",
-            "Patient One",
-            "9998887771",
-            "MALE",
-            None,
-            30,
-            &[],
-            &[],
-            None,
-        )
-        .unwrap();
-
-        // Mark it IN_FLIGHT simulating in-flight network request before process crash
+        let (enc, nonce) = crate::crypto::encrypt_payload(&dek.key, b"{\"test\": true}").unwrap();
         conn.execute(
-            "UPDATE local_sync_outbox SET sync_status = 'IN_FLIGHT' WHERE clinic_id = ?1",
-            params![clinic_id],
+            r#"
+            INSERT INTO local_sync_outbox (
+                id, clinic_id, entity_type, entity_id, action, idempotency_key, encrypted_payload, nonce, sync_status
+            ) VALUES ('outbox_rec_1', ?1, 'CLINIC_PROFILE', 'item_1', 'UPDATE', 'idem_rec_1', ?2, ?3, 'IN_FLIGHT')
+            "#,
+            params![clinic_id, enc, nonce],
         )
         .unwrap();
 
@@ -5348,26 +5322,21 @@ mod tests {
         let (mut conn, dek) = setup_test_db();
         let clinic_id = "clinic_batch_test";
 
-        DbOperations::insert_patient(
-            &mut conn,
-            &dek,
-            clinic_id,
-            "P-201",
-            "Batch Patient",
-            "9998887772",
-            "FEMALE",
-            None,
-            25,
-            &[],
-            &[],
-            None,
+        let (enc, nonce) = crate::crypto::encrypt_payload(&dek.key, b"{\"name\": \"Batch Patient\"}").unwrap();
+        conn.execute(
+            r#"
+            INSERT INTO local_sync_outbox (
+                id, clinic_id, entity_type, entity_id, action, idempotency_key, encrypted_payload, nonce, sync_status
+            ) VALUES ('outbox_b_1', ?1, 'CLINIC_PROFILE', 'item_b1', 'UPDATE', 'idem_b_1', ?2, ?3, 'PENDING')
+            "#,
+            params![clinic_id, enc, nonce],
         )
         .unwrap();
 
         // 1. Fetch batch
         let batch = DbOperations::get_pending_outbox_batch(&mut conn, &dek, clinic_id, 10).unwrap();
         assert_eq!(batch.len(), 1);
-        assert_eq!(batch[0].entity_type, "PATIENT");
+        assert_eq!(batch[0].entity_type, "CLINIC_PROFILE");
         assert_eq!(batch[0].payload["name"], "Batch Patient");
 
         // Outbox should now be IN_FLIGHT
@@ -5406,9 +5375,13 @@ mod tests {
         )
         .unwrap();
 
-        let batch = DbOperations::get_pending_outbox_batch(&mut conn, &dek, clinic_id, 10).unwrap();
-        assert_eq!(batch.len(), 1);
-        let outbox_id = &batch[0].id;
+        let (enc1, nonce1) = crate::crypto::encrypt_payload(&dek.key, b"{}").unwrap();
+        conn.execute(
+            "INSERT INTO local_sync_outbox (id, clinic_id, entity_type, entity_id, action, idempotency_key, encrypted_payload, nonce, sync_status) VALUES ('outbox_p1', ?1, 'PATIENT', ?2, 'CREATE', 'idem_p1', ?3, ?4, 'PENDING')",
+            params![clinic_id, pat_id, enc1, nonce1],
+        ).unwrap();
+
+        let outbox_id = "outbox_p1";
 
         // 1. Apply APPLIED result
         DbOperations::apply_push_mutation_result(
@@ -5439,16 +5412,20 @@ mod tests {
             "9998887774",
             "FEMALE",
             None,
-            42,
+            35,
             &[],
             &[],
             None,
         )
         .unwrap();
 
-        let batch2 = DbOperations::get_pending_outbox_batch(&mut conn, &dek, clinic_id, 10).unwrap();
-        assert_eq!(batch2.len(), 1);
-        let outbox_id2 = &batch2[0].id;
+        let (enc2, nonce2) = crate::crypto::encrypt_payload(&dek.key, b"{}").unwrap();
+        conn.execute(
+            "INSERT INTO local_sync_outbox (id, clinic_id, entity_type, entity_id, action, idempotency_key, encrypted_payload, nonce, sync_status) VALUES ('outbox_p2', ?1, 'PATIENT', ?2, 'CREATE', 'idem_p2', ?3, ?4, 'PENDING')",
+            params![clinic_id, pat_id2, enc2, nonce2],
+        ).unwrap();
+
+        let outbox_id2 = "outbox_p2";
 
         let conflict_details = serde_json::json!({
             "conflictReason": "CONCURRENT_MODIFICATION",
@@ -5542,16 +5519,14 @@ mod tests {
         .unwrap();
         assert_eq!(final_seq, 2);
 
-        // Verify cursor in local_sync_state
+        // Verify cursor in local_sync_state advances
         let state = DbOperations::get_sync_state(&conn, clinic_id).unwrap().unwrap();
         assert_eq!(state.last_pulled_seq, 2);
         assert!(state.in_sync);
 
-        // Verify patients were inserted with encryption
+        // Clinical data is local-only: remote clinical changes are not applied
         let patients = DbOperations::get_patients(&conn, &dek, clinic_id).unwrap();
-        assert_eq!(patients.len(), 2);
-        assert!(patients.iter().any(|p| p.name == "Pulled Patient" && p.patient_code == "P-9001"));
-        assert!(patients.iter().any(|p| p.name == "Second Pulled Patient" && p.patient_code == "P-9002"));
+        assert_eq!(patients.len(), 0);
 
         // 2. Next pull progresses cursor monotonically
         let changes2 = vec![
@@ -5644,17 +5619,15 @@ mod tests {
         )
         .unwrap();
 
-        // 1. Verify conflict is durably recorded in local_sync_conflicts
+        // 1. Clinical feed is skipped, so no conflict is created
         let conflicts = DbOperations::get_conflicts(&conn, Some("OPEN")).unwrap();
-        assert_eq!(conflicts.len(), 1);
-        assert_eq!(conflicts[0].conflict_reason, "CONCURRENT_REMOTE_UPDATE");
-        assert_eq!(conflicts[0].status, "OPEN");
+        assert_eq!(conflicts.len(), 0);
 
         // 2. Verify local patient was NOT silently overwritten
         let patients = DbOperations::get_patients(&conn, &dek, clinic_id).unwrap();
         let local_p = patients.iter().find(|p| p.id == local_pat_id).unwrap();
         assert_eq!(local_p.name, "Local Offline Patient"); // Preserved!
-        assert_eq!(local_p.sync_status, "CONFLICT");
+        assert_eq!(local_p.sync_status, "LOCAL_ONLY");
     }
 
     #[test]
@@ -5695,16 +5668,28 @@ mod tests {
         )
         .unwrap();
 
+        let (enc_a, nonce_a) = crate::crypto::encrypt_payload(&dek.key, b"{\"name\": \"Clinic Alpha\"}").unwrap();
+        conn.execute(
+            "INSERT INTO local_sync_outbox (id, clinic_id, entity_type, entity_id, action, idempotency_key, encrypted_payload, nonce, sync_status) VALUES ('outbox_a', ?1, 'CLINIC_PROFILE', 'item_a', 'UPDATE', 'idem_a', ?2, ?3, 'PENDING')",
+            params![clinic_a, enc_a, nonce_a],
+        ).unwrap();
+
+        let (enc_b, nonce_b) = crate::crypto::encrypt_payload(&dek.key, b"{\"name\": \"Clinic Beta\"}").unwrap();
+        conn.execute(
+            "INSERT INTO local_sync_outbox (id, clinic_id, entity_type, entity_id, action, idempotency_key, encrypted_payload, nonce, sync_status) VALUES ('outbox_b', ?1, 'CLINIC_PROFILE', 'item_b', 'UPDATE', 'idem_b', ?2, ?3, 'PENDING')",
+            params![clinic_b, enc_b, nonce_b],
+        ).unwrap();
+
         // Verify outbox batch isolation
         let batch_a = DbOperations::get_pending_outbox_batch(&mut conn, &dek, clinic_a, 10).unwrap();
         assert_eq!(batch_a.len(), 1);
         assert_eq!(batch_a[0].clinic_id, clinic_a);
-        assert_eq!(batch_a[0].payload["name"], "Patient Alpha");
+        assert_eq!(batch_a[0].payload["name"], "Clinic Alpha");
 
         let batch_b = DbOperations::get_pending_outbox_batch(&mut conn, &dek, clinic_b, 10).unwrap();
         assert_eq!(batch_b.len(), 1);
         assert_eq!(batch_b[0].clinic_id, clinic_b);
-        assert_eq!(batch_b[0].payload["name"], "Patient Beta");
+        assert_eq!(batch_b[0].payload["name"], "Clinic Beta");
 
         // Verify read isolation
         let patients_a = DbOperations::get_patients(&conn, &dek, clinic_a).unwrap();
@@ -5800,9 +5785,9 @@ mod tests {
             let after_delete = DbOperations::get_patients(&conn, &dek, clinic_id).unwrap();
             assert_eq!(after_delete.len(), 0);
 
-            // Verify outbox contains the delete action
+            // Verify clinical data does not enqueue sync outbox mutations
             let outbox = DbOperations::get_pending_outbox_batch(&mut conn, &dek, clinic_id, 10).unwrap();
-            assert!(outbox.iter().any(|item| item.action == "DELETE" && item.entity_id == patient_id));
+            assert_eq!(outbox.len(), 0);
         }
 
         let _ = std::fs::remove_file(db_path);
@@ -5829,8 +5814,12 @@ mod tests {
         )
         .unwrap();
 
-        let batch = DbOperations::get_pending_outbox_batch(&mut conn, &dek, clinic_id, 10).unwrap();
-        let outbox_id = &batch[0].id;
+        let outbox_id = "outbox_conf_srv_1";
+        conn.execute(
+            "INSERT INTO local_sync_outbox (id, clinic_id, entity_type, entity_id, action, idempotency_key, encrypted_payload, nonce, sync_status) VALUES (?1, ?2, 'PATIENT', ?3, 'CREATE', 'idem_srv_1', X'00', X'00', 'PENDING')",
+            params![outbox_id, clinic_id, &local_pat_id],
+        )
+        .unwrap();
 
         let conflict_details = serde_json::json!({
             "conflictReason": "DIVERGENT_CLINICAL_DATA",
@@ -5920,8 +5909,12 @@ mod tests {
         )
         .unwrap();
 
-        let batch = DbOperations::get_pending_outbox_batch(&mut conn, &dek, clinic_id, 10).unwrap();
-        let outbox_id = &batch[0].id;
+        let outbox_id = "outbox_conf_loc_1";
+        conn.execute(
+            "INSERT INTO local_sync_outbox (id, clinic_id, entity_type, entity_id, action, idempotency_key, encrypted_payload, nonce, sync_status) VALUES (?1, ?2, 'PATIENT', ?3, 'CREATE', 'idem_loc_1', X'00', X'00', 'PENDING')",
+            params![outbox_id, clinic_id, &local_pat_id],
+        )
+        .unwrap();
 
         let conflict_details = serde_json::json!({
             "conflictReason": "CONCURRENT_MODIFICATION",
@@ -5961,18 +5954,15 @@ mod tests {
         assert_eq!(resolved.status, "RESOLVED");
         assert_eq!(resolved.resolution_strategy.as_deref(), Some("USE_LOCAL"));
 
-        // Verify local patient marked PENDING with monotonic version >= server_version + 1
+        // Verify local patient kept and marked LOCAL_ONLY per clinical sync removal
         let patients = DbOperations::get_patients(&conn, &dek, clinic_id).unwrap();
         let p = &patients[0];
         assert_eq!(p.name, "Doctor Desired Name");
-        assert_eq!(p.sync_status, "PENDING");
-        assert_eq!(p.local_version, 4);
+        assert_eq!(p.sync_status, "LOCAL_ONLY");
 
-        // Verify a NEW outbox mutation is enqueued with target version 4
+        // Verify no new outbox mutations are enqueued for clinical entities
         let new_batch = DbOperations::get_pending_outbox_batch(&mut conn, &dek, clinic_id, 10).unwrap();
-        assert_eq!(new_batch.len(), 1);
-        assert_eq!(new_batch[0].action, "UPDATE");
-        assert!(new_batch[0].idempotency_key.contains("resolve-uselocal"));
+        assert_eq!(new_batch.len(), 0);
     }
 
     #[test]
@@ -5996,8 +5986,12 @@ mod tests {
         )
         .unwrap();
 
-        let batch = DbOperations::get_pending_outbox_batch(&mut conn, &dek, clinic_id, 10).unwrap();
-        let outbox_id = &batch[0].id;
+        let outbox_id = "outbox_conf_merge_1";
+        conn.execute(
+            "INSERT INTO local_sync_outbox (id, clinic_id, entity_type, entity_id, action, idempotency_key, encrypted_payload, nonce, sync_status) VALUES (?1, ?2, 'PATIENT', ?3, 'CREATE', 'idem_m_1', X'00', X'00', 'PENDING')",
+            params![outbox_id, clinic_id, &local_pat_id],
+        )
+        .unwrap();
 
         let conflict_details = serde_json::json!({
             "conflictReason": "DIVERGENT_CLINICAL_DATA",
@@ -6062,7 +6056,7 @@ mod tests {
         assert_eq!(p.name, "Dr Alice & Bob Reconciled");
         assert_eq!(p.allergies, vec!["Penicillin".to_string(), "Sulfa".to_string()]);
         assert_eq!(p.conditions, vec!["Diabetes".to_string()]);
-        assert_eq!(p.sync_status, "PENDING");
+        assert_eq!(p.sync_status, "LOCAL_ONLY");
     }
 
     #[test]
@@ -6099,8 +6093,12 @@ mod tests {
         )
         .unwrap();
 
-        let batch = DbOperations::get_pending_outbox_batch(&mut conn, &dek, clinic_id, 10).unwrap();
-        let outbox_id = batch.iter().find(|b| b.entity_id == consult_id).unwrap().id.clone();
+        let outbox_id = "outbox_conf_pres_1".to_string();
+        conn.execute(
+            "INSERT INTO local_sync_outbox (id, clinic_id, entity_type, entity_id, action, idempotency_key, encrypted_payload, nonce, sync_status) VALUES (?1, ?2, 'CONSULTATION', ?3, 'CREATE', 'idem_pres_1', X'00', X'00', 'PENDING')",
+            params![&outbox_id, clinic_id, &consult_id],
+        )
+        .unwrap();
 
         let conflict_details = serde_json::json!({
             "conflictReason": "CONCURRENT_DRAFT_COLLISION",
@@ -6161,7 +6159,7 @@ mod tests {
         let cloned_c = consults.iter().find(|c| c.id != consult_id).unwrap();
         assert_eq!(cloned_c.diagnosis, "Tension Headache");
         assert_eq!(cloned_c.chief_complaint, "Severe Migraine");
-        assert_eq!(cloned_c.sync_status, "PENDING");
+        assert_eq!(cloned_c.sync_status, "LOCAL_ONLY");
     }
 
     #[test]
@@ -6186,8 +6184,12 @@ mod tests {
         )
         .unwrap();
 
-        let batch_a = DbOperations::get_pending_outbox_batch(&mut conn, &dek, clinic_a, 10).unwrap();
-        let outbox_a = &batch_a[0].id;
+        let outbox_a = "outbox_conf_iso_a";
+        conn.execute(
+            "INSERT INTO local_sync_outbox (id, clinic_id, entity_type, entity_id, action, idempotency_key, encrypted_payload, nonce, sync_status) VALUES (?1, ?2, 'PATIENT', ?3, 'CREATE', 'idem_iso_a', X'00', X'00', 'PENDING')",
+            params![outbox_a, clinic_a, &pat_a],
+        )
+        .unwrap();
 
         DbOperations::apply_push_mutation_result(
             &mut conn,
@@ -6460,6 +6462,91 @@ mod tests {
     }
 
     #[test]
+    fn test_invoice_sequential_numbering_and_counter_allocation() {
+        let (mut conn, dek) = setup_test_db();
+        let clinic_a = "clinic_seq_a";
+        let clinic_b = "clinic_seq_b";
+        let doctor_id = "doc_seq";
+
+        let current_year = chrono::Utc::now().format("%Y").to_string();
+
+        // 1. Initial next invoice number should be INV-YYYY-0001
+        let next_a1 = DbOperations::get_next_invoice_number(&mut conn, clinic_a).unwrap();
+        assert_eq!(next_a1, format!("INV-{}-0001", current_year));
+
+        // 2. Saving first invoice without specified number allocates INV-YYYY-0001
+        let args1 = SaveInvoiceArgs {
+            id: None,
+            clinic_id: clinic_a.to_string(),
+            patient_id: "pat_seq_1".to_string(),
+            consultation_id: None,
+            invoice_number: "".to_string(),
+            invoice_date: "2026-11-17".to_string(),
+            status: Some("DRAFT".to_string()),
+            payment_status: Some("Paid".to_string()),
+            items: vec![InvoiceItem {
+                description: "Consultation".to_string(),
+                quantity: 1,
+                unit_price_paise: 50000,
+                total_paise: 50000,
+            }],
+            discount_paise: None,
+            tax_rate_percent: None,
+            notes: None,
+        };
+        let inv_id1 = DbOperations::save_invoice(&mut conn, &dek, doctor_id, args1.clone()).unwrap();
+        let inv1 = DbOperations::get_invoice_by_id(&conn, &dek, clinic_a, &inv_id1).unwrap().unwrap();
+        assert_eq!(inv1.invoice_number, format!("INV-{}-0001", current_year));
+        // Verify payment status casing normalized to PAID
+        assert_eq!(inv1.payment_status, "PAID");
+
+        // 3. Next invoice number for clinic A is now INV-YYYY-0002
+        let next_a2 = DbOperations::get_next_invoice_number(&mut conn, clinic_a).unwrap();
+        assert_eq!(next_a2, format!("INV-{}-0002", current_year));
+
+        // 4. Updating draft 1 preserves INV-YYYY-0001 and does not increment sequence
+        let mut update_args = args1;
+        update_args.id = Some(inv_id1.clone());
+        update_args.invoice_number = format!("INV-{}-0001", current_year);
+        update_args.payment_status = Some("Unpaid".to_string());
+        DbOperations::save_invoice(&mut conn, &dek, doctor_id, update_args).unwrap();
+        let inv1_updated = DbOperations::get_invoice_by_id(&conn, &dek, clinic_a, &inv_id1).unwrap().unwrap();
+        assert_eq!(inv1_updated.invoice_number, format!("INV-{}-0001", current_year));
+        assert_eq!(inv1_updated.payment_status, "UNPAID");
+
+        let next_a2_after_update = DbOperations::get_next_invoice_number(&mut conn, clinic_a).unwrap();
+        assert_eq!(next_a2_after_update, format!("INV-{}-0002", current_year));
+
+        // 5. Saving second invoice allocates INV-YYYY-0002
+        let args2 = SaveInvoiceArgs {
+            id: None,
+            clinic_id: clinic_a.to_string(),
+            patient_id: "pat_seq_2".to_string(),
+            consultation_id: None,
+            invoice_number: "INV-PREVIEW".to_string(),
+            invoice_date: "2026-11-17".to_string(),
+            status: Some("DRAFT".to_string()),
+            payment_status: Some("PAID".to_string()),
+            items: vec![InvoiceItem {
+                description: "Lab test".to_string(),
+                quantity: 1,
+                unit_price_paise: 30000,
+                total_paise: 30000,
+            }],
+            discount_paise: None,
+            tax_rate_percent: None,
+            notes: None,
+        };
+        let inv_id2 = DbOperations::save_invoice(&mut conn, &dek, doctor_id, args2).unwrap();
+        let inv2 = DbOperations::get_invoice_by_id(&conn, &dek, clinic_a, &inv_id2).unwrap().unwrap();
+        assert_eq!(inv2.invoice_number, format!("INV-{}-0002", current_year));
+
+        // 6. Clinic B has independent numbering starting from INV-YYYY-0001
+        let next_b1 = DbOperations::get_next_invoice_number(&mut conn, clinic_b).unwrap();
+        assert_eq!(next_b1, format!("INV-{}-0001", current_year));
+    }
+
+    #[test]
     fn test_formulary_crud_and_tenancy() {
         let (mut conn, _dek) = setup_test_db();
         let clinic_a = "clinic_form_a";
@@ -6526,11 +6613,20 @@ mod tests {
 
         let inv_id1 = DbOperations::save_invoice(&mut conn, &dek, doctor_id, args1).unwrap();
 
+        // In v1.0.2, invoices are LOCAL_ONLY and not queued into sync outbox
         let batch1 = DbOperations::get_pending_outbox_batch(&mut conn, &dek, clinic_id, 10).unwrap();
-        assert_eq!(batch1.len(), 1);
-        assert_eq!(batch1[0].entity_type, "INVOICE");
-        assert_eq!(batch1[0].entity_id, inv_id1);
-        let outbox_id1 = &batch1[0].id;
+        assert_eq!(batch1.len(), 0);
+
+        let inv_rec1_init = DbOperations::get_invoice_by_id(&conn, &dek, clinic_id, &inv_id1).unwrap().unwrap();
+        assert_eq!(inv_rec1_init.sync_status, "LOCAL_ONLY");
+
+        // Simulate legacy/outbox transition handling for APPLIED
+        let outbox_id1 = "outbox_inv_1";
+        conn.execute(
+            "INSERT INTO local_sync_outbox (id, clinic_id, entity_type, entity_id, action, idempotency_key, encrypted_payload, nonce, sync_status) VALUES (?1, ?2, 'INVOICE', ?3, 'CREATE', 'idem_inv_1', X'00', X'00', 'PENDING')",
+            params![outbox_id1, clinic_id, &inv_id1],
+        )
+        .unwrap();
 
         // 1. APPLIED: verifies sync_status transitions to SYNCED and server_id is stored
         DbOperations::apply_push_mutation_result(
@@ -6572,9 +6668,12 @@ mod tests {
             notes: None,
         };
         let inv_id2 = DbOperations::save_invoice(&mut conn, &dek, doctor_id, args2).unwrap();
-        let batch2 = DbOperations::get_pending_outbox_batch(&mut conn, &dek, clinic_id, 10).unwrap();
-        assert_eq!(batch2.len(), 1);
-        let outbox_id2 = &batch2[0].id;
+        let outbox_id2 = "outbox_p2";
+        conn.execute(
+            "INSERT INTO local_sync_outbox (id, clinic_id, entity_type, entity_id, action, idempotency_key, encrypted_payload, nonce, sync_status) VALUES (?1, ?2, 'INVOICE', ?3, 'CREATE', 'idem_inv_2', X'00', X'00', 'PENDING')",
+            params![outbox_id2, clinic_id, &inv_id2],
+        )
+        .unwrap();
 
         let conflict_details = json!({
             "conflictReason": "STALE_VERSION",
@@ -6626,9 +6725,12 @@ mod tests {
             notes: None,
         };
         let inv_id3 = DbOperations::save_invoice(&mut conn, &dek, doctor_id, args3).unwrap();
-        let batch3 = DbOperations::get_pending_outbox_batch(&mut conn, &dek, clinic_id, 10).unwrap();
-        assert_eq!(batch3.len(), 1);
-        let outbox_id3 = &batch3[0].id;
+        let outbox_id3 = "outbox_inv_3";
+        conn.execute(
+            "INSERT INTO local_sync_outbox (id, clinic_id, entity_type, entity_id, action, idempotency_key, encrypted_payload, nonce, sync_status) VALUES (?1, ?2, 'INVOICE', ?3, 'CREATE', 'idem_inv_3', X'00', X'00', 'PENDING')",
+            params![outbox_id3, clinic_id, &inv_id3],
+        )
+        .unwrap();
 
         DbOperations::apply_push_mutation_result(
             &mut conn,
@@ -6653,7 +6755,7 @@ mod tests {
         let clinic_id = "clinic_pull_inv";
         let doctor_id = "doctor_pull_inv";
 
-        // 1. Pull remote invoice without local conflict
+        // 1. In v1.0.2, pulling clinical data (INVOICE) is ignored to keep clinical records local-only
         let remote_inv_item = SyncFeedChangeItem {
             seq: 1,
             entity_type: "INVOICE".to_string(),
@@ -6688,15 +6790,11 @@ mod tests {
         let final_seq = DbOperations::apply_pull_feed_items(&mut conn, &dek, clinic_id, &[remote_inv_item], 0, false).unwrap();
         assert_eq!(final_seq, 1);
 
+        // Sequence advanced, but clinical invoice is NOT imported locally
         let pulled_invoices = DbOperations::get_invoices(&conn, &dek, clinic_id, None).unwrap();
-        assert_eq!(pulled_invoices.len(), 1);
-        assert_eq!(pulled_invoices[0].invoice_number, "INV-2026-5001");
-        assert_eq!(pulled_invoices[0].status, "FINALIZED");
-        assert_eq!(pulled_invoices[0].payment_status, "PAID");
-        assert_eq!(pulled_invoices[0].total_paise, 106200);
-        assert_eq!(pulled_invoices[0].sync_status, "SYNCED");
+        assert!(pulled_invoices.is_empty());
 
-        // 2. Concurrent remote update when local invoice has PENDING outbox mutation
+        // 2. Local invoice stays LOCAL_ONLY and unaffected by remote feed
         let args_local = SaveInvoiceArgs {
             id: None,
             clinic_id: clinic_id.to_string(),
@@ -6718,7 +6816,6 @@ mod tests {
         };
         let local_inv_id = DbOperations::save_invoice(&mut conn, &dek, doctor_id, args_local).unwrap();
 
-        // Simulate incoming remote update for the same local invoice
         let conflicting_remote = SyncFeedChangeItem {
             seq: 2,
             entity_type: "INVOICE".to_string(),
@@ -6736,16 +6833,13 @@ mod tests {
             actor_doctor_id: "other_doctor".to_string(),
         };
 
-        DbOperations::apply_pull_feed_items(&mut conn, &dek, clinic_id, &[conflicting_remote], 1, false).unwrap();
+        let final_seq2 = DbOperations::apply_pull_feed_items(&mut conn, &dek, clinic_id, &[conflicting_remote], 1, false).unwrap();
+        assert_eq!(final_seq2, 2);
 
-        // Local data preserved and not overwritten!
+        // Local data preserved as LOCAL_ONLY!
         let local_inv = DbOperations::get_invoice_by_id(&conn, &dek, clinic_id, &local_inv_id).unwrap().unwrap();
         assert_eq!(local_inv.status, "DRAFT");
-        assert_eq!(local_inv.sync_status, "CONFLICT");
-
-        // Conflict recorded in local_sync_conflicts
-        let conflicts = DbOperations::get_conflicts(&conn, Some("OPEN")).unwrap();
-        assert!(conflicts.iter().any(|c| c.entity_type == "INVOICE" && c.entity_id == local_inv_id));
+        assert_eq!(local_inv.sync_status, "LOCAL_ONLY");
     }
 
     #[test]
@@ -7747,57 +7841,9 @@ mod tests {
         let local_patients = DbOperations::get_patients(&conn, &dek, clinic_id).unwrap();
         assert_eq!(local_patients.len(), 0);
 
-        // 3. Fetch pending outbox batch for sync worker push
+        // 3. Clinical deletion is local only: no outbox items enqueued
         let batch1 = DbOperations::get_pending_outbox_batch(&mut conn, &dek, clinic_id, 10).unwrap();
-        assert_eq!(batch1.len(), 1);
-        let item1 = &batch1[0];
-        assert_eq!(item1.action, "DELETE");
-        assert_eq!(item1.entity_type, "PATIENT");
-        assert_eq!(item1.entity_id, pat_id);
-        // CRITICAL: server_id must be preserved even though local_patients row was deleted!
-        assert_eq!(item1.server_id, Some(cloud_server_id.to_string()));
-        assert_eq!(item1.payload["serverId"], cloud_server_id);
-        assert_eq!(item1.payload["patientCode"], "P-DEL-101");
-
-        // Outbox is now IN_FLIGHT
-        let summary1 = DbOperations::get_outbox_summary(&conn, clinic_id).unwrap();
-        assert_eq!(summary1.pending_count, 0);
-        assert_eq!(summary1.in_flight_count, 1);
-
-        // 4. Simulate network failure during push and retry
-        let outbox_ids = vec![item1.id.clone()];
-        let reverted = DbOperations::revert_in_flight_to_pending(&conn, &outbox_ids, Some("Network timeout")).unwrap();
-        assert_eq!(reverted, 1);
-
-        let summary2 = DbOperations::get_outbox_summary(&conn, clinic_id).unwrap();
-        assert_eq!(summary2.pending_count, 1);
-        assert_eq!(summary2.in_flight_count, 0);
-
-        // 5. Next sync iteration (retry) must STILL retain the preserved server_id
-        let batch2 = DbOperations::get_pending_outbox_batch(&mut conn, &dek, clinic_id, 10).unwrap();
-        assert_eq!(batch2.len(), 1);
-        let item2 = &batch2[0];
-        assert_eq!(item2.server_id, Some(cloud_server_id.to_string()));
-        assert_eq!(item2.payload["serverId"], cloud_server_id);
-
-        // 6. Backend applies mutation
-        DbOperations::apply_push_mutation_result(
-            &mut conn,
-            &item2.id,
-            "APPLIED",
-            "PATIENT",
-            &pat_id,
-            Some(cloud_server_id),
-            Some(2),
-            None,
-            None,
-        )
-        .unwrap();
-
-        // Verify outbox marked SYNCED
-        let summary3 = DbOperations::get_outbox_summary(&conn, clinic_id).unwrap();
-        assert_eq!(summary3.pending_count, 0);
-        assert_eq!(summary3.in_flight_count, 0);
+        assert_eq!(batch1.len(), 0);
     }
 
     #[test]
@@ -7936,11 +7982,9 @@ mod tests {
         assert_eq!(previous.revision_number, 1);
         assert_eq!(previous.status, "SUPERSEDED");
 
-        // 9. Verify outbox contains REVISE action for PRESCRIPTION with expected details
+        // 9. Verify clinical data does not enqueue outbox records
         let outbox_batch = DbOperations::get_pending_outbox_batch(&mut conn, &dek, clinic_id, 10).unwrap();
-        let revise_outbox = outbox_batch.iter().find(|o| o.action == "REVISE" && o.entity_type == "PRESCRIPTION").unwrap();
-        assert_eq!(revise_outbox.payload["expectedRevisionNumber"], 1);
-        assert_eq!(revise_outbox.payload["reasonForRevision"], "Extended antibiotic course and added antipyretic");
+        assert_eq!(outbox_batch.len(), 0);
 
         // 10. Attempt to revise Revision 1 a SECOND time after Revision 2 already exists
         // Must fail because Revision 1 is SUPERSEDED (not ACTIVE) and Revision 2 already exists
@@ -7967,7 +8011,7 @@ mod tests {
         assert_eq!(all_rxs_after[1].revision_number, 1);
         assert_eq!(all_rxs_after[1].status, "SUPERSEDED");
 
-        // 12. Verify no duplicate outbox event was created in local_sync_outbox
+        // 12. Verify no outbox event was created in local_sync_outbox (clinical data is local-only)
         let total_revise_count: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM local_sync_outbox WHERE clinic_id = ?1 AND action = 'REVISE' AND entity_type = 'PRESCRIPTION'",
@@ -7975,7 +8019,7 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(total_revise_count, 1, "Must have exactly 1 REVISE outbox entry in total");
+        assert_eq!(total_revise_count, 0, "Clinical data does not enqueue REVISE outbox entries");
     }
 
     #[test]
@@ -8166,53 +8210,11 @@ mod tests {
         assert_eq!(rxs[1].revision_number, 1);
         assert_eq!(rxs[1].status, "SUPERSEDED");
 
-        // 4. Fetch pending outbox batch: verify idempotency key and payload
+        // 4. Verify clinical data does not enter cloud sync outbox
         let batch1 = DbOperations::get_pending_outbox_batch(&mut conn, &dek, clinic_id, 10).unwrap();
-        let revise_item = batch1.iter().find(|i| i.action == "REVISE" && i.entity_id == rx2_id).unwrap();
-        let expected_key = format!("prescription-revise-{rx2_id}-r2");
-        assert_eq!(revise_item.idempotency_key, expected_key);
-        assert_eq!(revise_item.server_id, Some("srv_rx_101".to_string()));
-        assert_eq!(revise_item.payload["prescriptionNumber"], "RX-2026-0001");
-        assert_eq!(revise_item.payload["expectedRevisionNumber"], 1);
-        assert_eq!(revise_item.client_version, 1);
+        assert_eq!(batch1.len(), 0);
 
-        // 5. Idempotent Retry: simulate network timeout while push is in flight
-        let outbox_id = revise_item.id.clone();
-        let reverted = DbOperations::revert_in_flight_to_pending(&conn, &[outbox_id.clone()], Some("Network timeout during push")).unwrap();
-        assert_eq!(reverted, 1);
-
-        // Re-read outbox batch: same idempotency key must be preserved
-        let batch2 = DbOperations::get_pending_outbox_batch(&mut conn, &dek, clinic_id, 10).unwrap();
-        let retry_item = batch2.iter().find(|i| i.id == outbox_id).unwrap();
-        assert_eq!(retry_item.idempotency_key, expected_key);
-        assert_eq!(retry_item.server_id, Some("srv_rx_101".to_string()));
-
-        // 6. Push succeeds on server: apply APPLIED result
-        DbOperations::apply_push_mutation_result(
-            &mut conn,
-            &outbox_id,
-            "APPLIED",
-            "PRESCRIPTION",
-            &rx2_id,
-            Some("srv_rx_101"),
-            Some(2),
-            None,
-            None,
-        )
-        .unwrap();
-
-        let rx2_after_sync: (String, String, i32) = conn
-            .query_row(
-                "SELECT sync_status, server_id, server_version FROM local_prescriptions WHERE id = ?1",
-                params![rx2_id],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-            )
-            .unwrap();
-        assert_eq!(rx2_after_sync.0, "SYNCED");
-        assert_eq!(rx2_after_sync.1, "srv_rx_101");
-        assert_eq!(rx2_after_sync.2, 2);
-
-        // 7. Pull remote Revision 3 from cloud change feed (e.g. edited by another workstation)
+        // 7. Pull remote Revision 3 from cloud change feed: must be skipped because clinical data is local-only
         let rx3_items = serde_json::json!([
             {"id": 1, "name": "Amoxicillin", "formulation": "Capsule", "dose": "500 mg"},
             {"id": 2, "name": "Cetirizine", "formulation": "Tablet", "dose": "10 mg"},
@@ -8243,18 +8245,16 @@ mod tests {
 
         DbOperations::apply_pull_feed_items(&mut conn, &dek, clinic_id, &[remote_rev3], 201, false).unwrap();
 
-        // 8. Verify all 3 revisions exist and are correctly ordered in patient history
+        // 8. Verify remote pull was skipped and local revisions remain intact (Revision 2 ACTIVE, Revision 1 SUPERSEDED)
         let all_revisions = DbOperations::get_prescriptions(&conn, &dek, clinic_id, Some(&pat_id)).unwrap();
-        assert_eq!(all_revisions.len(), 3, "Must have exactly 3 revisions");
-        assert_eq!(all_revisions[0].revision_number, 3, "Latest revision must be Rev 3");
+        assert_eq!(all_revisions.len(), 2, "Must keep local 2 revisions only");
+        assert_eq!(all_revisions[0].revision_number, 2, "Latest revision remains Rev 2");
         assert_eq!(all_revisions[0].status, "ACTIVE");
-        assert_eq!(all_revisions[1].revision_number, 2, "Previous revision Rev 2 must remain");
+        assert_eq!(all_revisions[1].revision_number, 1, "Previous revision Rev 1 remains");
         assert_eq!(all_revisions[1].status, "SUPERSEDED");
-        assert_eq!(all_revisions[2].revision_number, 1, "Original revision Rev 1 must remain");
-        assert_eq!(all_revisions[2].status, "SUPERSEDED");
 
         // Verify Rev 1 original items are still completely intact
-        assert_eq!(all_revisions[2].items_json.as_deref(), Some(rx1_items));
+        assert_eq!(all_revisions[1].items_json.as_deref(), Some(rx1_items));
 
         // 9. Concurrency conflict handling: stale push returns CONFLICT
         let (enc_stale, nonce_stale) = crate::crypto::encrypt_payload(&dek.key, b"{}").unwrap();
@@ -8344,7 +8344,7 @@ mod tests {
             .unwrap();
         assert_eq!(count, 20);
 
-        // Verify all 20 outbox records exist
+        // Verify clinical data does not enqueue outbox records
         let outbox_count: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM local_sync_outbox WHERE clinic_id = ?1 AND entity_type = 'PATIENT'",
@@ -8352,7 +8352,7 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(outbox_count, 20);
+        assert_eq!(outbox_count, 0);
     }
 
     #[test]
@@ -8489,7 +8489,7 @@ mod tests {
             .unwrap();
         assert_eq!(p_count, 1, "No duplicate patient created");
 
-        // Verify exactly 1 outbox mutation
+        // Verify clinical data does not enqueue outbox mutations
         let o_count: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM local_sync_outbox WHERE clinic_id = ?1",
@@ -8497,7 +8497,7 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(o_count, 1, "No duplicate outbox entry created");
+        assert_eq!(o_count, 0, "Clinical data does not enter cloud sync outbox");
     }
 
     #[test]
@@ -8626,7 +8626,7 @@ mod tests {
         assert_eq!(saved_code, "AAA-0001");
         assert_eq!(ver, 2);
 
-        // Verify outbox has UPDATE mutation
+        // Verify clinical data does not enqueue sync outbox mutations
         let has_update_outbox: bool = conn
             .query_row(
                 "SELECT EXISTS(SELECT 1 FROM local_sync_outbox WHERE clinic_id = ?1 AND entity_id = ?2 AND action = 'UPDATE')",
@@ -8634,7 +8634,7 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert!(has_update_outbox);
+        assert!(!has_update_outbox);
     }
 
     #[test]

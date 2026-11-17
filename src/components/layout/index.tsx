@@ -160,18 +160,6 @@ export function Sidebar({
           )
         })}
       </nav>
-      {conflictsCount !== undefined && conflictsCount > 0 && (
-        <button
-          className="mx-3 mb-2.5 p-2 rounded-lg bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800 text-amber-700 dark:text-amber-400 text-xs font-semibold flex items-center gap-1.5 cursor-pointer text-left transition hover:bg-amber-100 dark:hover:bg-amber-900/60"
-          onClick={onOpenConflicts}
-          title="Review unresolved synchronization conflicts"
-        >
-          <AlertCircle size={15} className="shrink-0" />
-          <span>
-            {conflictsCount} Sync Conflict{conflictsCount > 1 ? "s" : ""}
-          </span>
-        </button>
-      )}
       <div className="sidebar-bottom">
         <div className="doctor-card">
           <span

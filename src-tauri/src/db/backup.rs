@@ -628,6 +628,17 @@ mod tests {
             .unwrap()
         };
 
+        // Enqueue an outbox record to verify outbox backup inclusion
+        {
+            let conn = db.get_connection();
+            let dek = db.get_dek();
+            let (enc, nonce) = crate::crypto::encrypt_payload(&dek.key, b"{}").unwrap();
+            conn.execute(
+                "INSERT INTO local_sync_outbox (id, clinic_id, entity_type, entity_id, action, idempotency_key, encrypted_payload, nonce, sync_status) VALUES ('outbox_bk_1', ?1, 'CLINIC_PROFILE', 'c1', 'UPDATE', 'idem_bk', ?2, ?3, 'PENDING')",
+                rusqlite::params![clinic_id, enc, nonce],
+            ).unwrap();
+        }
+
         // Export backup
         let export_res = BackupManager::export_backup(&db, clinic_id, None, None).unwrap();
         assert_eq!(export_res.manifest.patients_count, 1);

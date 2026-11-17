@@ -211,10 +211,8 @@ export function PrescriptionPreview({
         </Button>
         <Button
           icon={MessageCircle}
-          onClick={() => {
-            setDelivery("confirm")
-            setWhatsapp(true)
-          }}
+          disabled
+          className="opacity-50 cursor-not-allowed"
         >
           Send on WhatsApp
         </Button>

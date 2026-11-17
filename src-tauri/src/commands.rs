@@ -2162,6 +2162,20 @@ pub fn save_local_invoice(
 }
 
 #[tauri::command]
+pub fn get_next_invoice_number(
+    state: State<'_, AppState>,
+    clinic_id: String,
+) -> Result<String, String> {
+    let _session = state
+        .session_mgr
+        .validate_session(Some(&clinic_id))
+        .map_err(|e| e.to_string())?;
+
+    let conn = state.db.get_connection();
+    DbOperations::get_next_invoice_number(&conn, &clinic_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub fn get_local_invoices(
     state: State<'_, AppState>,
     clinic_id: String,

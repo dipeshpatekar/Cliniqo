@@ -160,12 +160,10 @@ export function BillPreview({
         </Button>
         <Button
           icon={MessageCircle}
-          onClick={() => {
-            setDelivery("confirm")
-            setWhatsapp(true)
-          }}
+          disabled
+          className="opacity-50 cursor-not-allowed"
         >
-          Preview WhatsApp flow
+          Send on WhatsApp
         </Button>
       </AppHeader>
 
@@ -177,14 +175,16 @@ export function BillPreview({
               ? "Finalized tax invoice. Ready for patient delivery and printing."
               : "Review the bill draft details before finalizing or printing."}
           </span>
-          <Button
-            size="sm"
-            variant="ghost"
-            onClick={() => go("bill-form")}
-            icon={Edit3}
-          >
-            {isFinalized ? "View invoice" : "Edit bill"}
-          </Button>
+          {!isFinalized && (
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => go("bill-form")}
+              icon={Edit3}
+            >
+              Edit bill
+            </Button>
+          )}
         </div>
 
         <article

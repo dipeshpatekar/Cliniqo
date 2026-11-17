@@ -3,6 +3,7 @@ name: Windows Desktop CI & Security Verification
 on:
   push:
     branches: [main, "release/**"]
+    tags: ["v*"]
   pull_request:
     branches: [main]
   workflow_dispatch:

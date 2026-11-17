@@ -62,12 +62,14 @@ import {
   saveLocalFormularyItem,
   saveLocalConsultation,
   saveLocalPrescription,
+  getLocalPrescriptions,
   searchCatalogue,
   getCatalogueStrengths,
   getCatalogueSyncStatus,
   mapStockUnitToFormulation,
   type CatalogueSyncStatus,
   type LocalFormularyItemRecord,
+  type LocalPrescriptionRecord,
   type DesktopSessionContext,
 } from "../../desktop/desktop-bridge"
 
@@ -84,6 +86,7 @@ export interface ConsultationProps {
   onFinalized?: (
     consultationId?: string | null,
     finalizedTimestamp?: string,
+    prescriptionRecord?: LocalPrescriptionRecord | null,
   ) => void
   onUpdatePatientMedicalInfo?: (
     allergies: string[],
@@ -600,15 +603,50 @@ export function Consultation({
           }),
         })
 
+        let savedRxRecord: LocalPrescriptionRecord | null = null
         if (consultationId) {
           const rxNumber = `RX-${Date.now().toString().slice(-6)}`
-          await saveLocalPrescription({
+          const savedRxId = await saveLocalPrescription({
             clinic_id: desktopSession.clinic_id,
             consultation_id: consultationId,
             patient_id: patient.id,
             prescription_number: rxNumber,
             items_json: JSON.stringify(data.medicines),
           })
+
+          savedRxRecord = {
+            id: savedRxId || `rx-local-${Date.now()}`,
+            server_id: null,
+            clinic_id: desktopSession.clinic_id,
+            consultation_id: consultationId,
+            patient_id: patient.id,
+            doctor_id: desktopSession.doctor_id || "DOCTOR",
+            prescription_number: rxNumber,
+            revision_number: 1,
+            status: "ACTIVE",
+            items_json: JSON.stringify(data.medicines),
+            sync_status: "PENDING",
+            server_version: 0,
+            local_version: 1,
+            created_at: finalizedTimestamp,
+          }
+
+          if (savedRxId) {
+            try {
+              const rxList = await getLocalPrescriptions(desktopSession.clinic_id, patient.id)
+              const matched = rxList.find(
+                (r) => r.id === savedRxId || r.prescription_number === rxNumber,
+              )
+              if (matched) {
+                savedRxRecord = matched
+              }
+            } catch {
+              // fallback to constructed savedRxRecord
+            }
+          }
+
+          updatedData.prescriptionNumber = savedRxRecord.prescription_number
+          onDataChange(updatedData)
 
           // Auto-add valid custom medicines to Clinical Medicine Library (local_formulary_v2)
           let addedCustom = false
@@ -674,7 +712,7 @@ export function Consultation({
             onAddCustomChiefComplaint?.(data.chiefComplaint.trim())
           }
         }
-        onFinalized?.(consultationId, finalizedTimestamp)
+        onFinalized?.(consultationId, finalizedTimestamp, savedRxRecord)
         go("preview")
       } catch (err: unknown) {
         console.error(
@@ -699,7 +737,26 @@ export function Consultation({
         setInternalCustomComplaints(updated)
         onAddCustomChiefComplaint?.(data.chiefComplaint.trim())
       }
-      onFinalized?.(null, finalizedTimestamp)
+      const rxNumber = `RX-${Date.now().toString().slice(-6)}`
+      const mockRxRecord: LocalPrescriptionRecord = {
+        id: `rx-browser-${Date.now()}`,
+        server_id: null,
+        clinic_id: desktopSession?.clinic_id || "browser-clinic",
+        consultation_id: `c-browser-${Date.now()}`,
+        patient_id: patient.id,
+        doctor_id: desktopSession?.doctor_id || "DOCTOR",
+        prescription_number: rxNumber,
+        revision_number: 1,
+        status: "ACTIVE",
+        items_json: JSON.stringify(data.medicines),
+        sync_status: "PENDING",
+        server_version: 0,
+        local_version: 1,
+        created_at: finalizedTimestamp,
+      }
+      updatedData.prescriptionNumber = rxNumber
+      onDataChange(updatedData)
+      onFinalized?.(null, finalizedTimestamp, mockRxRecord)
       go("preview")
     }
   }
@@ -875,7 +932,12 @@ export function Consultation({
               <strong className="patient-strip-name">{patient.name}</strong>
               <span className="patient-strip-details">
                 · {[
-                  formatPatientAgeGender(patient.age, patient.gender, "years"),
+                  formatPatientAgeGender(
+                    patient.age,
+                    patient.gender,
+                    "years",
+                    patient.ageMonths,
+                  ),
                   getPublicPatientId(patient),
                 ]
                   .filter(Boolean)

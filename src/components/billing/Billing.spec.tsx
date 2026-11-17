@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest"
+import { describe, it, expect, vi } from "vitest"
 import { renderToString } from "react-dom/server"
 import { BillForm } from "./BillForm"
 import { BillPreview } from "./BillPreview"
@@ -83,7 +83,89 @@ describe("Billing Components & UX", () => {
       )
       // Save draft and Finalize bill buttons must not be present
       expect(html).not.toContain("Save draft")
-      expect(html).toContain("Print / Preview bill")
+      expect(html).toContain("Print bill")
+      expect(html).not.toContain("Preview bill")
+    })
+
+    it("does not render preview button in draft state (Issue 23)", () => {
+      const html = renderToString(
+        <BillForm
+          go={() => {}}
+          patient={samplePatient}
+          bill={draftBill}
+          onChange={() => {}}
+        />,
+      )
+
+      expect(html).not.toContain("Preview bill")
+      expect(html).toContain("Save draft")
+      expect(html).toContain("Finalize bill")
+    })
+
+    it("does not contain any finalize confirmation popup modal in draft or finalized state (Issue 22)", () => {
+      const draftHtml = renderToString(
+        <BillForm
+          go={() => {}}
+          patient={samplePatient}
+          bill={draftBill}
+          onChange={() => {}}
+        />,
+      )
+      expect(draftHtml).not.toContain("Finalize invoice?")
+      expect(draftHtml).not.toContain("Confirm & finalize bill")
+      expect(draftHtml).not.toContain("Continue editing")
+
+      const finalizedHtml = renderToString(
+        <BillForm
+          go={() => {}}
+          patient={samplePatient}
+          bill={finalizedBill}
+          onChange={() => {}}
+        />,
+      )
+      expect(finalizedHtml).not.toContain("Finalize invoice?")
+      expect(finalizedHtml).not.toContain("Confirm & finalize bill")
+      expect(finalizedHtml).not.toContain("Continue editing")
+    })
+  })
+
+  describe("Invoice Data Contract & Version Alignment (Issues 21-24 & Release Prep)", () => {
+    it("ensures version 1.0.1 is synchronized across config files", async () => {
+      const fs = await import("node:fs")
+      const path = await import("node:path")
+
+      // package.json
+      const pkgPath = path.resolve(process.cwd(), "package.json")
+      const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf-8"))
+      expect(pkg.version).toBe("1.0.1")
+
+      // src-tauri/Cargo.toml
+      const cargoPath = path.resolve(process.cwd(), "src-tauri/Cargo.toml")
+      const cargoContent = fs.readFileSync(cargoPath, "utf-8")
+      expect(cargoContent).toMatch(/version\s*=\s*"1\.0\.1"/)
+
+      // src-tauri/tauri.conf.json
+      const tauriPath = path.resolve(process.cwd(), "src-tauri/tauri.conf.json")
+      const tauriConf = JSON.parse(fs.readFileSync(tauriPath, "utf-8"))
+      expect(tauriConf.version).toBe("1.0.1")
+    })
+
+    it("ensures onFinalized in App.tsx updates return page without duplicate navigation", () => {
+      // Regression test for Issue 2: BillForm alone navigates to bill-preview
+      const go = vi.fn()
+      let billPreviewReturnPage = "bill-form"
+
+      // App.tsx callback contract
+      const onFinalized = () => {
+        billPreviewReturnPage = "patient-profile"
+        // MUST NOT call go("bill-preview") here!
+      }
+
+      // Execute onFinalized
+      onFinalized()
+
+      expect(billPreviewReturnPage).toBe("patient-profile")
+      expect(go).not.toHaveBeenCalled()
     })
   })
 

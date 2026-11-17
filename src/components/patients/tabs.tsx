@@ -29,12 +29,14 @@ export function OverviewTab({
   hasHistory,
   consultations = [],
   prescriptions = [],
+  onEditPatient,
 }: {
   go: (page: Page) => void
   patient: Patient
   hasHistory: boolean
   consultations?: LocalConsultationRecord[]
   prescriptions?: LocalPrescriptionRecord[]
+  onEditPatient?: (patient: Patient) => void
 }) {
   return (
     <div className="profile-grid">
@@ -43,14 +45,19 @@ export function OverviewTab({
           <div>
             <h2>Patient details</h2>
           </div>
-          <button className="text-btn" onClick={() => go("patient-form")}>
+          <button
+            className="text-btn"
+            onClick={() =>
+              onEditPatient ? onEditPatient(patient) : go("patient-form")
+            }
+          >
             Edit
           </button>
         </div>
         <dl className="details-list">
           <div>
             <dt>Age</dt>
-            <dd>{formatPatientAge(patient.age, "years")}</dd>
+            <dd>{formatPatientAge(patient.age, "years", patient.ageMonths)}</dd>
           </div>
           <div>
             <dt>Gender</dt>

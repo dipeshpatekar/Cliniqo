@@ -106,6 +106,7 @@ export interface LocalPatientArgs {
   gender: string
   date_of_birth?: string | null
   age: number
+  age_months?: number | null
   allergies: string[]
   conditions: string[]
   sensitive_notes?: string | null
@@ -122,6 +123,7 @@ export interface LocalPatientRecord {
   gender: string
   date_of_birth: string | null
   age: number
+  age_months?: number | null
   allergies: string[]
   conditions: string[]
   sensitive_notes?: string | null
@@ -973,10 +975,12 @@ export async function resolveSyncConflict(
 }
 
 export interface LocalInvoiceItem {
-  name: string
+  description: string
   quantity: number
   unit_price_paise: number
-  line_total_paise: number
+  total_paise: number
+  name?: string
+  line_total_paise?: number
 }
 
 export interface SaveInvoiceArgs {
@@ -985,13 +989,16 @@ export interface SaveInvoiceArgs {
   patient_id: string
   consultation_id?: string | null
   invoice_number: string
-  subtotal_paise: number
-  discount_paise: number
-  tax_rate_percent: number
-  tax_paise: number
-  total_paise: number
+  invoice_date: string
+  status?: string | null
+  payment_status?: string | null
   items: LocalInvoiceItem[]
+  discount_paise?: number | null
+  tax_rate_percent?: number | null
   notes?: string | null
+  subtotal_paise?: number
+  tax_paise?: number
+  total_paise?: number
   payment_notes?: string | null
 }
 
@@ -1002,6 +1009,7 @@ export interface LocalInvoiceRecord {
   patient_id: string
   consultation_id: string | null
   invoice_number: string
+  invoice_date: string
   status: "DRAFT" | "FINALIZED" | "CANCELLED" | string
   payment_status: "UNPAID" | "PAID" | string
   subtotal_paise: number
@@ -1054,7 +1062,42 @@ export interface SaveFormularyArgs {
 export async function saveLocalInvoice(
   args: SaveInvoiceArgs,
 ): Promise<string | null> {
-  return invokeTauri<string>("save_local_invoice", { args })
+  const normalizedItems: LocalInvoiceItem[] = (args.items || []).map((it) => {
+    const desc = it.description || it.name || "Service"
+    const qty = Math.max(1, Math.floor(Number(it.quantity) || 1))
+    const unitPaise = Math.max(0, Math.round(Number(it.unit_price_paise) || 0))
+    const totalPaise =
+      typeof it.total_paise === "number"
+        ? it.total_paise
+        : typeof it.line_total_paise === "number"
+          ? it.line_total_paise
+          : qty * unitPaise
+    return {
+      description: desc,
+      quantity: qty,
+      unit_price_paise: unitPaise,
+      total_paise: totalPaise,
+      name: desc,
+      line_total_paise: totalPaise,
+    }
+  })
+
+  const payload: SaveInvoiceArgs = {
+    id: args.id || null,
+    clinic_id: args.clinic_id,
+    patient_id: args.patient_id,
+    consultation_id: args.consultation_id || null,
+    invoice_number: args.invoice_number,
+    invoice_date: args.invoice_date || new Date().toISOString().split("T")[0],
+    status: args.status || null,
+    payment_status: args.payment_status || null,
+    items: normalizedItems,
+    discount_paise: args.discount_paise ?? null,
+    tax_rate_percent: args.tax_rate_percent ?? null,
+    notes: args.notes || null,
+  }
+
+  return invokeTauri<string>("save_local_invoice", { args: payload })
 }
 
 export async function getLocalInvoices(
@@ -2350,7 +2393,7 @@ export async function exportEncryptedBackup(
     version: 1,
     clinic_id: clinicId,
     created_at: new Date().toISOString(),
-    app_version: "1.0.0",
+    app_version: "1.0.1",
     schema_version: 12,
     patients_count: 5,
     consultations_count: 8,
@@ -2404,7 +2447,7 @@ export async function restoreEncryptedBackup(options: {
       version: 1,
       clinic_id: options.clinicId || "clinic_demo",
       created_at: new Date().toISOString(),
-      app_version: "1.0.0",
+      app_version: "1.0.1",
       schema_version: 12,
       patients_count: 5,
       consultations_count: 8,
@@ -2454,7 +2497,7 @@ export async function checkAppUpdate(endpoint?: string): Promise<UpdateCheckResu
 
   return {
     available: false,
-    current_version: "1.0.0",
+    current_version: "1.0.1",
     target_version: null,
     release_notes: null,
     pub_date: null,

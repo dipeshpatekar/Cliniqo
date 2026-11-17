@@ -134,9 +134,24 @@ export function PatientForm({
               .map((part) => part[0])
               .join("")
               .toUpperCase(),
-            age: data.get("age")
-              ? Number(data.get("age"))
-              : (patient?.age ?? 0),
+            age:
+              data.get("age") !== null
+                ? String(data.get("age")).trim() !== ""
+                  ? Math.max(0, parseInt(String(data.get("age")), 10) || 0)
+                  : 0
+                : (patient?.age ?? 0),
+            ageMonths:
+              data.get("ageMonths") !== null
+                ? String(data.get("ageMonths")).trim() !== ""
+                  ? Math.min(
+                      11,
+                      Math.max(
+                        0,
+                        parseInt(String(data.get("ageMonths")), 10) || 0,
+                      ),
+                    )
+                  : 0
+                : (patient?.ageMonths ?? 0),
             gender: String(data.get("gender") || patient?.gender || "").trim(),
             phone: phone.trim() ? phone.trim() : patient?.phone || "",
             lastVisit: patient?.lastVisit || "No visits yet",
@@ -392,14 +407,41 @@ export function PatientForm({
               </Field>
 
               <Field label="Age">
-                <TextInput
-                  name="age"
-                  type="number"
-                  defaultValue={patient?.age}
-                  placeholder="Years"
-                  min="0"
-                  max="120"
-                />
+                <div
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "1fr 1fr",
+                    gap: "8px",
+                  }}
+                >
+                  <TextInput
+                    name="age"
+                    type="number"
+                    defaultValue={
+                      patient?.age !== undefined && patient?.age !== null
+                        ? patient.age
+                        : ""
+                    }
+                    placeholder="Years"
+                    min="0"
+                    max="120"
+                    aria-label="Age in years"
+                  />
+                  <TextInput
+                    name="ageMonths"
+                    type="number"
+                    defaultValue={
+                      patient?.ageMonths !== undefined &&
+                      patient?.ageMonths !== null
+                        ? patient.ageMonths
+                        : ""
+                    }
+                    placeholder="Months"
+                    min="0"
+                    max="11"
+                    aria-label="Age in months"
+                  />
+                </div>
               </Field>
 
               <Field label="Gender">

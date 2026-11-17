@@ -6,7 +6,6 @@ import {
   ShieldCheck,
   Plus,
   Trash2,
-  LockKeyhole,
   IndianRupee,
   AlertCircle,
 } from "lucide-react"
@@ -26,7 +25,6 @@ import {
   TextInput,
   SelectInput,
   StatusPill,
-  Modal,
   FormSection,
 } from "../common"
 import { AppHeader } from "../layout"
@@ -58,7 +56,6 @@ export function BillForm({
 }: BillFormProps) {
   const [isSaving, setIsSaving] = useState(false)
   const [isFinalizing, setIsFinalizing] = useState(false)
-  const [showFinalizeModal, setShowFinalizeModal] = useState(false)
   const [saveFeedback, setSaveFeedback] = useState<string | null>(null)
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
 
@@ -105,44 +102,59 @@ export function BillForm({
     })
   }
 
-  const canPreview = bill.items.some(
-    (item) => item.description.trim() && item.rate >= 0,
-  )
   const canFinalize =
     bill.items.length > 0 &&
     bill.items.every(
       (item) => item.description.trim() && item.quantity >= 1 && item.rate >= 0,
     )
 
+  const mapToLocalInvoiceItems = (): LocalInvoiceItem[] => {
+    return bill.items.map((it) => {
+      const desc = it.description.trim() || "Service"
+      const qty = Math.max(1, Math.floor(Number(it.quantity) || 1))
+      const unitPaise = Math.max(0, Math.round((Number(it.rate) || 0) * 100))
+      const lineTotalPaise = qty * unitPaise
+      return {
+        description: desc,
+        quantity: qty,
+        unit_price_paise: unitPaise,
+        total_paise: lineTotalPaise,
+        name: desc,
+        line_total_paise: lineTotalPaise,
+      }
+    })
+  }
+
   const handleSaveDraft = async () => {
+    if (isSaving || isFinalizing) return
     setErrorMessage(null)
     setIsSaving(true)
     try {
-      const items: LocalInvoiceItem[] = bill.items.map((it) => ({
-        name: it.description.trim() || "Service",
-        quantity: Math.max(1, Math.floor(Number(it.quantity) || 1)),
-        unit_price_paise: Math.max(0, Math.round((Number(it.rate) || 0) * 100)),
-        line_total_paise:
-          Math.max(1, Math.floor(Number(it.quantity) || 1)) *
-          Math.max(0, Math.round((Number(it.rate) || 0) * 100)),
-      }))
+      const items = mapToLocalInvoiceItems()
+      const invoiceDate = bill.date || new Date().toISOString().split("T")[0]
 
       if (isTauriDesktop() && desktopSession?.clinic_id) {
         const savedId = await saveLocalInvoice({
           id: bill.id || null,
           clinic_id: desktopSession.clinic_id,
           patient_id: patient.id,
+          consultation_id: bill.consultationId || null,
           invoice_number: bill.invoiceNumber,
-          subtotal_paise: subtotalPaise,
+          invoice_date: invoiceDate,
+          status: "DRAFT",
+          payment_status: bill.paymentStatus || "Unpaid",
+          items,
           discount_paise: discountPaise,
           tax_rate_percent: taxRatePercent,
-          tax_paise: taxPaise,
-          total_paise: totalPaise,
-          items,
           notes: bill.notes || null,
         })
         if (savedId) {
-          onChange({ ...bill, id: savedId, status: "DRAFT" })
+          onChange({
+            ...bill,
+            id: savedId,
+            status: "DRAFT",
+            date: invoiceDate,
+          })
         }
       }
       setSaveFeedback("Draft invoice saved to local encrypted storage.")
@@ -160,54 +172,84 @@ export function BillForm({
   }
 
   const handleFinalizeBill = async () => {
+    if (!canFinalize || isFinalizing || isSaving) return
     setErrorMessage(null)
     setIsFinalizing(true)
     try {
-      const items: LocalInvoiceItem[] = bill.items.map((it) => ({
-        name: it.description.trim() || "Service",
-        quantity: Math.max(1, Math.floor(Number(it.quantity) || 1)),
-        unit_price_paise: Math.max(0, Math.round((Number(it.rate) || 0) * 100)),
-        line_total_paise:
-          Math.max(1, Math.floor(Number(it.quantity) || 1)) *
-          Math.max(0, Math.round((Number(it.rate) || 0) * 100)),
-      }))
+      const items = mapToLocalInvoiceItems()
+      const invoiceDate = bill.date || new Date().toISOString().split("T")[0]
 
-      let invoiceId = bill.id
       if (isTauriDesktop() && desktopSession?.clinic_id) {
-        if (!invoiceId) {
-          invoiceId =
-            (await saveLocalInvoice({
-              id: null,
-              clinic_id: desktopSession.clinic_id,
-              patient_id: patient.id,
-              invoice_number: bill.invoiceNumber,
-              subtotal_paise: subtotalPaise,
-              discount_paise: discountPaise,
-              tax_rate_percent: taxRatePercent,
-              tax_paise: taxPaise,
-              total_paise: totalPaise,
-              items,
-              notes: bill.notes || null,
-            })) || undefined
+        // Persist latest form values first to encrypted local SQLite (saving new or updating existing draft)
+        const savedId = await saveLocalInvoice({
+          id: bill.id || null,
+          clinic_id: desktopSession.clinic_id,
+          patient_id: patient.id,
+          consultation_id: bill.consultationId || null,
+          invoice_number: bill.invoiceNumber,
+          invoice_date: invoiceDate,
+          status: "DRAFT",
+          payment_status: bill.paymentStatus || "Unpaid",
+          items,
+          discount_paise: discountPaise,
+          tax_rate_percent: taxRatePercent,
+          notes: bill.notes || null,
+        })
+
+        const activeInvoiceId = savedId || bill.id
+        if (!activeInvoiceId) {
+          throw new Error("Failed to persist invoice before finalization: missing invoice ID.")
         }
-        if (invoiceId) {
-          const finalizedRecord = await finalizeLocalInvoice(
-            desktopSession.clinic_id,
-            invoiceId,
-          )
-          if (finalizedRecord) {
-            onChange({
-              ...bill,
-              id: finalizedRecord.id,
-              status: "FINALIZED",
-            })
-            onFinalized?.(finalizedRecord)
-          }
+
+        // Finalize saved invoice using finalize_local_invoice
+        const finalizedRecord = await finalizeLocalInvoice(
+          desktopSession.clinic_id,
+          activeInvoiceId,
+        )
+
+        if (!finalizedRecord) {
+          throw new Error("Invoice finalization returned no record.")
         }
+
+        const updatedBill: BillData = {
+          ...bill,
+          id: finalizedRecord.id,
+          date: finalizedRecord.invoice_date || invoiceDate,
+          status: "FINALIZED",
+          discount: discountRupees,
+          taxRatePercent: taxRatePercent,
+        }
+        onChange(updatedBill)
+        onFinalized?.(finalizedRecord)
       } else {
         onChange({ ...bill, status: "FINALIZED" })
+        onFinalized?.({
+          id: bill.id || `inv-${Date.now()}`,
+          server_id: null,
+          clinic_id: desktopSession?.clinic_id || "web-clinic",
+          patient_id: patient.id,
+          consultation_id: bill.consultationId || null,
+          invoice_number: bill.invoiceNumber,
+          invoice_date: invoiceDate,
+          status: "FINALIZED",
+          payment_status: bill.paymentStatus || "Unpaid",
+          subtotal_paise: subtotalPaise,
+          discount_paise: discountPaise,
+          tax_rate_percent: taxRatePercent,
+          tax_paise: taxPaise,
+          total_paise: totalPaise,
+          items,
+          notes: bill.notes || null,
+          payment_notes: null,
+          sync_status: "PENDING",
+          server_version: 0,
+          local_version: 1,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        })
       }
-      setShowFinalizeModal(false)
+
+      // Automatically navigate to Bill Preview page
       go("bill-preview")
     } catch (err: unknown) {
       console.error("Failed to finalize invoice:", err)
@@ -258,28 +300,30 @@ export function BillForm({
               variant="secondary"
               title="Save draft (Ctrl+S)"
               onClick={handleSaveDraft}
-              disabled={isSaving}
+              disabled={isSaving || isFinalizing}
               loading={isSaving}
             >
               {isSaving ? "Saving draft..." : "Save draft"}
             </Button>
             <Button
               icon={ReceiptIndianRupee}
-              disabled={!canFinalize}
-              onClick={() => setShowFinalizeModal(true)}
+              disabled={!canFinalize || isFinalizing || isSaving}
+              loading={isFinalizing}
+              onClick={handleFinalizeBill}
             >
-              Finalize bill
+              {isFinalizing ? "Finalizing bill..." : "Finalize bill"}
             </Button>
           </>
         )}
-        <Button
-          variant={isFinalized ? "primary" : "secondary"}
-          title="Print / Preview bill (Ctrl+P)"
-          disabled={!canPreview}
-          onClick={() => go("bill-preview")}
-        >
-          {isFinalized ? "Print / Preview bill" : "Preview bill"}
-        </Button>
+        {isFinalized && (
+          <Button
+            variant="primary"
+            title="Print bill (Ctrl+P)"
+            onClick={() => go("bill-preview")}
+          >
+            Print bill
+          </Button>
+        )}
       </AppHeader>
 
       <div className="page-content billing-page">
@@ -332,8 +376,13 @@ export function BillForm({
           <div>
             <strong>{patient.name}</strong>
             <small>
-              {formatPatientAgeGender(patient.age, patient.gender, "years")} ·{" "}
-              {patient.phone || "—"}
+              {formatPatientAgeGender(
+                patient.age,
+                patient.gender,
+                "years",
+                patient.ageMonths,
+              )}{" "}
+              · {patient.phone || "—"}
             </small>
           </div>
           <StatusPill tone={isFinalized ? "success" : "warning"}>
@@ -552,92 +601,23 @@ export function BillForm({
           {!isFinalized && (
             <Button
               icon={ReceiptIndianRupee}
-              disabled={!canFinalize}
-              onClick={() => setShowFinalizeModal(true)}
+              disabled={!canFinalize || isFinalizing || isSaving}
+              loading={isFinalizing}
+              onClick={handleFinalizeBill}
             >
-              Finalize bill
+              {isFinalizing ? "Finalizing bill..." : "Finalize bill"}
             </Button>
           )}
-          <Button
-            variant={isFinalized ? "primary" : "secondary"}
-            disabled={!canPreview}
-            onClick={() => go("bill-preview")}
-          >
-            {isFinalized ? "Print bill" : "Preview"}
-          </Button>
+          {isFinalized && (
+            <Button
+              variant="primary"
+              onClick={() => go("bill-preview")}
+            >
+              Print bill
+            </Button>
+          )}
         </div>
       </div>
-
-      {showFinalizeModal && (
-        <Modal
-          title="Finalize invoice?"
-          description="Confirm that you have reviewed the service charges, quantities, discount, and tax. Once finalized, the invoice amounts and line items become immutable."
-          onClose={() => {
-            if (!isFinalizing) setShowFinalizeModal(false)
-          }}
-        >
-          <div className="review-checklist">
-            <p>
-              <CheckCircle2 size={18} /> Billed patient: {patient.name} (
-              {getPublicPatientId(patient)})
-            </p>
-            <p>
-              <CheckCircle2 size={18} /> Subtotal: ₹
-              {subtotalRupees.toLocaleString("en-IN", {
-                minimumFractionDigits: 2,
-              })}{" "}
-              (Paise: {subtotalPaise})
-            </p>
-            {discountRupees > 0 && (
-              <p>
-                <CheckCircle2 size={18} /> Discount applied: ₹
-                {discountRupees.toLocaleString("en-IN", {
-                  minimumFractionDigits: 2,
-                })}
-              </p>
-            )}
-            {taxRatePercent > 0 && (
-              <p>
-                <CheckCircle2 size={18} /> Tax ({taxRatePercent}%): ₹
-                {taxRupees.toLocaleString("en-IN", {
-                  minimumFractionDigits: 2,
-                })}
-              </p>
-            )}
-            <p>
-              <CheckCircle2 size={18} /> Final payable total: ₹
-              {totalRupees.toLocaleString("en-IN", {
-                minimumFractionDigits: 2,
-              })}
-            </p>
-          </div>
-          <div className="modal-warning">
-            <LockKeyhole size={17} />
-            <p>
-              Finalizing commits this record to the immutable billing ledger.
-              Further changes cannot be made.
-            </p>
-          </div>
-          <div className="modal-actions">
-            <Button
-              variant="ghost"
-              onClick={() => setShowFinalizeModal(false)}
-              disabled={isFinalizing}
-            >
-              Continue editing
-            </Button>
-            <Button
-              onClick={handleFinalizeBill}
-              disabled={isFinalizing}
-              loading={isFinalizing}
-            >
-              {isFinalizing
-                ? "Finalizing invoice..."
-                : "Confirm & finalize bill"}
-            </Button>
-          </div>
-        </Modal>
-      )}
     </>
   )
 }

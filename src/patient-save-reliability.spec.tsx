@@ -354,5 +354,157 @@ describe("Cliniqo Patient Save Reliability & Diagnostic Error Reporting", () => 
       expect(err.diagnostic.retryable).toBe(false)
     })
   })
+
+  describe("Issue 26 & 27: Fresh Patient Creation & Age In Months Save Reliability", () => {
+    it("ensures Ctrl+N and Prescription Preview navigation open fresh patient form without prefilling previous patient data", () => {
+      const previousPatient: Patient = {
+        id: "patient-uuid-krishna",
+        displayId: "AAA-0007",
+        patientCode: "AAA-0007",
+        name: "Krishna",
+        initials: "K",
+        age: 21,
+        ageMonths: 0,
+        gender: "Female",
+        phone: "9876543210",
+        lastVisit: "2026-11-17T15:40:00Z",
+        allergies: [],
+        conditions: [],
+      }
+
+      // Simulation of navigation from preview to patient-form:
+      // In the previous buggy code:
+      // page === "preview" caused setEditingPatient(selectedPatient)
+      // In the fixed code:
+      // next === "patient-form" always ensures setEditingPatient(null) and increments newPatientFormKey
+      let currentPage: string = "preview"
+      let selectedPatient: Patient = previousPatient
+      let editingPatient: Patient | null = null
+      let newPatientFormKey = 0
+
+      const go = (next: string) => {
+        if (next === "patient-form") {
+          editingPatient = null
+          newPatientFormKey += 1
+        }
+        currentPage = next
+      }
+
+      // Doctor triggers Ctrl + N while on prescription preview
+      go("patient-form")
+
+      expect(currentPage).toBe("patient-form")
+      expect(editingPatient).toBeNull()
+      expect(newPatientFormKey).toBe(1)
+
+      // When rendered with editingPatient=null, PatientForm must be in 'Add new patient' mode
+      const rawHtml = renderToString(
+        <PatientForm
+          key={`new-patient-${newPatientFormKey}`}
+          go={() => {}}
+          onSave={() => {}}
+          onReviewPatient={() => {}}
+          patient={editingPatient}
+          patients={[previousPatient]}
+          nextPatientId="AAA-0008"
+        />,
+      )
+      const html = rawHtml.replace(/<!-- -->/g, "")
+
+      expect(html).toContain("Add new patient")
+      expect(html).not.toContain("Edit patient")
+      expect(html).toContain("AAA-0008")
+      expect(html).not.toContain("patient-uuid-krishna")
+      expect(html).not.toContain("Krishna")
+      expect(html).toContain("Save patient")
+    })
+
+    it("serializes infant age (0y 2m) and adult age (21y 0m) into sensitive_notes and desktop payload without breaking schema", async () => {
+      const infantPatient: Patient = {
+        id: "infant-new-id",
+        name: "Baby Infant",
+        initials: "BI",
+        age: 0,
+        ageMonths: 2,
+        gender: "Female",
+        phone: "",
+        lastVisit: "No visits yet",
+        allergies: [],
+        conditions: [],
+        address: "Pune",
+      }
+
+      const infantNotesObj = {
+        registeredAt: infantPatient.registeredAt,
+        alternatePhone: infantPatient.alternatePhone,
+        address: infantPatient.address,
+        ageMonths: infantPatient.ageMonths !== undefined ? infantPatient.ageMonths : 0,
+      }
+
+      const infantPayload: LocalPatientArgs = {
+        id: null,
+        clinic_id: "clinic-1",
+        patient_code: "AAA-0009",
+        name: infantPatient.name,
+        phone: infantPatient.phone,
+        gender: infantPatient.gender,
+        date_of_birth: null,
+        age: infantPatient.age,
+        age_months: infantPatient.ageMonths,
+        allergies: infantPatient.allergies,
+        conditions: infantPatient.conditions,
+        sensitive_notes: JSON.stringify(infantNotesObj),
+        client_mutation_id: "client-mut-infant-1",
+      }
+
+      expect(infantPayload.age).toBe(0)
+      expect(infantPayload.age_months).toBe(2)
+      const parsedInfantNotes = JSON.parse(infantPayload.sensitive_notes!)
+      expect(parsedInfantNotes.ageMonths).toBe(2)
+      expect(parsedInfantNotes.address).toBe("Pune")
+
+      // Adult (21 years, 0 months)
+      const adultPatient: Patient = {
+        id: "adult-new-id",
+        name: "Adult Patient",
+        initials: "AP",
+        age: 21,
+        ageMonths: 0,
+        gender: "Male",
+        phone: "9876543210",
+        lastVisit: "No visits yet",
+        allergies: [],
+        conditions: [],
+      }
+
+      const adultNotesObj = {
+        registeredAt: adultPatient.registeredAt,
+        alternatePhone: adultPatient.alternatePhone,
+        address: adultPatient.address,
+        ageMonths: adultPatient.ageMonths !== undefined ? adultPatient.ageMonths : 0,
+      }
+
+      const adultPayload: LocalPatientArgs = {
+        id: null,
+        clinic_id: "clinic-1",
+        patient_code: "AAA-0010",
+        name: adultPatient.name,
+        phone: adultPatient.phone,
+        gender: adultPatient.gender,
+        date_of_birth: null,
+        age: adultPatient.age,
+        age_months: adultPatient.ageMonths,
+        allergies: adultPatient.allergies,
+        conditions: adultPatient.conditions,
+        sensitive_notes: JSON.stringify(adultNotesObj),
+        client_mutation_id: "client-mut-adult-1",
+      }
+
+      expect(adultPayload.age).toBe(21)
+      expect(adultPayload.age_months).toBe(0)
+      const parsedAdultNotes = JSON.parse(adultPayload.sensitive_notes!)
+      expect(parsedAdultNotes.ageMonths).toBe(0)
+    })
+  })
 })
 

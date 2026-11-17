@@ -9,6 +9,7 @@ export type Patient = {
   name: string
   initials: string
   age: number
+  ageMonths?: number
   gender: string
   phone: string
   lastVisit: string
@@ -105,6 +106,7 @@ export type ConsultationData = {
   followUpInstructions: string
   allergies?: string[]
   conditions?: string[]
+  prescriptionNumber?: string
 }
 
 export type PatientFormFieldPreferences = {
@@ -755,13 +757,21 @@ export function formatPrescriptionDateWithTime(
   return datePart ? `${datePart}, ${trimmedTime}` : trimmedTime
 }
 
-export function isMissingAge(age?: number | null): boolean {
-  return (
-    age === undefined ||
-    age === null ||
-    isNaN(Number(age)) ||
-    Number(age) <= 0
-  )
+export function isMissingAge(
+  age?: number | null,
+  ageMonths?: number | null,
+): boolean {
+  const hasYears =
+    age !== undefined &&
+    age !== null &&
+    !isNaN(Number(age)) &&
+    Number(age) > 0
+  const hasMonths =
+    ageMonths !== undefined &&
+    ageMonths !== null &&
+    !isNaN(Number(ageMonths)) &&
+    Number(ageMonths) > 0
+  return !hasYears && !hasMonths
 }
 
 export function isMissingGender(gender?: string | null): boolean {
@@ -778,9 +788,48 @@ export function isMissingGender(gender?: string | null): boolean {
 export function formatPatientAge(
   age?: number | null,
   unit: "yrs" | "years" = "yrs",
+  ageMonths?: number | null,
 ): string {
-  if (isMissingAge(age)) return "—"
-  return `${Number(age)} ${unit}`
+  const safeYears =
+    age !== undefined && age !== null && !isNaN(Number(age))
+      ? Math.max(0, Math.floor(Number(age)))
+      : 0
+  const safeMonths =
+    ageMonths !== undefined && ageMonths !== null && !isNaN(Number(ageMonths))
+      ? Math.min(11, Math.max(0, Math.floor(Number(ageMonths))))
+      : 0
+
+  const hasYears = safeYears > 0
+  const hasMonths = safeMonths > 0
+
+  if (!hasYears && !hasMonths) {
+    return "—"
+  }
+
+  const yearUnit =
+    unit === "years"
+      ? safeYears === 1
+        ? "year"
+        : "years"
+      : safeYears === 1
+        ? "yr"
+        : "yrs"
+  const monthUnit =
+    unit === "years"
+      ? safeMonths === 1
+        ? "month"
+        : "months"
+      : safeMonths === 1
+        ? "mo"
+        : "mos"
+
+  if (hasYears && hasMonths) {
+    return `${safeYears} ${yearUnit} ${safeMonths} ${monthUnit}`
+  }
+  if (hasYears) {
+    return `${safeYears} ${yearUnit}`
+  }
+  return safeMonths === 1 ? "1 month" : `${safeMonths} months`
 }
 
 export function formatPatientGender(gender?: string | null): string {
@@ -792,8 +841,9 @@ export function formatPatientAgeGender(
   age?: number | null,
   gender?: string | null,
   ageUnit: "yrs" | "years" = "yrs",
+  ageMonths?: number | null,
 ): string {
-  const missingAge = isMissingAge(age)
+  const missingAge = isMissingAge(age, ageMonths)
   const missingGender = isMissingGender(gender)
 
   if (missingAge && missingGender) {
@@ -803,9 +853,9 @@ export function formatPatientAgeGender(
     return `— · ${formatPatientGender(gender)}`
   }
   if (missingGender) {
-    return `${formatPatientAge(age, ageUnit)} · —`
+    return `${formatPatientAge(age, ageUnit, ageMonths)} · —`
   }
-  return `${formatPatientAge(age, ageUnit)} · ${formatPatientGender(gender)}`
+  return `${formatPatientAge(age, ageUnit, ageMonths)} · ${formatPatientGender(gender)}`
 }
 
 export function formatSequentialPatientId(seq: number): string {
@@ -932,6 +982,14 @@ export function mapLocalRecordToPatient(rec: LocalPatientRecord): Patient {
   let registeredAt: string | undefined = undefined
   let alternatePhone: string | undefined = undefined
   let address: string | undefined = undefined
+  let ageMonths: number | undefined = undefined
+
+  if (rec.age_months !== undefined && rec.age_months !== null) {
+    const directMonths = Number(rec.age_months)
+    if (!isNaN(directMonths)) {
+      ageMonths = Math.min(11, Math.max(0, Math.floor(directMonths)))
+    }
+  }
 
   if (rec.sensitive_notes) {
     try {
@@ -941,6 +999,16 @@ export function mapLocalRecordToPatient(rec: LocalPatientRecord): Patient {
         if (parsed.alternatePhone)
           alternatePhone = String(parsed.alternatePhone)
         if (parsed.address) address = String(parsed.address)
+        if (
+          ageMonths === undefined &&
+          parsed.ageMonths !== undefined &&
+          parsed.ageMonths !== null
+        ) {
+          const parsedMonths = Number(parsed.ageMonths)
+          if (!isNaN(parsedMonths)) {
+            ageMonths = Math.min(11, Math.max(0, Math.floor(parsedMonths)))
+          }
+        }
       }
     } catch {
       // not json, leave as plain note
@@ -954,6 +1022,7 @@ export function mapLocalRecordToPatient(rec: LocalPatientRecord): Patient {
     name,
     initials,
     age: rec.age ?? 0,
+    ageMonths,
     gender: rec.gender && rec.gender.trim() ? rec.gender.trim() : "",
     phone: rec.phone || "",
     lastVisit: rec.last_visit || "No visits yet",

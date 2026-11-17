@@ -11,6 +11,7 @@ import {
   RefreshCw,
   Check,
   X,
+  UserRoundPlus,
 } from "lucide-react"
 import {
   formatDateDDMMYYYY,
@@ -58,6 +59,7 @@ export interface PrescriptionPreviewProps {
   ) => Promise<void>
   itemsError?: string | null
   topSpacingMm?: number
+  onAddPatient?: () => void
 }
 
 export function PrescriptionPreview({
@@ -77,6 +79,7 @@ export function PrescriptionPreview({
   onRevisePrescription,
   itemsError,
   topSpacingMm = 0,
+  onAddPatient,
 }: PrescriptionPreviewProps) {
   const [whatsapp, setWhatsapp] = useState(false)
   const [delivery, setDelivery] =
@@ -154,7 +157,9 @@ export function PrescriptionPreview({
           returnPage === "settings"
             ? "Sample preview · Layout changes apply to all future prescriptions"
             : prescriptionRecord
-              ? `${prescriptionRecord.revision_number > 1 ? `Revision ${prescriptionRecord.revision_number}` : "Original"} · Finalized ${formatDateDDMMYYYY(prescriptionRecord.created_at)} · Read-only historical record`
+              ? returnPage === "patient-profile"
+                ? `${prescriptionRecord.revision_number > 1 ? `Revision ${prescriptionRecord.revision_number}` : "Original"} · Finalized ${formatDateDDMMYYYY(prescriptionRecord.created_at)} · Read-only historical record`
+                : `${prescriptionRecord.prescription_number} · Finalized ${formatDateDDMMYYYY(prescriptionRecord.created_at || new Date().toISOString())}`
               : "Local session preview · Not persisted"
         }
       >
@@ -188,6 +193,21 @@ export function PrescriptionPreview({
           onClick={handlePrint}
         >
           Print prescription
+        </Button>
+        <Button
+          type="button"
+          variant="secondary"
+          icon={UserRoundPlus}
+          title="Add patient (Ctrl+N)"
+          onClick={() => {
+            if (onAddPatient) {
+              onAddPatient()
+            } else {
+              go("patient-form")
+            }
+          }}
+        >
+          Add Patient
         </Button>
         <Button
           icon={MessageCircle}
@@ -227,26 +247,38 @@ export function PrescriptionPreview({
           <div className="preview-note">
             <AlertCircle size={17} />
             <span>
-              Viewing finalized historical prescription{" "}
-              <strong>{prescriptionRecord.prescription_number}</strong> (
-              {prescriptionRecord.revision_number > 1
-                ? `Revision ${prescriptionRecord.revision_number}`
-                : "Original"}
-              , {prescriptionRecord.status}).
-              {prescriptionRecord.status === "ACTIVE"
-                ? " Click 'Edit prescription' to append an immutable revision."
-                : " Historical revisions are read-only."}
+              {returnPage === "patient-profile" ? (
+                <>
+                  Viewing finalized historical prescription{" "}
+                  <strong>{prescriptionRecord.prescription_number}</strong> (
+                  {prescriptionRecord.revision_number > 1
+                    ? `Revision ${prescriptionRecord.revision_number}`
+                    : "Original"}
+                  , {prescriptionRecord.status}).
+                  {prescriptionRecord.status === "ACTIVE"
+                    ? " Click 'Edit prescription' to append an immutable revision."
+                    : " Historical revisions are read-only."}
+                </>
+              ) : (
+                <>
+                  Finalized prescription{" "}
+                  <strong>{prescriptionRecord.prescription_number}</strong>.
+                  Persisted to local encrypted storage.
+                </>
+              )}
             </span>
-            {prescriptionRecord.status === "ACTIVE" && onRevisePrescription && (
-              <Button
-                size="sm"
-                variant="ghost"
-                onClick={() => setShowEditModal(true)}
-                icon={Edit3}
-              >
-                Edit prescription
-              </Button>
-            )}
+            {returnPage === "patient-profile" &&
+              prescriptionRecord.status === "ACTIVE" &&
+              onRevisePrescription && (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => setShowEditModal(true)}
+                  icon={Edit3}
+                >
+                  Edit prescription
+                </Button>
+              )}
           </div>
         ) : (
           <div className="preview-note">
@@ -380,9 +412,9 @@ export function PrescriptionPreview({
               <span>PATIENT NAME · AGE · GENDER</span>
               <strong>
                 {patient.name}
-                {formatPatientAgeGender(patient.age, patient.gender, "yrs") &&
-                formatPatientAgeGender(patient.age, patient.gender, "yrs") !== "— · —"
-                  ? ` (${formatPatientAgeGender(patient.age, patient.gender, "yrs")})`
+                {formatPatientAgeGender(patient.age, patient.gender, "yrs", patient.ageMonths) &&
+                formatPatientAgeGender(patient.age, patient.gender, "yrs", patient.ageMonths) !== "— · —"
+                  ? ` (${formatPatientAgeGender(patient.age, patient.gender, "yrs", patient.ageMonths)})`
                   : ""}
               </strong>
             </div>
@@ -397,7 +429,7 @@ export function PrescriptionPreview({
                   ? prescriptionRecord.revision_number > 1
                     ? `${prescriptionRecord.prescription_number} (Rev ${prescriptionRecord.revision_number})`
                     : prescriptionRecord.prescription_number
-                  : "RX-PREVIEW"}
+                  : data.prescriptionNumber || "RX-PREVIEW"}
               </strong>
             </div>
             <div>

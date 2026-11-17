@@ -254,6 +254,7 @@ export default function App({
       : initialPatients[0]),
   )
   const [editingPatient, setEditingPatient] = useState<Patient | null>(null)
+  const [newPatientFormKey, setNewPatientFormKey] = useState(0)
   const [patientSaveFeedback, setPatientSaveFeedback] =
     useState<"added" | "updated" | null>(null)
   const [settingsKey, setSettingsKey] = useState(0)
@@ -263,6 +264,8 @@ export default function App({
   const [viewingHistoricalPrescription, setViewingHistoricalPrescription] =
     useState<ViewingHistoricalPrescriptionState | null>(initialViewingHistoricalPrescription)
   const [patientProfileTab, setPatientProfileTab] = useState(initialPatientProfileTab)
+  const [activeConsultationPrescriptionRecord, setActiveConsultationPrescriptionRecord] =
+    useState<LocalPrescriptionRecord | null>(null)
   const [billPreviewReturnPage, setBillPreviewReturnPage] =
     useState<"bill-form" | "settings" | "patient-profile">("bill-form")
   const [vitals, setVitals] = useState<Vitals>({
@@ -990,11 +993,8 @@ export default function App({
       }
     }
     if (next === "patient-form") {
-      setEditingPatient(
-        page === "patient-profile" || page === "preview"
-          ? selectedPatient
-          : null,
-      )
+      setEditingPatient(null)
+      setNewPatientFormKey((k) => k + 1)
     }
     if (next === "settings" && page !== "preview" && page !== "bill-preview") {
       setSettingsInitialTab("Doctor profile")
@@ -1055,6 +1055,7 @@ export default function App({
       weight: "",
     })
     setViewingHistoricalPrescription(null)
+    setActiveConsultationPrescriptionRecord(null)
     setPatientProfileTab("Overview")
     go("patient-profile")
   }
@@ -1070,6 +1071,7 @@ export default function App({
       setSelectedPatient(patient)
       setPatientSaveFeedback(null)
       setViewingHistoricalPrescription(null)
+      setActiveConsultationPrescriptionRecord(null)
       setConsultationData(createEmptyConsultationData())
       setVitals({
         systolic: "",
@@ -1308,6 +1310,7 @@ export default function App({
           registeredAt: patient.registeredAt,
           alternatePhone: patient.alternatePhone,
           address: patient.address,
+          ageMonths: patient.ageMonths !== undefined ? patient.ageMonths : 0,
         }
 
         const saveRes = await saveLocalPatient({
@@ -1333,6 +1336,7 @@ export default function App({
             id: wasEditing ? patient.id : canonicalId,
             displayId: canonicalCode,
             patientCode: canonicalCode,
+            ageMonths: patient.ageMonths !== undefined ? patient.ageMonths : 0,
           }
           try {
             const freshPatients = await getLocalPatients(
@@ -1677,7 +1681,9 @@ export default function App({
           if (page === "consultation") {
             go("preview")
           } else if (page === "bill-form") {
-            go("bill-preview")
+            if (billData.status === "FINALIZED") {
+              go("bill-preview")
+            }
           } else {
             window.print()
           }
@@ -1688,6 +1694,7 @@ export default function App({
         if (key === "n" && !e.shiftKey) {
           e.preventDefault()
           setEditingPatient(null)
+          setNewPatientFormKey((k) => k + 1)
           go("patient-form")
           return
         }
@@ -1924,6 +1931,11 @@ export default function App({
   } else if (page === "patient-form") {
     content = (
       <PatientForm
+        key={
+          editingPatient
+            ? `edit-${editingPatient.id}`
+            : `new-patient-${newPatientFormKey}`
+        }
         go={go}
         onSave={savePatient}
         onReviewPatient={openPatient}
@@ -1945,6 +1957,7 @@ export default function App({
         onStartBill={startBill}
         onStartConsultation={startConsultation}
         onViewPrescription={viewHistoricalPrescription}
+        onEditPatient={editPatient}
         activeTab={patientProfileTab}
         onTabChange={setPatientProfileTab}
       />
@@ -1964,7 +1977,7 @@ export default function App({
         onUpdatePatientMedicalInfo={updatePatientMedicalInfo}
         customChiefComplaints={customChiefComplaints}
         onAddCustomChiefComplaint={handleAddCustomChiefComplaint}
-        onFinalized={(_consultationId, finalizedTimestamp) => {
+        onFinalized={(_consultationId, finalizedTimestamp, rxRecord) => {
           if (consultationData.chiefComplaint?.trim()) {
             handleAddCustomChiefComplaint(consultationData.chiefComplaint)
           }
@@ -1980,6 +1993,9 @@ export default function App({
                 : p,
             ),
           )
+          if (rxRecord) {
+            setActiveConsultationPrescriptionRecord(rxRecord)
+          }
         }}
       />
     )
@@ -2016,7 +2032,9 @@ export default function App({
         returnPage={prescriptionPreviewReturnPage}
         desktopSession={desktopSession}
         prescriptionRecord={
-          isHistorical ? viewingHistoricalPrescription!.record : null
+          isHistorical
+            ? viewingHistoricalPrescription!.record
+            : activeConsultationPrescriptionRecord
         }
         onRevisePrescription={
           isHistorical ? handleRevisePrescription : undefined
@@ -2024,6 +2042,11 @@ export default function App({
         itemsError={
           isHistorical ? viewingHistoricalPrescription!.itemsError : null
         }
+        onAddPatient={() => {
+          setEditingPatient(null)
+          setNewPatientFormKey((k) => k + 1)
+          go("patient-form")
+        }}
       />
     )
   } else if (page === "bill-form") {
@@ -2036,7 +2059,6 @@ export default function App({
         desktopSession={desktopSession}
         onFinalized={() => {
           setBillPreviewReturnPage("patient-profile")
-          go("bill-preview")
         }}
       />
     )

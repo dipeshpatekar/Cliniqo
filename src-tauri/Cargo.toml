@@ -1,6 +1,6 @@
 [package]
 name = "cliniqo-desktop"
-version = "1.0.0"
+version = "1.0.1"
 default-run = "cliniqo-desktop"
 description = "Cliniqo — Clinic Management Desktop Application"
 authors = ["Cliniqo Team"]

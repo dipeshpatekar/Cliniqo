@@ -21,6 +21,7 @@ import {
   restoreEncryptedBackup,
   checkAppUpdate,
   downloadAndLaunchUpdate,
+  getDesktopInfo,
   type BackupExportResult,
   type BackupRestoreResult,
   type UpdateCheckResult,
@@ -53,11 +54,22 @@ export function SyncSettings({ onOpenConflictModal }: SyncSettingsProps) {
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   // Updater state
+  const [appVersion, setAppVersion] = useState<string>("1.0.1")
   const [isCheckingUpdate, setIsCheckingUpdate] = useState(false)
   const [updateResult, setUpdateResult] = useState<UpdateCheckResult | null>(null)
   const [updateError, setUpdateError] = useState<string | null>(null)
   const [isInstallingUpdate, setIsInstallingUpdate] = useState(false)
   const [updateStatusMessage, setUpdateStatusMessage] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (isTauriDesktop()) {
+      getDesktopInfo()
+        .then((info) => {
+          if (info?.app_version) setAppVersion(info.app_version)
+        })
+        .catch(() => {})
+    }
+  }, [])
 
   useEffect(() => {
     const cid = nativeStatus?.active_clinic_id
@@ -471,7 +483,7 @@ export function SyncSettings({ onOpenConflictModal }: SyncSettingsProps) {
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
             <div>
               <strong className="block text-sm font-semibold text-slate-800 dark:text-slate-100">
-                Cliniqo Desktop Version 1.0.0
+                Cliniqo Desktop Version {appVersion}
               </strong>
             </div>
 

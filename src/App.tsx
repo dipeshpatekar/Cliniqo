@@ -1677,7 +1677,9 @@ export default function App({
           if (page === "consultation") {
             go("preview")
           } else if (page === "bill-form") {
-            go("bill-preview")
+            if (billData.status === "FINALIZED") {
+              go("bill-preview")
+            }
           } else {
             window.print()
           }

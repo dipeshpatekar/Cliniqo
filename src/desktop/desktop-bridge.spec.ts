@@ -266,6 +266,7 @@ describe("Desktop Bridge (Tauri 2 Frontend Integration)", () => {
       clinic_id: "clinic_1",
       patient_id: "patient_1",
       invoice_number: "INV-2026-0001",
+      invoice_date: "2026-10-28",
       subtotal_paise: 10000,
       discount_paise: 1000,
       tax_rate_percent: 5,
@@ -273,9 +274,11 @@ describe("Desktop Bridge (Tauri 2 Frontend Integration)", () => {
       total_paise: 9450,
       items: [
         {
+          description: "Consultation",
           name: "Consultation",
           quantity: 1,
           unit_price_paise: 10000,
+          total_paise: 10000,
           line_total_paise: 10000,
         },
       ],
@@ -1321,6 +1324,119 @@ describe("Desktop Bridge (Tauri 2 Frontend Integration)", () => {
 
       expect(result).toEqual(mockOfflineResult)
       expect(result?.session.is_offline).toBe(true)
+      vi.doUnmock("@tauri-apps/api/core")
+    })
+  })
+
+  describe("Billing IPC Data Contract (Issues 21 & 24)", () => {
+    it("saveLocalInvoice maps description, total_paise, and invoice_date conforming to Rust IPC contract", async () => {
+      win.__TAURI_INTERNALS__ = {}
+      let invokedCmd = ""
+      let invokedArgs: any = null
+
+      vi.doMock("@tauri-apps/api/core", () => ({
+        invoke: vi.fn().mockImplementation((cmd: string, args: any) => {
+          invokedCmd = cmd
+          invokedArgs = args
+          if (cmd === "save_local_invoice") {
+            return Promise.resolve("inv_persisted_uuid_1")
+          }
+          return Promise.resolve(null)
+        }),
+      }))
+
+      const { saveLocalInvoice } = await import("./desktop-bridge")
+
+      const savedId = await saveLocalInvoice({
+        clinic_id: "clinic_test_1",
+        patient_id: "pat_test_1",
+        invoice_number: "INV-2026-9999",
+        invoice_date: "2026-11-17",
+        items: [
+          {
+            name: "Consultation fee",
+            quantity: 1,
+            unit_price_paise: 80000,
+            line_total_paise: 80000,
+          } as any,
+        ],
+        notes: "Test notes",
+      })
+
+      expect(savedId).toBe("inv_persisted_uuid_1")
+      expect(invokedCmd).toBe("save_local_invoice")
+      expect(invokedArgs).toBeDefined()
+      expect(invokedArgs.args).toBeDefined()
+      expect(invokedArgs.args.invoice_date).toBe("2026-11-17")
+      expect(invokedArgs.args.invoice_number).toBe("INV-2026-9999")
+      // Crucial: description and total_paise must be present
+      expect(invokedArgs.args.items[0].description).toBe("Consultation fee")
+      expect(invokedArgs.args.items[0].total_paise).toBe(80000)
+      expect(invokedArgs.args.items[0].quantity).toBe(1)
+      expect(invokedArgs.args.items[0].unit_price_paise).toBe(80000)
+
+      vi.doUnmock("@tauri-apps/api/core")
+    })
+
+    it("finalizeLocalInvoice invokes finalize_local_invoice IPC with clinicId and invoiceId", async () => {
+      win.__TAURI_INTERNALS__ = {}
+      let invokedCmd = ""
+      let invokedArgs: any = null
+
+      const mockFinalizedRecord = {
+        id: "inv_persisted_uuid_1",
+        server_id: null,
+        clinic_id: "clinic_test_1",
+        patient_id: "pat_test_1",
+        consultation_id: null,
+        invoice_number: "INV-2026-9999",
+        invoice_date: "2026-11-17",
+        status: "FINALIZED",
+        payment_status: "UNPAID",
+        subtotal_paise: 80000,
+        discount_paise: 0,
+        tax_rate_percent: 0,
+        tax_paise: 0,
+        total_paise: 80000,
+        items: [
+          {
+            description: "Consultation fee",
+            quantity: 1,
+            unit_price_paise: 80000,
+            total_paise: 80000,
+          },
+        ],
+        notes: null,
+        payment_notes: null,
+        sync_status: "PENDING",
+        server_version: 1,
+        local_version: 2,
+        created_at: "2026-11-17T09:00:00Z",
+        updated_at: "2026-11-17T09:05:00Z",
+      }
+
+      vi.doMock("@tauri-apps/api/core", () => ({
+        invoke: vi.fn().mockImplementation((cmd: string, args: any) => {
+          invokedCmd = cmd
+          invokedArgs = args
+          if (cmd === "finalize_local_invoice") {
+            return Promise.resolve(mockFinalizedRecord)
+          }
+          return Promise.resolve(null)
+        }),
+      }))
+
+      const { finalizeLocalInvoice } = await import("./desktop-bridge")
+      const result = await finalizeLocalInvoice("clinic_test_1", "inv_persisted_uuid_1")
+
+      expect(invokedCmd).toBe("finalize_local_invoice")
+      expect(invokedArgs).toEqual({
+        clinicId: "clinic_test_1",
+        invoiceId: "inv_persisted_uuid_1",
+      })
+      expect(result).toEqual(mockFinalizedRecord)
+      expect(result?.status).toBe("FINALIZED")
+
       vi.doUnmock("@tauri-apps/api/core")
     })
   })

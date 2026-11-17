@@ -78,6 +78,7 @@ jobs:
         run: |
           cargo test --manifest-path src-tauri/Cargo.toml -- --nocapture
           cargo build --bin verify_token --manifest-path src-tauri/Cargo.toml
+          cargo build --bin verify_installer --manifest-path src-tauri/Cargo.toml
 
       - name: Run Frontend Tests
         run: pnpm test
@@ -111,6 +112,13 @@ jobs:
             IS_RELEASE=true
           fi
 
+          # 1. Clean any stale installer and updater artifacts from cached target
+          rm -rf src-tauri/target/release/bundle/nsis
+          rm -rf src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis
+          rm -rf src-tauri/target/*/release/bundle/nsis
+          rm -rf src-tauri/target/release/bundle/updater
+          rm -rf src-tauri/target/*/release/bundle/updater
+
           if [ -n "$TAURI_SIGNING_PRIVATE_KEY" ]; then
             echo "Building with Minisign updater code signing and updater artifacts enabled..."
             pnpm tauri build --bundles nsis
@@ -125,58 +133,43 @@ jobs:
       - name: Generate latest.json Manifest for Auto-Updater
         shell: bash
         run: |
-          node -e "
-            const fs = require('fs');
-            const path = require('path');
+          node scripts/generate-updater-manifest.js
 
-            const bundleDir = path.resolve('src-tauri/target/release/bundle/nsis');
-            if (!fs.existsSync(bundleDir)) {
-              console.log('NSIS bundle directory does not exist. Skipping latest.json generation.');
-              process.exit(0);
-            }
+          VERSION=$(node -p "require('./package.json').version")
+          EXPECTED_EXE="Cliniqo_${VERSION}_x64-setup.exe"
+          EXPECTED_SIG="${EXPECTED_EXE}.sig"
 
-            const files = fs.readdirSync(bundleDir);
-            const exeFile = files.find(f => f.endsWith('.exe') && !f.endsWith('.exe.sig'));
-            const sigFile = files.find(f => f.endsWith('.exe.sig') || f.endsWith('.sig'));
+          EXE_PATH=""
+          SIG_PATH=""
+          for CANDIDATE in "src-tauri/target/release/bundle/nsis" "src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis"; do
+            if [ -f "${CANDIDATE}/${EXPECTED_EXE}" ]; then
+              EXE_PATH="${CANDIDATE}/${EXPECTED_EXE}"
+              SIG_PATH="${CANDIDATE}/${EXPECTED_SIG}"
+              break
+            fi
+          done
 
-            if (!exeFile || !sigFile) {
-              console.log('Setup executable or signature file not found in bundle dir. Skipping latest.json generation.');
-              process.exit(0);
-            }
+          if [ -z "$EXE_PATH" ]; then
+            echo "::error::Installer binary ${EXPECTED_EXE} not found."
+            exit 1
+          fi
 
-            const signatureContent = fs.readFileSync(path.join(bundleDir, sigFile), 'utf8').trim();
-            const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
-            const version = pkg.version;
-            const repo = process.env.GITHUB_REPOSITORY || 'dipeshpatekar/Cliniqo';
-            const tag = process.env.GITHUB_REF_NAME || ('v' + version);
-            const downloadUrl = 'https://github.com/' + repo + '/releases/download/' + tag + '/' + exeFile;
+          if [ -z "$SIG_PATH" ] || [ ! -f "$SIG_PATH" ]; then
+            echo "::error::Installer signature ${EXPECTED_SIG} not found."
+            exit 1
+          fi
 
-            const manifest = {
-              version: version,
-              notes: 'Production release for Cliniqo Clinic Management System v' + version,
-              pub_date: new Date().toISOString(),
-              platforms: {
-                'windows-x86_64': {
-                  signature: signatureContent,
-                  url: downloadUrl
-                }
-              }
-            };
-
-            const outPath = path.join(bundleDir, 'latest.json');
-            fs.writeFileSync(outPath, JSON.stringify(manifest, null, 2), 'utf8');
-            console.log('Successfully generated latest.json at ' + outPath + ' pointing to ' + downloadUrl);
-          "
+          echo "Verifying generated installer signature against embedded Minisign public key..."
+          cargo run --bin verify_installer --manifest-path src-tauri/Cargo.toml -- "$EXE_PATH" "$SIG_PATH"
 
       - name: Archive Windows NSIS Installer & Updater Artifacts
         uses: actions/upload-artifact@v6
         with:
           name: Cliniqo-Windows-Setup-x64
           path: |
-            src-tauri/target/**/bundle/nsis/*.exe*
-            src-tauri/target/**/bundle/nsis/*.sig*
+            src-tauri/target/**/bundle/nsis/Cliniqo_*_x64-setup.exe
+            src-tauri/target/**/bundle/nsis/Cliniqo_*_x64-setup.exe.sig
             src-tauri/target/**/bundle/nsis/latest.json
-            src-tauri/target/**/bundle/updater/latest.json
             resources/Medicine_Import_Template.xlsx
             resources/Medicine_Import_Template.csv
             resources/README.txt
@@ -188,10 +181,10 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            src-tauri/target/**/bundle/nsis/*.exe
-            src-tauri/target/**/bundle/nsis/*.sig
+            src-tauri/target/**/bundle/nsis/Cliniqo_*_x64-setup.exe
+            src-tauri/target/**/bundle/nsis/Cliniqo_*_x64-setup.exe.sig
             src-tauri/target/**/bundle/nsis/latest.json
-          fail_on_unmatched_files: false
+          fail_on_unmatched_files: true
           draft: false
           prerelease: false
           generate_release_notes: true

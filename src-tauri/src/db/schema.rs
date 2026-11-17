@@ -438,6 +438,18 @@ CREATE TABLE IF NOT EXISTS local_mutation_idempotency (
 );
 "#;
 
+/// Migration V13: Patient mutation idempotency table for deduplicating offline mutation retries.
+pub const MIGRATION_V13_SQL: &str = r#"
+CREATE TABLE IF NOT EXISTS local_mutation_idempotency (
+    clinic_id TEXT NOT NULL,
+    idempotency_key TEXT NOT NULL,
+    entity_id TEXT NOT NULL,
+    patient_code TEXT NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (clinic_id, idempotency_key)
+);
+"#;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DoctorProfileRecord {
     pub doctor_id: String,

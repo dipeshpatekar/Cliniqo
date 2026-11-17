@@ -19,7 +19,7 @@ type HmacSha256 = Hmac<Sha256>;
 pub const BACKUP_MAGIC_V1: &[u8; 18] = b"CLINIQO_BACKUP_V1\0";
 pub const FLAG_CLINIC_KEY: u8 = 0;
 pub const FLAG_PASSPHRASE: u8 = 1;
-pub const CURRENT_SCHEMA_VERSION: i32 = 12;
+pub const CURRENT_SCHEMA_VERSION: i32 = 13;
 
 #[derive(Error, Debug)]
 pub enum BackupError {
@@ -262,7 +262,7 @@ impl BackupManager {
 
             let s_ver: i32 = conn
                 .query_row(
-                    "SELECT COALESCE(MAX(version), 12) FROM schema_migrations",
+                    "SELECT COALESCE(MAX(version), 13) FROM schema_migrations",
                     [],
                     |r| r.get(0),
                 )

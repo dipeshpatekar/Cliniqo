@@ -6,6 +6,7 @@ use super::schema::{
     ClinicalData, PatientDemographics, CREATE_MIGRATIONS_TABLE, MIGRATION_V1_SQL, MIGRATION_V2_SQL,
     MIGRATION_V3_SQL, MIGRATION_V4_SQL, MIGRATION_V5_SQL, MIGRATION_V6_SQL, MIGRATION_V7_SQL,
     MIGRATION_V8_SQL, MIGRATION_V9_SQL, MIGRATION_V10_SQL, MIGRATION_V11_SQL, MIGRATION_V12_SQL,
+    MIGRATION_V13_SQL,
 };
 
 #[derive(Error, Debug)]
@@ -22,7 +23,7 @@ pub enum MigrationError {
     #[error("Migration transaction failed: {0}")]
     TransactionError(String),
 
-    #[error("Unsupported schema version: database is at version {0}, but this client only supports up to version 12. Please update the application.")]
+    #[error("Unsupported schema version: database is at version {0}, but this client only supports up to version 13. Please update the application.")]
     UnsupportedSchemaVersion(i32),
 }
 
@@ -74,7 +75,7 @@ impl MigrationRunner {
             )
             .unwrap_or(0);
 
-        if max_version > 12 {
+        if max_version > 13 {
             return Err(MigrationError::UnsupportedSchemaVersion(max_version));
         }
 
@@ -268,6 +269,27 @@ impl MigrationRunner {
             )?;
             tx.commit()?;
             log::info!("Migration v12 applied successfully. Sequential patient counters active.");
+        }
+
+        // 15. Check if v13 (Patient mutation idempotency) has been applied
+        let v13_applied: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = 13)",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or(false);
+
+        if !v13_applied {
+            log::info!("Applying local offline SQLite migration v13 (Patient mutation idempotency)...");
+            let tx = conn.transaction()?;
+            tx.execute_batch(MIGRATION_V13_SQL)?;
+            tx.execute(
+                "INSERT INTO schema_migrations (version, name, checksum) VALUES (?1, ?2, ?3)",
+                params![13, "patient_mutation_idempotency", "v13_mutation_idempotency"],
+            )?;
+            tx.commit()?;
+            log::info!("Migration v13 applied successfully. Patient mutation idempotency active.");
         }
 
         Ok(())
@@ -896,5 +918,187 @@ mod tests {
             )
             .unwrap();
         assert!(clinical_lib_exists, "local_clinical_library_v1 table must exist after v10 migration");
+
+        let v12_exists: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = 12)",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(v12_exists, "Migration v12 must exist after running migrations");
+
+        let v13_exists: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = 13)",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(v13_exists, "Migration v13 must exist after running migrations");
+
+        let idempotency_table_exists: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='local_mutation_idempotency')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(idempotency_table_exists, "local_mutation_idempotency table must exist after v13 migration");
+    }
+
+    #[test]
+    fn test_migration_v13_creates_missing_idempotency_table_on_existing_v12_database() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        let dek = DatabaseEncryptionKey::new([0x88u8; 32]);
+
+        // 1. Run migrations to setup initial database
+        MigrationRunner::run_migrations(&mut conn, &dek).expect("initial migrations succeed");
+
+        // 2. Simulate existing v1.0.2 database:
+        // - schema version is 12 (delete version 13 from schema_migrations)
+        // - local_mutation_idempotency is dropped/missing
+        // - local_seq_counters is present and seeded with patients up to AAA-0015
+        conn.execute("DELETE FROM schema_migrations WHERE version = 13", []).unwrap();
+        conn.execute("DROP TABLE IF EXISTS local_mutation_idempotency", []).unwrap();
+
+        let clinic_id = "clinic_v13_sim";
+
+        // Seed sequence counter at 15
+        conn.execute(
+            "INSERT INTO local_seq_counters (clinic_id, sequence_name, last_seq) VALUES (?1, 'patient', 15)",
+            params![clinic_id],
+        ).unwrap();
+
+        // Verify state before running migration V13:
+        let max_ver: i32 = conn.query_row("SELECT MAX(version) FROM schema_migrations", [], |r| r.get(0)).unwrap();
+        assert_eq!(max_ver, 12, "Database must be simulated at schema version 12");
+
+        let has_idempotency_before: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='local_mutation_idempotency')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(!has_idempotency_before, "local_mutation_idempotency must be missing before V13");
+
+        // 3. Run migrations — V13 must detect missing version 13 and execute cleanly
+        MigrationRunner::run_migrations(&mut conn, &dek).expect("migration to V13 succeeds");
+
+        // 4. Verify version 13 recorded and table created
+        let max_ver_after: i32 = conn.query_row("SELECT MAX(version) FROM schema_migrations", [], |r| r.get(0)).unwrap();
+        assert_eq!(max_ver_after, 13, "Schema version must now be 13");
+
+        let has_idempotency_after: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='local_mutation_idempotency')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(has_idempotency_after, "local_mutation_idempotency table must now exist");
+
+        // Verify existing sequence counter state was preserved
+        let seq_preserved: u32 = conn
+            .query_row(
+                "SELECT last_seq FROM local_seq_counters WHERE clinic_id = ?1 AND sequence_name = 'patient'",
+                params![clinic_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(seq_preserved, 15, "Sequence counter must remain preserved");
+
+        // 5. Test patient creation for pappu with AAA-0016 and client mutation ID
+        use crate::db::operations::DbOperations;
+        let next_code = DbOperations::get_next_patient_code(&mut conn, clinic_id).unwrap();
+        assert_eq!(next_code, "AAA-0016");
+
+        let pappu_res = DbOperations::insert_patient_ext(
+            &mut conn,
+            &dek,
+            clinic_id,
+            "AAA-0016",
+            "pappu",
+            "",
+            "",
+            None,
+            0,
+            &[],
+            &[],
+            Some(r#"{"registeredAt":"2026-11-17T22:02:00","alternatePhone":"","address":"","ageMonths":0}"#),
+            Some("mut_pappu_v13_client_mutation_id"),
+        );
+        assert!(pappu_res.is_ok(), "Patient pappu creation must succeed with V13 idempotency: {:?}", pappu_res.err());
+        let saved_pappu = pappu_res.unwrap();
+        assert_eq!(saved_pappu.patient_code, "AAA-0016");
+
+        // 6. Retry the same save and verify idempotency returns existing patient (no duplicates)
+        let retry_pappu = DbOperations::insert_patient_ext(
+            &mut conn,
+            &dek,
+            clinic_id,
+            "AAA-0016",
+            "pappu",
+            "",
+            "",
+            None,
+            0,
+            &[],
+            &[],
+            Some(r#"{"registeredAt":"2026-11-17T22:02:00","alternatePhone":"","address":"","ageMonths":0}"#),
+            Some("mut_pappu_v13_client_mutation_id"),
+        ).expect("Retry succeeds idempotently");
+        assert_eq!(retry_pappu.id, saved_pappu.id, "Retry must return identical patient ID");
+
+        // Verify idempotency record in local_mutation_idempotency table
+        let (idem_entity_id, idem_code): (String, String) = conn
+            .query_row(
+                "SELECT entity_id, patient_code FROM local_mutation_idempotency WHERE clinic_id = ?1 AND idempotency_key = ?2",
+                params![clinic_id, "mut_pappu_v13_client_mutation_id"],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(idem_entity_id, saved_pappu.id);
+        assert_eq!(idem_code, "AAA-0016");
+    }
+
+    #[test]
+    fn test_failed_migration_does_not_record_version_13() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        let dek = DatabaseEncryptionKey::new([0x99u8; 32]);
+
+        // Run migrations up to v12
+        MigrationRunner::run_migrations(&mut conn, &dek).expect("initial migrations succeed");
+        conn.execute("DELETE FROM schema_migrations WHERE version = 13", []).unwrap();
+
+        // Create a conflicting object named local_mutation_idempotency (e.g. as a view) that causes CREATE TABLE to fail
+        conn.execute("DROP TABLE IF EXISTS local_mutation_idempotency", []).unwrap();
+        conn.execute("CREATE VIEW local_mutation_idempotency AS SELECT 1 AS dummy", []).unwrap();
+
+        // Now run migration with a statement that will fail
+        let run_res = (|| -> Result<(), MigrationError> {
+            let tx = conn.transaction()?;
+            // Trying to create a table with same name as existing view will fail in SQLite
+            tx.execute_batch("CREATE TABLE local_mutation_idempotency (dummy TEXT PRIMARY KEY);")?;
+            tx.execute(
+                "INSERT INTO schema_migrations (version, name, checksum) VALUES (13, 'patient_mutation_idempotency', 'v13_fail_test')",
+                [],
+            )?;
+            tx.commit()?;
+            Ok(())
+        })();
+
+        assert!(run_res.is_err(), "Conflicting object must cause migration transaction to fail");
+
+        // Verify version 13 was rolled back and is NOT in schema_migrations
+        let v13_recorded: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = 13)",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(!v13_recorded, "Version 13 must NOT be recorded when migration fails");
     }
 }

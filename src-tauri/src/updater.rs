@@ -137,15 +137,30 @@ impl AppUpdater {
     }
 
     /// Cryptographically verifies the downloaded package bytes against the Minisign signature.
-    /// Supports both standard and pre-hashed Minisign signatures.
+    /// Supports raw Minisign signatures, base64-encoded Minisign signatures (standard in Tauri .sig files and manifests),
+    /// and pre-hashed Minisign signatures.
     pub fn verify_installer_signature(bytes: &[u8], signature_str: &str) -> Result<(), UpdaterError> {
-        if signature_str.trim().is_empty() {
+        let trimmed = signature_str.trim();
+        if trimmed.is_empty() {
             return Err(UpdaterError::VerificationFailed(
                 "Signature is missing or empty. Unsigned updates are strictly rejected.".to_string(),
             ));
         }
 
-        let signature = Signature::decode(signature_str).map_err(|e| {
+        // Tauri .sig files and latest.json manifests contain the base64-encoded multi-line Minisign signature.
+        // Support both base64-encoded and raw multi-line strings.
+        let resolved_sig_str = if trimmed.starts_with("untrusted comment:") {
+            trimmed.to_string()
+        } else if let Ok(decoded_bytes) = base64::engine::general_purpose::STANDARD.decode(trimmed) {
+            match String::from_utf8(decoded_bytes) {
+                Ok(s) if s.starts_with("untrusted comment:") => s,
+                _ => trimmed.to_string(),
+            }
+        } else {
+            trimmed.to_string()
+        };
+
+        let signature = Signature::decode(&resolved_sig_str).map_err(|e| {
             UpdaterError::VerificationFailed(format!("Invalid Minisign signature format: {:?}", e))
         })?;
 
@@ -350,6 +365,22 @@ wLMDjy9FLAuxZ3q4NlEvkgtyhrr0gtTu6KC4KBJdITbbOeAi1zBIYo0v4iTgt8jJpIidRJnp94ABQkJA
 
         let res = AppUpdater::verify_installer_signature(dummy_bytes, mock_sig);
         assert!(matches!(res, Err(UpdaterError::VerificationFailed(_))));
+
+        // Base64-wrapped format (as produced by Tauri's signer and stored in latest.json)
+        let b64_sig = base64::engine::general_purpose::STANDARD.encode(mock_sig);
+        let res_b64 = AppUpdater::verify_installer_signature(dummy_bytes, &b64_sig);
+        // It parses successfully and fails on cryptographic verification (because dummy_bytes don't match the key),
+        // NOT on "Invalid Minisign signature format".
+        match res_b64 {
+            Err(UpdaterError::VerificationFailed(msg)) => {
+                assert!(
+                    msg.contains("Cryptographic signature verification failed"),
+                    "Expected cryptographic verification error, got: {}",
+                    msg
+                );
+            }
+            other => panic!("Expected VerificationFailed, got {:?}", other),
+        }
     }
 
     #[test]

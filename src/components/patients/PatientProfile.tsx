@@ -50,6 +50,7 @@ export function PatientProfile({
   onStartBill,
   onStartConsultation,
   onViewPrescription,
+  onEditPatient,
   activeTab,
   onTabChange,
   initialPrescriptions,
@@ -64,6 +65,7 @@ export function PatientProfile({
   onStartBill?: (patient: Patient, invoice?: LocalInvoiceRecord) => void
   onStartConsultation?: (patient: Patient) => void
   onViewPrescription?: (rx: LocalPrescriptionRecord) => void
+  onEditPatient?: (patient: Patient) => void
   activeTab?: string
   onTabChange?: (tab: string) => void
   initialPrescriptions?: LocalPrescriptionRecord[]
@@ -169,7 +171,9 @@ export function PatientProfile({
           variant="secondary"
           icon={Edit3}
           title="Edit patient (Ctrl+E)"
-          onClick={() => go("patient-form")}
+          onClick={() =>
+            onEditPatient ? onEditPatient(patient) : go("patient-form")
+          }
         >
           Edit patient
         </Button>
@@ -264,8 +268,13 @@ export function PatientProfile({
             <div>
               <h2>{patient.name}</h2>
               <p>
-                {formatPatientAgeGender(patient.age, patient.gender, "years")} ·{" "}
-                {publicPatientId}
+                {formatPatientAgeGender(
+                  patient.age,
+                  patient.gender,
+                  "years",
+                  patient.ageMonths,
+                )}{" "}
+                · {publicPatientId}
               </p>
               <span className="last-seen">
                 <CalendarDays size={14} />{" "}
@@ -333,6 +342,7 @@ export function PatientProfile({
             hasHistory={hasHistory}
             consultations={consultations}
             prescriptions={prescriptions}
+            onEditPatient={onEditPatient}
           />
         )}
         {tab === "Medical History" && <HistoryTab patient={patient} />}

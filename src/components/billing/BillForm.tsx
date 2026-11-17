@@ -376,8 +376,13 @@ export function BillForm({
           <div>
             <strong>{patient.name}</strong>
             <small>
-              {formatPatientAgeGender(patient.age, patient.gender, "years")} ·{" "}
-              {patient.phone || "—"}
+              {formatPatientAgeGender(
+                patient.age,
+                patient.gender,
+                "years",
+                patient.ageMonths,
+              )}{" "}
+              · {patient.phone || "—"}
             </small>
           </div>
           <StatusPill tone={isFinalized ? "success" : "warning"}>

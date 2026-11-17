@@ -315,7 +315,12 @@ export function BillPreview({
               <span>Billed to</span>
               <strong>{patient.name}</strong>
               <small>
-                {formatPatientAgeGender(patient.age, patient.gender, "years")}{" "}
+                {formatPatientAgeGender(
+                  patient.age,
+                  patient.gender,
+                  "years",
+                  patient.ageMonths,
+                )}{" "}
                 · {patient.phone || "—"}
               </small>
             </div>

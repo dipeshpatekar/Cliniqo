@@ -11,6 +11,7 @@ import {
   RefreshCw,
   Check,
   X,
+  UserRoundPlus,
 } from "lucide-react"
 import {
   formatDateDDMMYYYY,
@@ -58,6 +59,7 @@ export interface PrescriptionPreviewProps {
   ) => Promise<void>
   itemsError?: string | null
   topSpacingMm?: number
+  onAddPatient?: () => void
 }
 
 export function PrescriptionPreview({
@@ -77,6 +79,7 @@ export function PrescriptionPreview({
   onRevisePrescription,
   itemsError,
   topSpacingMm = 0,
+  onAddPatient,
 }: PrescriptionPreviewProps) {
   const [whatsapp, setWhatsapp] = useState(false)
   const [delivery, setDelivery] =
@@ -190,6 +193,21 @@ export function PrescriptionPreview({
           onClick={handlePrint}
         >
           Print prescription
+        </Button>
+        <Button
+          type="button"
+          variant="secondary"
+          icon={UserRoundPlus}
+          title="Add patient (Ctrl+N)"
+          onClick={() => {
+            if (onAddPatient) {
+              onAddPatient()
+            } else {
+              go("patient-form")
+            }
+          }}
+        >
+          Add Patient
         </Button>
         <Button
           icon={MessageCircle}
@@ -394,9 +412,9 @@ export function PrescriptionPreview({
               <span>PATIENT NAME · AGE · GENDER</span>
               <strong>
                 {patient.name}
-                {formatPatientAgeGender(patient.age, patient.gender, "yrs") &&
-                formatPatientAgeGender(patient.age, patient.gender, "yrs") !== "— · —"
-                  ? ` (${formatPatientAgeGender(patient.age, patient.gender, "yrs")})`
+                {formatPatientAgeGender(patient.age, patient.gender, "yrs", patient.ageMonths) &&
+                formatPatientAgeGender(patient.age, patient.gender, "yrs", patient.ageMonths) !== "— · —"
+                  ? ` (${formatPatientAgeGender(patient.age, patient.gender, "yrs", patient.ageMonths)})`
                   : ""}
               </strong>
             </div>

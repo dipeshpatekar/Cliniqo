@@ -451,7 +451,7 @@ export function PatientsPage({
                         </span>
                       </td>
                       <td>
-                        {formatPatientAge(patient.age, "yrs")}{" "}
+                        {formatPatientAge(patient.age, "yrs", patient.ageMonths)}{" "}
                         <span className="muted">
                           · {formatPatientGender(patient.gender)}
                         </span>

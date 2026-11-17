@@ -932,7 +932,12 @@ export function Consultation({
               <strong className="patient-strip-name">{patient.name}</strong>
               <span className="patient-strip-details">
                 · {[
-                  formatPatientAgeGender(patient.age, patient.gender, "years"),
+                  formatPatientAgeGender(
+                    patient.age,
+                    patient.gender,
+                    "years",
+                    patient.ageMonths,
+                  ),
                   getPublicPatientId(patient),
                 ]
                   .filter(Boolean)

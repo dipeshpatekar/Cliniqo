@@ -1,10 +1,11 @@
-import { describe, it, expect } from "vitest"
+import { describe, it, expect, vi } from "vitest"
 import { renderToString } from "react-dom/server"
 import { PatientsPage } from "./PatientsPage"
 import { PatientProfile } from "./PatientProfile"
 import { PatientForm } from "./PatientForm"
 import { PatientFormSettings } from "../settings/PatientFormSettings"
 import { InvoicesTab } from "./InvoicesTab"
+import { PrescriptionPreview } from "../consultation/PrescriptionPreview"
 import type { Patient } from "../../types"
 import {
   defaultPatientFormFieldPreferences,
@@ -19,6 +20,7 @@ import {
   formatPrescriptionDateWithTime,
   isMissingAge,
   isMissingGender,
+  mapLocalRecordToPatient,
 } from "../../types"
 
 describe("Patient Components & UX", () => {
@@ -576,6 +578,293 @@ describe("Patient Components & UX", () => {
       expect(formatPrescriptionDateWithTime("2026-11-10", "09:05")).toBe("10/11/2026, 09:05 AM")
       expect(formatPrescriptionDateWithTime("2026-11-10", "")).toBe("10/11/2026")
       expect(formatPrescriptionDateWithTime("", "")).toBe("—")
+    })
+  })
+
+  describe("Issues 26 & 27: Fresh Patient Creation & Split Age into Years/Months", () => {
+    it("renders Add Patient button in PrescriptionPreview header in exact order: Print -> Add Patient -> Send on WhatsApp", () => {
+      const samplePatient: Patient = {
+        id: "PT-001",
+        name: "Krishna Patel",
+        initials: "KP",
+        age: 21,
+        ageMonths: 0,
+        gender: "Female",
+        phone: "9876543210",
+        lastVisit: "No visits yet",
+        allergies: [],
+        conditions: [],
+      }
+
+      const rawHtml = renderToString(
+        <PrescriptionPreview
+          go={() => {}}
+          patient={samplePatient}
+          vitals={{
+            systolic: "120",
+            diastolic: "80",
+            heartRate: "72",
+            temperature: "98.6",
+            spo2: "99",
+            weight: "65",
+          }}
+          data={{
+            chiefComplaint: "Checkup",
+            duration: "1 day",
+            diagnosis: "Healthy",
+            medicines: [],
+            advice: "",
+            investigation: "",
+            notes: "",
+          }}
+          bannerVisible={false}
+          bannerImage={null}
+          signatureImage={null}
+          showClinicLogo={false}
+          showClinicEmail={false}
+          showAllergyWarning={false}
+          returnPage="consultation"
+        />,
+      )
+      const html = rawHtml.replace(/<!-- -->/g, "")
+
+      const idxPrint = html.indexOf("Print prescription")
+      const idxAdd = html.indexOf("Add Patient")
+      const idxSend = html.indexOf("Send on WhatsApp")
+
+      expect(idxPrint).toBeGreaterThan(-1)
+      expect(idxAdd).toBeGreaterThan(-1)
+      expect(idxSend).toBeGreaterThan(-1)
+
+      // Strict button order verification
+      expect(idxPrint).toBeLessThan(idxAdd)
+      expect(idxAdd).toBeLessThan(idxSend)
+    })
+
+    it("divides the Age input into two equal-width numeric fields: Years (0-120) and Months (0-11)", () => {
+      const rawHtml = renderToString(
+        <PatientForm
+          go={() => {}}
+          onSave={() => {}}
+          onReviewPatient={() => {}}
+          patient={null}
+          patients={[]}
+          nextPatientId="AAA-0008"
+        />,
+      )
+      const html = rawHtml.replace(/<!-- -->/g, "")
+
+      expect(html).toContain('placeholder="Years"')
+      expect(html).toContain('placeholder="Months"')
+      expect(html).toContain('name="age"')
+      expect(html).toContain('name="ageMonths"')
+      expect(html).toContain('min="0"')
+      expect(html).toContain('max="120"')
+      expect(html).toContain('max="11"')
+      expect(html).toMatch(/grid-template-columns:\s*1fr 1fr/)
+    })
+
+    it("prefills both years and months when editing an existing patient", () => {
+      const existingPatient: Patient = {
+        id: "PT-002",
+        name: "Aarav Gupta",
+        initials: "AG",
+        age: 1,
+        ageMonths: 4,
+        gender: "Male",
+        phone: "9123456780",
+        lastVisit: "No visits yet",
+        allergies: [],
+        conditions: [],
+      }
+
+      const rawHtml = renderToString(
+        <PatientForm
+          go={() => {}}
+          onSave={() => {}}
+          onReviewPatient={() => {}}
+          patient={existingPatient}
+          patients={[existingPatient]}
+          nextPatientId="AAA-0009"
+        />,
+      )
+      const html = rawHtml.replace(/<!-- -->/g, "")
+
+      expect(html).toContain("Edit patient")
+      expect(html).toContain('value="1"')
+      expect(html).toContain('value="4"')
+    })
+
+    it("formats infant age (0 years, 2 months) to '2 months' and adult age (21 years, 0 months) to '21 years'", () => {
+      // Prompt requirements:
+      // 0 years, 2 months → 2 months
+      expect(formatPatientAge(0, "years", 2)).toBe("2 months")
+      expect(formatPatientAge(0, "yrs", 2)).toBe("2 months")
+
+      // 1 year, 2 months → 1 year 2 months
+      expect(formatPatientAge(1, "years", 2)).toBe("1 year 2 months")
+      expect(formatPatientAge(1, "yrs", 2)).toBe("1 yr 2 mos")
+
+      // 21 years, 0 months → 21 years
+      expect(formatPatientAge(21, "years", 0)).toBe("21 years")
+      expect(formatPatientAge(21, "yrs", 0)).toBe("21 yrs")
+
+      // Adult without months specified
+      expect(formatPatientAge(21, "years")).toBe("21 years")
+      expect(formatPatientAge(21, "yrs")).toBe("21 yrs")
+
+      // Formatted age & gender
+      expect(formatPatientAgeGender(0, "Female", "yrs", 2)).toBe("2 months · Female")
+      expect(formatPatientAgeGender(1, "Female", "years", 2)).toBe("1 year 2 months · Female")
+      expect(formatPatientAgeGender(21, "Female", "yrs", 0)).toBe("21 yrs · Female")
+      expect(formatPatientAgeGender(21, "Female", "years", 0)).toBe("21 years · Female")
+      expect(formatPatientAgeGender(0, "Female")).toBe("— · Female")
+    })
+
+    it("displays correct age and months in PrescriptionPreview for infant and adult", () => {
+      const infantPatient: Patient = {
+        id: "AAA-0001",
+        name: "Baby Of Suman",
+        initials: "BS",
+        age: 0,
+        ageMonths: 2,
+        gender: "Female",
+        phone: "9876543210",
+        lastVisit: "No visits yet",
+        allergies: [],
+        conditions: [],
+      }
+
+      const rawHtmlInfant = renderToString(
+        <PrescriptionPreview
+          go={() => {}}
+          patient={infantPatient}
+          vitals={{
+            systolic: "",
+            diastolic: "",
+            heartRate: "",
+            temperature: "",
+            spo2: "",
+            weight: "",
+          }}
+          data={{
+            chiefComplaint: "",
+            duration: "",
+            diagnosis: "",
+            medicines: [],
+            advice: "",
+            investigation: "",
+            notes: "",
+          }}
+          bannerVisible={false}
+          bannerImage={null}
+          signatureImage={null}
+          showClinicLogo={false}
+          showClinicEmail={false}
+          showAllergyWarning={false}
+          returnPage="consultation"
+        />,
+      )
+      const htmlInfant = rawHtmlInfant.replace(/<!-- -->/g, "")
+      expect(htmlInfant).toContain("(2 months · Female)")
+
+      const adultPatient: Patient = {
+        id: "AAA-0002",
+        name: "Krishna",
+        initials: "K",
+        age: 21,
+        ageMonths: 0,
+        gender: "Female",
+        phone: "9876543210",
+        lastVisit: "No visits yet",
+        allergies: [],
+        conditions: [],
+      }
+
+      const rawHtmlAdult = renderToString(
+        <PrescriptionPreview
+          go={() => {}}
+          patient={adultPatient}
+          vitals={{
+            systolic: "",
+            diastolic: "",
+            heartRate: "",
+            temperature: "",
+            spo2: "",
+            weight: "",
+          }}
+          data={{
+            chiefComplaint: "",
+            duration: "",
+            diagnosis: "",
+            medicines: [],
+            advice: "",
+            investigation: "",
+            notes: "",
+          }}
+          bannerVisible={false}
+          bannerImage={null}
+          signatureImage={null}
+          showClinicLogo={false}
+          showClinicEmail={false}
+          showAllergyWarning={false}
+          returnPage="consultation"
+        />,
+      )
+      const htmlAdult = rawHtmlAdult.replace(/<!-- -->/g, "")
+      expect(htmlAdult).toContain("(21 yrs · Female)")
+    })
+
+    it("deserializes ageMonths correctly from local record sensitive_notes and preserves backwards compatibility", () => {
+      // Record with ageMonths stored in sensitive_notes
+      const localRecWithMonths = {
+        id: "rec-001",
+        server_id: null,
+        clinic_id: "clinic-1",
+        patient_code: "AAA-0010",
+        name: "Infant Child",
+        phone: "9000000000",
+        gender: "Male",
+        date_of_birth: null,
+        age: 0,
+        allergies: [],
+        conditions: [],
+        sensitive_notes: JSON.stringify({ ageMonths: 5, address: "Pune" }),
+        sync_status: "PENDING" as const,
+        server_version: 1,
+        local_version: 1,
+        updated_at: "2026-11-17T12:00:00Z",
+      }
+
+      const mappedWithMonths = mapLocalRecordToPatient(localRecWithMonths)
+      expect(mappedWithMonths.age).toBe(0)
+      expect(mappedWithMonths.ageMonths).toBe(5)
+      expect(mappedWithMonths.address).toBe("Pune")
+
+      // Legacy record with no ageMonths
+      const legacyRec = {
+        id: "rec-002",
+        server_id: null,
+        clinic_id: "clinic-1",
+        patient_code: "AAA-0011",
+        name: "Elder Patient",
+        phone: "9000000001",
+        gender: "Male",
+        date_of_birth: null,
+        age: 65,
+        allergies: [],
+        conditions: [],
+        sensitive_notes: null,
+        sync_status: "SYNCED" as const,
+        server_version: 1,
+        local_version: 1,
+        updated_at: "2026-11-17T12:00:00Z",
+      }
+
+      const mappedLegacy = mapLocalRecordToPatient(legacyRec)
+      expect(mappedLegacy.age).toBe(65)
+      expect(mappedLegacy.ageMonths).toBeUndefined()
+      expect(formatPatientAge(mappedLegacy.age, "years", mappedLegacy.ageMonths)).toBe("65 years")
     })
   })
 })

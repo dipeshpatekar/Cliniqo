@@ -106,6 +106,7 @@ export interface LocalPatientArgs {
   gender: string
   date_of_birth?: string | null
   age: number
+  age_months?: number | null
   allergies: string[]
   conditions: string[]
   sensitive_notes?: string | null
@@ -122,6 +123,7 @@ export interface LocalPatientRecord {
   gender: string
   date_of_birth: string | null
   age: number
+  age_months?: number | null
   allergies: string[]
   conditions: string[]
   sensitive_notes?: string | null

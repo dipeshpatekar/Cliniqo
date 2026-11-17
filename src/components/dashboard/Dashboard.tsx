@@ -202,7 +202,7 @@ export function Dashboard({
                         <strong>{patient.name}</strong>
                         <small>
                           {getPublicPatientId(patient)} ·{" "}
-                          {formatPatientAge(patient.age, "yrs")}
+                          {formatPatientAge(patient.age, "yrs", patient.ageMonths)}
                         </small>
                       </span>
                       <span className="visit-reason">
@@ -245,7 +245,7 @@ export function Dashboard({
                         <strong>{patient.name}</strong>
                         <small>
                           {getPublicPatientId(patient)} ·{" "}
-                          {formatPatientAge(patient.age, "yrs")}
+                          {formatPatientAge(patient.age, "yrs", patient.ageMonths)}
                         </small>
                       </span>
                       <span className="visit-reason">

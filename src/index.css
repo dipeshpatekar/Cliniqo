@@ -4261,10 +4261,41 @@ tbody tr:active {
 .library-step.disabled { opacity: .52; }
 .library-medicine-action { grid-column: 1 / -1; display: flex; justify-content: flex-end; padding-top: 3px; }
 .library-list { min-height: 105px; margin-top: 12px; padding: 12px; border: 1px solid var(--glass-border); border-radius: 11px; background: var(--glass-surface-soft); display: flex; flex-wrap: wrap; align-content: flex-start; gap: 7px; }
-.library-list > span { min-height: 27px; padding: 5px 9px; border-radius: 7px; background: var(--glass-surface); border: 1px solid var(--glass-border); color: #526468; font-size: 11.5px; display: inline-flex; align-items: center; gap: 6px; }
+.library-list > span,
+.library-chip { min-height: 28px; padding: 4px 8px 4px 10px; border-radius: 7px; background: var(--glass-surface); border: 1px solid var(--glass-border); color: #334155; font-size: 12px; display: inline-flex; align-items: center; gap: 6px; transition: all 0.15s ease; position: relative; }
 .library-list > span strong { color: var(--ink); font-size: 11.5px; }
 .library-list > span small { color: var(--muted); font-size: 10px; }
-.dark .library-list > span { color: var(--ink); }
+.library-chip:hover { border-color: #cbd5e1; background: #ffffff; }
+.library-chip-remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: none;
+  background: transparent;
+  color: #94a3b8;
+  cursor: pointer;
+  padding: 0;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.15s ease, visibility 0.15s ease, background 0.15s ease, color 0.15s ease;
+}
+.library-chip:hover .library-chip-remove,
+.library-chip:focus-within .library-chip-remove {
+  opacity: 1;
+  visibility: visible;
+}
+.library-chip-remove:hover {
+  background: rgba(239, 68, 68, 0.15) !important;
+  color: #ef4444 !important;
+}
+.dark .library-list > span,
+.dark .library-chip { background: #080808 !important; border-color: #252525 !important; color: #e2e8f0 !important; }
+.dark .library-chip:hover { border-color: #383838 !important; background: #121212 !important; }
+.dark .library-chip-remove { color: #64748b !important; }
+.dark .library-chip-remove:hover { background: rgba(239, 68, 68, 0.25) !important; color: #f87171 !important; }
 .option-list {
   border: 1px solid var(--glass-border);
   border-radius: 12px;
@@ -6323,15 +6354,15 @@ tbody tr:active {
 
 .rx-clinic h2 {
   color: var(--primary, #068D94);
-  font-size: 15px !important;
+  font-size: 18px !important;
   font-weight: 700;
   margin: 0 0 4px 0;
   line-height: 1.3;
 }
 
 .rx-clinic p {
-  color: #475569;
-  font-size: 10px !important;
+  color: #1e293b;
+  font-size: 12px !important;
   margin: 2px 0;
   line-height: 1.4;
 }
@@ -6341,20 +6372,20 @@ tbody tr:active {
   flex-direction: column;
   text-align: right;
   gap: 2px;
-  font-size: 10px !important;
-  color: #475569;
+  font-size: 12px !important;
+  color: #1e293b;
 }
 
 .rx-doctor strong {
   color: #0f172a;
-  font-size: 14px !important;
+  font-size: 17px !important;
   font-weight: 700;
   margin-bottom: 2px;
 }
 
 .rx-doctor span {
-  font-size: 10px !important;
-  color: #475569;
+  font-size: 12px !important;
+  color: #1e293b;
 }
 
 .rx-patient {
@@ -6377,8 +6408,8 @@ tbody tr:active {
 .rx-medicines th,
 .rx-allergy-label,
 .signature span {
-  color: #64748b;
-  font-size: 8.25px !important;
+  color: #334155;
+  font-size: 10px !important;
   text-transform: uppercase;
   letter-spacing: 0.5px;
   font-weight: 700;
@@ -6387,15 +6418,15 @@ tbody tr:active {
 .rx-patient strong,
 .rx-vitals strong,
 .rx-clinical-item p {
-  font-size: 11px !important;
+  font-size: 13.2px !important;
   font-weight: 600;
   color: #0f172a;
   margin: 0;
 }
 
 .rx-patient small {
-  color: #64748b;
-  font-size: 10px;
+  color: #334155;
+  font-size: 12px;
 }
 
 .rx-vitals {
@@ -6438,7 +6469,7 @@ tbody tr:active {
 
 .rx-diagnosis p {
   margin-top: 4px;
-  font-size: 11px;
+  font-size: 13.2px;
   color: #0f172a;
   line-height: 1.4;
 }
@@ -6452,7 +6483,7 @@ tbody tr:active {
 .rx-symbol {
   color: var(--primary, #068D94);
   font-family: Georgia, serif;
-  font-size: 22px;
+  font-size: 26px;
   font-weight: bold;
   margin-bottom: 8px;
 }
@@ -6461,7 +6492,7 @@ tbody tr:active {
 .bill-document table {
   width: 100%;
   border-collapse: collapse;
-  border: 1px solid #e2e8f0;
+  border: 1px solid #cbd5e1;
   border-radius: 6px;
   overflow: hidden;
   background: #ffffff !important;
@@ -6469,23 +6500,23 @@ tbody tr:active {
 
 .rx-medicines th,
 .bill-document th {
-  background: #f8fafc !important;
-  color: #64748b;
-  font-size: 8.25px !important;
+  background: #f1f5f9 !important;
+  color: #1e293b;
+  font-size: 10px !important;
   text-transform: uppercase;
   font-weight: 700;
   letter-spacing: 0.5px;
   padding: 8px 10px;
   text-align: left;
-  border-bottom: 1px solid #e2e8f0;
+  border-bottom: 1px solid #cbd5e1;
 }
 
 .rx-medicines td,
 .bill-document td {
   padding: 8px 10px;
-  font-size: 11px !important;
+  font-size: 13.2px !important;
   color: #0f172a;
-  border-bottom: 1px solid #f1f5f9;
+  border-bottom: 1px solid #e2e8f0;
   background: #ffffff !important;
   vertical-align: top;
 }
@@ -6497,22 +6528,23 @@ tbody tr:active {
 }
 
 .rx-medicines.has-data td span {
-  color: #64748b;
-  font-size: 8.25px !important;
+  color: #334155;
+  font-size: 10px !important;
   display: block;
   margin-top: 2px;
 }
 
 .rx-med-name {
-  font-size: 11px !important;
+  font-size: 13.2px !important;
   font-weight: 700 !important;
   color: #0f172a;
   display: block;
 }
 
 .rx-med-strength {
-  color: #64748b;
-  font-size: 8.25px !important;
+  color: #334155;
+  font-size: 10px !important;
+  font-weight: 600;
   display: block;
   margin-top: 2px;
 }
@@ -6522,19 +6554,20 @@ tbody tr:active {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  color: #64748b;
+  color: #334155;
   gap: 6px;
   padding: 30px 0;
 }
 
 .rx-empty strong {
-  font-size: 11px !important;
+  font-size: 13.2px !important;
   font-weight: 600;
-  color: #334155;
+  color: #1e293b;
 }
 
 .rx-empty span {
-  font-size: 10px !important;
+  font-size: 12px !important;
+  color: #334155;
 }
 
 .rx-instructions {
@@ -6543,8 +6576,8 @@ tbody tr:active {
 }
 
 .rx-instructions h3 {
-  color: #334155;
-  font-size: 11px;
+  color: #1e293b;
+  font-size: 13.2px;
   text-transform: uppercase;
   letter-spacing: 0.5px;
   font-weight: 600;
@@ -6552,8 +6585,8 @@ tbody tr:active {
 }
 
 .rx-instructions p {
-  color: #475569;
-  font-size: 11px;
+  color: #1e293b;
+  font-size: 13.2px;
   line-height: 1.5;
   margin: 0;
 }
@@ -6562,11 +6595,11 @@ tbody tr:active {
   display: flex;
   gap: 20px;
   margin-top: 10px;
-  font-size: 11px;
+  font-size: 13.2px;
 }
 
 .rx-instructions > div span {
-  color: #64748b;
+  color: #334155;
 }
 
 .rx-footer {
@@ -6592,7 +6625,7 @@ tbody tr:active {
 
 .rx-allergy-label {
   color: #dc2626 !important;
-  font-size: 8.25px !important;
+  font-size: 10px !important;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.5px;
@@ -6600,12 +6633,12 @@ tbody tr:active {
 
 .rx-allergy-val {
   color: #dc2626 !important;
-  font-size: 11px !important;
+  font-size: 13.2px !important;
   font-weight: 700;
 }
 
 .rx-follow-up {
-  font-size: 8.25px !important;
+  font-size: 10px !important;
   color: #0f172a;
 }
 
@@ -6636,21 +6669,21 @@ tbody tr:active {
 }
 
 .signature span {
-  color: #64748b;
-  font-size: 8.25px !important;
+  color: #334155;
+  font-size: 10px !important;
   font-weight: 700;
   text-transform: uppercase;
 }
 
 .signature strong {
-  font-size: 11px !important;
+  font-size: 13.2px !important;
   font-weight: 700;
   color: #0f172a;
 }
 
 .rx-page-number {
-  font-size: 10px !important;
-  color: #64748b;
+  font-size: 12px !important;
+  color: #334155;
   text-align: right;
 }
 
@@ -6790,28 +6823,187 @@ tbody tr:active {
 }
 
 /* CRITICAL EXCLUSION: Preserve solid white and print-readiness for documents in dark theme */
-.dark .prescription-paper {
-  color-scheme: light;
+.dark .prescription-paper,
+.dark .bill-paper,
+.dark .bill-document {
+  color-scheme: light !important;
+  background: #ffffff !important;
+  background-color: #ffffff !important;
+  border-color: #e2e8f0 !important;
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.4) !important;
+  color: #0f172a !important;
 }
 
-.dark .prescription-paper,
-.dark .bill-document,
+.dark .prescription-paper *,
+.dark .bill-paper *,
+.dark .bill-document * {
+  color-scheme: light !important;
+}
+
+/* Headings and bold values inside dark mode prescription and bill */
+.dark .prescription-paper :is(h1, h2, h3, h4, h5, h6, strong, b, .rx-doctor strong, .rx-patient strong, .rx-vitals strong, .rx-med-name, .signature strong, .rx-empty strong),
+.dark .bill-paper :is(h1, h2, h3, h4, h5, h6, strong, b, .bill-title h2, .bill-number strong, .signature strong),
+.dark .bill-document :is(h1, h2, h3, h4, h5, h6, strong, b, .bill-title h2, .bill-number strong, .signature strong) {
+  color: #0f172a !important;
+}
+
+/* Secondary text, values and paragraphs */
+.dark .prescription-paper :is(p, td, small, .rx-clinic p, .rx-clinical-item p, .rx-diagnosis p, .rx-instructions p),
+.dark .bill-paper :is(p, td, small, .bill-payment-note p, .bill-document-totals > div),
+.dark .bill-document :is(p, td, small, .bill-payment-note p, .bill-document-totals > div) {
+  color: #1e293b !important;
+}
+
+/* Section labels, headers, small caps, muted details */
+.dark .prescription-paper :is(th, .rx-patient span, .rx-vitals span, .rx-clinical-item span, .rx-medicines th, .signature span, .rx-page-number, .rx-doctor span, .rx-med-strength, .rx-empty span),
+.dark .bill-paper :is(th, .bill-title span, .bill-number span, .signature span, .bill-document th),
+.dark .bill-document :is(th, .bill-title span, .bill-number span, .signature span, .bill-document th) {
+  color: #334155 !important;
+}
+
+.dark .prescription-paper .rx-clinic h2 {
+  color: #068D94 !important;
+}
+
+.dark .prescription-paper .rx-symbol {
+  color: #068D94 !important;
+}
+
+.dark .prescription-paper .rx-logo {
+  background: #068D94 !important;
+  color: #ffffff !important;
+}
+
+.dark .prescription-paper .rx-allergy-label,
+.dark .prescription-paper .rx-allergy-val {
+  color: #dc2626 !important;
+}
+
+.dark .prescription-paper .rx-follow-up {
+  color: #0f172a !important;
+}
+
 .dark .prescription-paper table,
 .dark .bill-document table,
-.dark .prescription-paper th,
-.dark .prescription-paper td,
-.dark .bill-document th,
-.dark .bill-document td {
+.dark .bill-paper table {
   background: #ffffff !important;
-  backdrop-filter: none !important;
-  -webkit-backdrop-filter: none !important;
-  color: #1f292d !important;
+  background-color: #ffffff !important;
+  border: 1px solid #cbd5e1 !important;
 }
 
 .dark .prescription-paper th,
-.dark .bill-document th {
-  background: #f4f8f8 !important;
-  color: #49585c !important;
+.dark .bill-document th,
+.dark .bill-paper th {
+  background: #f1f5f9 !important;
+  background-color: #f1f5f9 !important;
+  color: #1e293b !important;
+  border-bottom: 1px solid #cbd5e1 !important;
+}
+
+.dark .prescription-paper td,
+.dark .bill-document td,
+.dark .bill-paper td {
+  background: #ffffff !important;
+  background-color: #ffffff !important;
+  color: #0f172a !important;
+  border-bottom: 1px solid #e2e8f0 !important;
+}
+
+.dark .prescription-paper :is(.rx-header, .rx-patient, .rx-vitals, .rx-clinical-info, .rx-diagnosis, .rx-instructions) {
+  border-color: #e2e8f0 !important;
+}
+
+.dark .prescription-paper .rx-header {
+  border-bottom: 2px solid #068D94 !important;
+}
+
+.dark .bill-document-totals .grand-total {
+  background: #f0fdfa !important;
+  border-top: 2px solid #068D94 !important;
+  color: #0f172a !important;
+}
+
+.dark .bill-document-totals .grand-total strong {
+  color: #068D94 !important;
+}
+
+.dark .bill-payment-note {
+  background: #f0fdfa !important;
+  border-color: #ccfbf1 !important;
+}
+
+.dark .bill-payment-note strong {
+  color: #0f766e !important;
+}
+
+.dark .bill-payment-note span {
+  color: #334155 !important;
+}
+
+/* Top Spacing Settings Control */
+.top-spacing-control {
+  margin-top: 18px;
+  padding: 16px 20px;
+  border: 1px solid var(--glass-border);
+  border-radius: 12px;
+  background: var(--glass-surface-soft);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.top-spacing-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.top-spacing-header strong {
+  font-size: 13.5px;
+  font-weight: 600;
+  display: block;
+}
+.top-spacing-header p {
+  font-size: 11.5px;
+  color: var(--muted);
+  margin: 2px 0 0;
+}
+.top-spacing-badge {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.top-spacing-badge span {
+  font-size: 13px;
+  font-weight: 700;
+  padding: 3px 9px;
+  border-radius: 6px;
+  background: var(--primary-soft, rgba(6, 141, 148, 0.1));
+  color: var(--primary, #068D94);
+}
+.top-spacing-slider-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.slider-bound {
+  font-size: 11px;
+  color: var(--muted);
+  min-width: 38px;
+}
+.top-spacing-slider {
+  flex: 1;
+  height: 6px;
+  border-radius: 3px;
+  accent-color: var(--primary, #068D94);
+  cursor: pointer;
+}
+.dark .top-spacing-control {
+  background: #080808 !important;
+  border-color: #252525 !important;
+}
+.dark .top-spacing-badge span {
+  background: rgba(6, 141, 148, 0.2) !important;
+  color: #38bdf8 !important;
 }
 
 @media (max-width: 1050px) {
@@ -8302,10 +8494,15 @@ body {
     box-shadow: none !important;
     margin: 0 !important;
     padding: 0 !important;
+    padding-top: var(--rx-top-spacing, 0mm) !important;
     background: #ffffff !important;
     color: #0f172a !important;
     overflow: visible !important;
     box-sizing: border-box !important;
+  }
+
+  .bill-paper {
+    padding-top: var(--bill-top-spacing, 0mm) !important;
   }
 
   .rx-banner-slot {
@@ -8343,22 +8540,24 @@ body {
   }
 
   .rx-clinic h2 {
-    font-size: 15px !important;
+    font-size: 18px !important;
   }
 
   .rx-clinic p,
   .rx-doctor,
   .rx-doctor span {
-    font-size: 10px !important;
+    font-size: 12px !important;
+    color: #1e293b !important;
   }
 
   .rx-doctor strong {
-    font-size: 14px !important;
+    font-size: 17px !important;
+    color: #0f172a !important;
   }
 
   .rx-patient {
     padding: 8px 0 10px !important;
-    border-bottom: 1px solid #e2e8f0 !important;
+    border-bottom: 1px solid #cbd5e1 !important;
     display: grid !important;
     grid-template-columns: 2fr 1fr 1fr 1.2fr !important;
     gap: 12px !important;
@@ -8372,8 +8571,8 @@ body {
   .rx-medicines th,
   .rx-allergy-label,
   .signature span {
-    color: #64748b !important;
-    font-size: 8.25px !important;
+    color: #1e293b !important;
+    font-size: 10px !important;
     text-transform: uppercase !important;
     letter-spacing: 0.5px !important;
     font-weight: 700 !important;
@@ -8382,7 +8581,7 @@ body {
   .rx-patient strong,
   .rx-vitals strong,
   .rx-clinical-item p {
-    font-size: 11px !important;
+    font-size: 13.2px !important;
     font-weight: 600 !important;
     color: #0f172a !important;
     margin: 0 !important;
@@ -8390,7 +8589,7 @@ body {
 
   .rx-vitals {
     padding: 6px 0 !important;
-    border-bottom: 1px solid #e2e8f0 !important;
+    border-bottom: 1px solid #cbd5e1 !important;
     break-inside: avoid !important;
     page-break-inside: avoid !important;
     display: grid !important;
@@ -8400,7 +8599,7 @@ body {
 
   .rx-clinical-info {
     padding: 6px 0 !important;
-    border-bottom: 1px solid #e2e8f0 !important;
+    border-bottom: 1px solid #cbd5e1 !important;
     break-inside: avoid !important;
     page-break-inside: avoid !important;
     display: grid !important;
@@ -8420,7 +8619,7 @@ body {
   }
 
   .rx-symbol {
-    font-size: 20px !important;
+    font-size: 26px !important;
     margin-bottom: 4px !important;
   }
 
@@ -8432,7 +8631,7 @@ body {
   .bill-document table {
     width: 100% !important;
     border-collapse: collapse !important;
-    border: 1px solid #e2e8f0 !important;
+    border: 1px solid #cbd5e1 !important;
     background: #ffffff !important;
   }
 
@@ -8450,20 +8649,21 @@ body {
   .bill-document th {
     background: transparent !important;
     padding: 6px 8px !important;
-    font-size: 8.25px !important;
+    font-size: 10px !important;
     font-weight: 700 !important;
     text-transform: uppercase !important;
-    border-bottom: 1px solid #e2e8f0 !important;
-    color: #64748b !important;
+    border-bottom: 1px solid #cbd5e1 !important;
+    color: #1e293b !important;
   }
 
   .rx-medicines td,
   .bill-document td {
     padding: 6px 8px !important;
-    font-size: 11px !important;
+    font-size: 13.2px !important;
     line-height: 1.35 !important;
-    border-bottom: 1px solid #f1f5f9 !important;
+    border-bottom: 1px solid #e2e8f0 !important;
     background: #ffffff !important;
+    color: #0f172a !important;
   }
 
   .rx-medicines tr,
@@ -8473,15 +8673,16 @@ body {
   }
 
   .rx-med-name {
-    font-size: 11px !important;
+    font-size: 13.2px !important;
     font-weight: 700 !important;
     color: #0f172a !important;
     display: block !important;
   }
 
   .rx-med-strength {
-    color: #64748b !important;
-    font-size: 8.25px !important;
+    color: #334155 !important;
+    font-size: 10px !important;
+    font-weight: 600 !important;
     display: block !important;
     margin-top: 1px !important;
   }
@@ -8505,18 +8706,18 @@ body {
 
   .rx-allergy-label {
     color: #dc2626 !important;
-    font-size: 8.25px !important;
+    font-size: 10px !important;
     font-weight: 700 !important;
   }
 
   .rx-allergy-val {
     color: #dc2626 !important;
-    font-size: 11px !important;
+    font-size: 13.2px !important;
     font-weight: 700 !important;
   }
 
   .rx-follow-up {
-    font-size: 8.25px !important;
+    font-size: 10px !important;
     color: #0f172a !important;
   }
 
@@ -8540,19 +8741,20 @@ body {
   }
 
   .signature span {
-    font-size: 8.25px !important;
+    font-size: 10px !important;
     font-weight: 700 !important;
+    color: #1e293b !important;
   }
 
   .signature strong {
-    font-size: 11px !important;
+    font-size: 13.2px !important;
     font-weight: 700 !important;
     color: #0f172a !important;
   }
 
   .rx-page-number {
-    font-size: 10px !important;
-    color: #64748b !important;
+    font-size: 12px !important;
+    color: #334155 !important;
   }
 
   /* Bill Layout Print Rules */

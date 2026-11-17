@@ -181,6 +181,7 @@ export type PrescriptionLayoutPreferences = {
   showClinicLogo: boolean
   showClinicEmail: boolean
   showAllergyWarning: boolean
+  topSpacingMm: number
   bannerImage: { src: string; name: string } | null
   signatureImage: { src: string; name: string } | null
 }
@@ -190,6 +191,7 @@ export const defaultPrescriptionLayoutPreferences: PrescriptionLayoutPreferences
   showClinicLogo: true,
   showClinicEmail: true,
   showAllergyWarning: true,
+  topSpacingMm: 0,
   bannerImage: null,
   signatureImage: null,
 }
@@ -226,6 +228,10 @@ export const loadPrescriptionLayoutPreferences = (
           typeof saved.showAllergyWarning === "boolean"
             ? saved.showAllergyWarning
             : defaultPrescriptionLayoutPreferences.showAllergyWarning,
+        topSpacingMm:
+          typeof saved.topSpacingMm === "number" && !isNaN(saved.topSpacingMm)
+            ? Math.max(0, Math.min(100, saved.topSpacingMm))
+            : defaultPrescriptionLayoutPreferences.topSpacingMm,
         bannerImage: saved.bannerImage ?? null,
         signatureImage: saved.signatureImage ?? null,
       }
@@ -276,6 +282,7 @@ export type BillLayoutPreferences = {
   showClinicEmail: boolean
   showSignature: boolean
   showPaymentNote: boolean
+  topSpacingMm: number
 }
 
 export const defaultBillLayoutPreferences: BillLayoutPreferences = {
@@ -284,6 +291,7 @@ export const defaultBillLayoutPreferences: BillLayoutPreferences = {
   showClinicEmail: true,
   showSignature: true,
   showPaymentNote: true,
+  topSpacingMm: 0,
 }
 
 export const loadBillLayoutPreferences = (
@@ -322,6 +330,10 @@ export const loadBillLayoutPreferences = (
           typeof saved.showPaymentNote === "boolean"
             ? saved.showPaymentNote
             : defaultBillLayoutPreferences.showPaymentNote,
+        topSpacingMm:
+          typeof saved.topSpacingMm === "number" && !isNaN(saved.topSpacingMm)
+            ? Math.max(0, Math.min(100, saved.topSpacingMm))
+            : defaultBillLayoutPreferences.topSpacingMm,
       }
     }
   } catch {}
@@ -1187,41 +1199,39 @@ export const defaultClinicalLibrary: ClinicalLibrary = {
 
 export const loadClinicalLibrary = (): ClinicalLibrary => {
   try {
-    const saved = JSON.parse(
-      window.localStorage.getItem("cliniqo-clinical-library") || "{}",
-    ) as Partial<ClinicalLibrary>
-    const formulations = Array.isArray(saved.Formulations)
-      ? Array.from(
-          new Set([
-            ...defaultClinicalLibrary.Formulations,
-            ...saved.Formulations,
-          ]),
-        )
-      : defaultClinicalLibrary.Formulations
-    const frequencies = Array.isArray(saved.Frequencies)
-      ? Array.from(
-          new Set([
-            ...defaultClinicalLibrary.Frequencies,
-            ...saved.Frequencies,
-          ]),
-        )
-      : defaultClinicalLibrary.Frequencies
-    const foodInstructions = Array.isArray(saved.FoodInstructions)
-      ? Array.from(
-          new Set([
-            ...defaultClinicalLibrary.FoodInstructions,
-            ...saved.FoodInstructions,
-          ]),
-        )
-      : defaultClinicalLibrary.FoodInstructions
+    const raw =
+      typeof window !== "undefined" && window.localStorage
+        ? window.localStorage.getItem("cliniqo-clinical-library")
+        : null
+    if (!raw) return { ...defaultClinicalLibrary }
+    const saved = JSON.parse(raw) as Partial<ClinicalLibrary>
     return {
-      ...defaultClinicalLibrary,
-      ...saved,
-      Formulations: formulations,
-      Frequencies: frequencies,
-      FoodInstructions: foodInstructions,
+      Medicines: Array.isArray(saved.Medicines)
+        ? saved.Medicines
+        : defaultClinicalLibrary.Medicines,
+      Formulations: Array.isArray(saved.Formulations)
+        ? saved.Formulations
+        : defaultClinicalLibrary.Formulations,
+      Strengths: Array.isArray(saved.Strengths)
+        ? saved.Strengths
+        : defaultClinicalLibrary.Strengths,
+      Doses: Array.isArray(saved.Doses)
+        ? saved.Doses
+        : defaultClinicalLibrary.Doses,
+      Durations: Array.isArray(saved.Durations)
+        ? saved.Durations
+        : defaultClinicalLibrary.Durations,
+      Frequencies: Array.isArray(saved.Frequencies)
+        ? saved.Frequencies
+        : defaultClinicalLibrary.Frequencies,
+      FoodInstructions: Array.isArray(saved.FoodInstructions)
+        ? saved.FoodInstructions
+        : defaultClinicalLibrary.FoodInstructions,
+      MedicineDefinitions: Array.isArray(saved.MedicineDefinitions)
+        ? saved.MedicineDefinitions
+        : defaultClinicalLibrary.MedicineDefinitions,
     }
   } catch {
-    return defaultClinicalLibrary
+    return { ...defaultClinicalLibrary }
   }
 }

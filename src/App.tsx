@@ -299,6 +299,8 @@ export default function App({
   const [showAllergyWarning, setShowAllergyWarning] = useState(
     initialRxPrefs.showAllergyWarning,
   )
+  const [prescriptionTopSpacingMm, setPrescriptionTopSpacingMm] =
+    useState<number>(() => initialRxPrefs.topSpacingMm || 0)
   const [billLayout, setBillLayout] = useState<BillLayoutPreferences>(() =>
     loadBillLayoutPreferences(),
   )
@@ -326,6 +328,7 @@ export default function App({
     setShowClinicLogo(clinicRxPrefs.showClinicLogo)
     setShowClinicEmail(clinicRxPrefs.showClinicEmail)
     setShowAllergyWarning(clinicRxPrefs.showAllergyWarning)
+    setPrescriptionTopSpacingMm(clinicRxPrefs.topSpacingMm || 0)
 
     const clinicBillPrefs = loadBillLayoutPreferences(clinicId)
     setBillLayout(clinicBillPrefs)
@@ -378,6 +381,7 @@ export default function App({
         showClinicLogo,
         showClinicEmail,
         showAllergyWarning,
+        topSpacingMm: prescriptionTopSpacingMm,
         bannerImage: prescriptionBannerImage,
         signatureImage: doctorSignatureImage,
       },
@@ -395,6 +399,7 @@ export default function App({
         showClinicLogo,
         showClinicEmail,
         showAllergyWarning,
+        topSpacingMm: prescriptionTopSpacingMm,
         bannerImage: image,
         signatureImage: doctorSignatureImage,
       },
@@ -412,6 +417,7 @@ export default function App({
         showClinicLogo,
         showClinicEmail,
         showAllergyWarning,
+        topSpacingMm: prescriptionTopSpacingMm,
         bannerImage: prescriptionBannerImage,
         signatureImage: image,
       },
@@ -427,6 +433,7 @@ export default function App({
         showClinicLogo: visible,
         showClinicEmail,
         showAllergyWarning,
+        topSpacingMm: prescriptionTopSpacingMm,
         bannerImage: prescriptionBannerImage,
         signatureImage: doctorSignatureImage,
       },
@@ -442,6 +449,7 @@ export default function App({
         showClinicLogo,
         showClinicEmail: visible,
         showAllergyWarning,
+        topSpacingMm: prescriptionTopSpacingMm,
         bannerImage: prescriptionBannerImage,
         signatureImage: doctorSignatureImage,
       },
@@ -457,6 +465,24 @@ export default function App({
         showClinicLogo,
         showClinicEmail,
         showAllergyWarning: visible,
+        topSpacingMm: prescriptionTopSpacingMm,
+        bannerImage: prescriptionBannerImage,
+        signatureImage: doctorSignatureImage,
+      },
+      desktopSession?.clinic_id,
+    )
+  }
+
+  const updatePrescriptionTopSpacingMm = (spacing: number) => {
+    const clamped = Math.max(0, Math.min(60, spacing))
+    setPrescriptionTopSpacingMm(clamped)
+    savePrescriptionLayoutPreferences(
+      {
+        bannerVisible: prescriptionBannerVisible,
+        showClinicLogo,
+        showClinicEmail,
+        showAllergyWarning,
+        topSpacingMm: clamped,
         bannerImage: prescriptionBannerImage,
         signatureImage: doctorSignatureImage,
       },
@@ -1405,6 +1431,16 @@ export default function App({
     }))
   }
 
+  const removeLibraryItem = (
+    category: ClinicalLibraryCategory,
+    value: string,
+  ) => {
+    setClinicalLibrary((library) => ({
+      ...library,
+      [category]: (library[category] || []).filter((item) => item !== value),
+    }))
+  }
+
   const addMedicineDefinition = (medicine: ClinicalMedicineDefinition) => {
     setClinicalLibrary((library) => {
       const trimmedName = medicine.name.trim()
@@ -1917,6 +1953,7 @@ export default function App({
         showClinicLogo={showClinicLogo}
         showClinicEmail={showClinicEmail}
         showAllergyWarning={showAllergyWarning}
+        topSpacingMm={prescriptionTopSpacingMm}
         returnPage={prescriptionPreviewReturnPage}
         desktopSession={desktopSession}
         prescriptionRecord={
@@ -1968,6 +2005,7 @@ export default function App({
         onDarkModeChange={setDarkMode}
         clinicalLibrary={clinicalLibrary}
         onAddLibraryItem={addLibraryItem}
+        onRemoveLibraryItem={removeLibraryItem}
         onAddMedicine={addMedicineDefinition}
         bannerVisible={prescriptionBannerVisible}
         onBannerVisibleChange={updatePrescriptionBannerVisible}
@@ -1981,6 +2019,8 @@ export default function App({
         onShowClinicEmailChange={updateShowClinicEmail}
         showAllergyWarning={showAllergyWarning}
         onShowAllergyWarningChange={updateShowAllergyWarning}
+        prescriptionTopSpacingMm={prescriptionTopSpacingMm}
+        onPrescriptionTopSpacingMmChange={updatePrescriptionTopSpacingMm}
         billLayout={billLayout}
         onBillLayoutChange={updateBillLayout}
         patientFormFieldPreferences={patientFormFieldPreferences}

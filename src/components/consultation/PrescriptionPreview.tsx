@@ -57,6 +57,7 @@ export interface PrescriptionPreviewProps {
     reasonForRevision: string,
   ) => Promise<void>
   itemsError?: string | null
+  topSpacingMm?: number
 }
 
 export function PrescriptionPreview({
@@ -75,6 +76,7 @@ export function PrescriptionPreview({
   prescriptionRecord,
   onRevisePrescription,
   itemsError,
+  topSpacingMm = 0,
 }: PrescriptionPreviewProps) {
   const [whatsapp, setWhatsapp] = useState(false)
   const [delivery, setDelivery] =
@@ -264,7 +266,16 @@ export function PrescriptionPreview({
           </div>
         )}
 
-        <article className="prescription-paper" id="printable-prescription">
+        <article
+          className="prescription-paper"
+          id="printable-prescription"
+          style={{
+            paddingTop: topSpacingMm
+              ? `calc(44px + ${topSpacingMm}mm)`
+              : undefined,
+            ["--rx-top-spacing" as any]: `${topSpacingMm || 0}mm`,
+          }}
+        >
           <div
             className={cn(
               "rx-banner-slot",
@@ -322,8 +333,8 @@ export function PrescriptionPreview({
                     {clinicProfile?.phone && (
                       <p
                         style={{
-                          fontSize: "11px",
-                          color: "var(--text-muted, #64748b)",
+                          fontSize: "12px",
+                          color: "#1e293b",
                         }}
                       >
                         Ph: {clinicProfile.phone}
@@ -552,7 +563,7 @@ export function PrescriptionPreview({
                           .join(" · ") || "—"}
                       </td>
                       <td>
-                        {[medicine.route, medicine.food, medicine.directions]
+                        {[medicine.food, medicine.directions]
                           .filter(Boolean)
                           .join(" · ") || "—"}
                       </td>

@@ -187,7 +187,16 @@ export function BillPreview({
           </Button>
         </div>
 
-        <article className="prescription-paper bill-paper" id="printable-bill">
+        <article
+          className="prescription-paper bill-paper"
+          id="printable-bill"
+          style={{
+            paddingTop: layout.topSpacingMm
+              ? `calc(44px + ${layout.topSpacingMm}mm)`
+              : undefined,
+            ["--bill-top-spacing" as any]: `${layout.topSpacingMm || 0}mm`,
+          }}
+        >
           <div
             className={cn(
               "rx-banner-slot",

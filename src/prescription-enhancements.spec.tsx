@@ -316,6 +316,57 @@ describe("Prescription, Print & UI Enhancements (Issues 13–18)", () => {
       expect(html).toContain("℞")
       expect(html).toContain("rx-symbol")
     })
+
+    it("renders bill-paper in dark mode with white background, dark readable text and flat document structure", () => {
+      const html = renderToString(
+        <div className="dark">
+          <BillPreview
+            go={() => {}}
+            patient={mockPatient}
+            bill={{
+              ...mockBillData,
+              notes: "Sample preview invoice. Thank you for your consultation!",
+            }}
+            bannerImage={null}
+            signatureImage={null}
+            layout={defaultBillLayoutPreferences}
+            returnPage="settings"
+          />
+        </div>,
+      )
+
+      // Outer bill paper
+      expect(html).toContain("prescription-paper bill-paper")
+      expect(html).toContain("bill-document")
+
+      // Headers and titles
+      expect(html).toContain("Patient bill")
+      expect(html).toContain("Tax invoice")
+
+      // Patient details and invoice metadata
+      expect(html).toContain("Vikram Mehta")
+      expect(html).toContain("INV-2026-001")
+      expect(html).toContain("Billed to")
+
+      // Table headers and items
+      expect(html).toContain("Service or item")
+      expect(html).toContain("Qty")
+      expect(html).toContain("Rate")
+      expect(html).toContain("Amount")
+      expect(html).toContain("Consultation Fee")
+      expect(html).toContain("500.00")
+
+      // Totals
+      expect(html).toContain("Subtotal")
+      expect(html).toContain("Total amount")
+
+      // Remarks & Payment status
+      expect(html).toContain("bill-remarks")
+      expect(html).toContain("Sample preview invoice")
+      expect(html).toContain("Payment status:")
+      expect(html).toContain("Unpaid")
+      expect(html).toContain("bill-payment-note")
+    })
   })
 
   describe("Issue 13 & 14: Typography (+20%) and Contrast in Stylesheet", () => {
@@ -348,9 +399,9 @@ describe("Prescription, Print & UI Enhancements (Issues 13–18)", () => {
       expect(cssContent).toMatch(/\.rx-med-strength[\s\S]*?color:\s*#334155/)
 
       // Dark mode document isolation rules
-      expect(cssContent).toContain(".dark .prescription-paper,")
-      expect(cssContent).toContain(".dark .bill-paper,")
+      expect(cssContent).toMatch(/\.dark\s+\.prescription-paper,\s*\.dark\s+\.bill-paper/)
       expect(cssContent).toContain(".dark .bill-document")
+      expect(cssContent).toMatch(/\.dark\s+\.bill-document[\s\S]*?box-shadow:\s*none\s*!important/)
       expect(cssContent).toContain("color-scheme: light !important;")
 
       // Top spacing CSS variable in print

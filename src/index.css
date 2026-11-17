@@ -6824,44 +6824,52 @@ tbody tr:active {
 
 /* CRITICAL EXCLUSION: Preserve solid white and print-readiness for documents in dark theme */
 .dark .prescription-paper,
-.dark .bill-paper,
-.dark .bill-document {
+.dark .bill-paper {
   color-scheme: light !important;
   background: #ffffff !important;
   background-color: #ffffff !important;
-  border-color: #e2e8f0 !important;
+  border: 1px solid #e2e8f0 !important;
+  border-radius: 8px !important;
   box-shadow: 0 4px 24px rgba(0, 0, 0, 0.4) !important;
   color: #0f172a !important;
 }
 
+/* Internal bill document section must remain flat on paper with no separate card box-shadow */
+.bill-document,
+.dark .bill-document {
+  background: transparent !important;
+  background-color: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+  border-radius: 0 !important;
+  padding: 20px 0 10px;
+}
+
 .dark .prescription-paper *,
-.dark .bill-paper *,
-.dark .bill-document * {
+.dark .bill-paper * {
   color-scheme: light !important;
 }
 
 /* Headings and bold values inside dark mode prescription and bill */
 .dark .prescription-paper :is(h1, h2, h3, h4, h5, h6, strong, b, .rx-doctor strong, .rx-patient strong, .rx-vitals strong, .rx-med-name, .signature strong, .rx-empty strong),
-.dark .bill-paper :is(h1, h2, h3, h4, h5, h6, strong, b, .bill-title h2, .bill-number strong, .signature strong),
-.dark .bill-document :is(h1, h2, h3, h4, h5, h6, strong, b, .bill-title h2, .bill-number strong, .signature strong) {
+.dark .bill-paper :is(h1, h2, h3, h4, h5, h6, strong, b, .bill-title h2, .bill-number strong, .signature strong, .rx-doctor strong, .rx-patient strong, .bill-document-totals strong) {
   color: #0f172a !important;
 }
 
 /* Secondary text, values and paragraphs */
 .dark .prescription-paper :is(p, td, small, .rx-clinic p, .rx-clinical-item p, .rx-diagnosis p, .rx-instructions p),
-.dark .bill-paper :is(p, td, small, .bill-payment-note p, .bill-document-totals > div),
-.dark .bill-document :is(p, td, small, .bill-payment-note p, .bill-document-totals > div) {
+.dark .bill-paper :is(p, td, small, .bill-remarks, .bill-payment-note p, .bill-document-totals > div, .rx-clinic p, .rx-patient small) {
   color: #1e293b !important;
 }
 
 /* Section labels, headers, small caps, muted details */
 .dark .prescription-paper :is(th, .rx-patient span, .rx-vitals span, .rx-clinical-item span, .rx-medicines th, .signature span, .rx-page-number, .rx-doctor span, .rx-med-strength, .rx-empty span),
-.dark .bill-paper :is(th, .bill-title span, .bill-number span, .signature span, .bill-document th),
-.dark .bill-document :is(th, .bill-title span, .bill-number span, .signature span, .bill-document th) {
+.dark .bill-paper :is(th, .bill-title span, .bill-number span, .signature span, .bill-document th, .rx-patient span, .rx-doctor span, .bill-document-totals span, .bill-footer span) {
   color: #334155 !important;
 }
 
-.dark .prescription-paper .rx-clinic h2 {
+.dark .prescription-paper .rx-clinic h2,
+.dark .bill-paper .rx-clinic h2 {
   color: #068D94 !important;
 }
 
@@ -6869,7 +6877,8 @@ tbody tr:active {
   color: #068D94 !important;
 }
 
-.dark .prescription-paper .rx-logo {
+.dark .prescription-paper .rx-logo,
+.dark .bill-paper .rx-logo {
   background: #068D94 !important;
   color: #ffffff !important;
 }
@@ -6883,16 +6892,33 @@ tbody tr:active {
   color: #0f172a !important;
 }
 
+/* Status pills in Bill Document */
+.dark .bill-paper .status-pill.status-success {
+  background: #ecfdf5 !important;
+  color: #047857 !important;
+  border: 1px solid #a7f3d0 !important;
+}
+.dark .bill-paper .status-pill.status-warning {
+  background: #fffbeb !important;
+  color: #b45309 !important;
+  border: 1px solid #fde68a !important;
+}
+.dark .bill-paper .status-pill.status-neutral {
+  background: #f1f5f9 !important;
+  color: #475569 !important;
+  border: 1px solid #cbd5e1 !important;
+}
+
+/* Tables inside dark mode documents */
 .dark .prescription-paper table,
-.dark .bill-document table,
 .dark .bill-paper table {
   background: #ffffff !important;
   background-color: #ffffff !important;
   border: 1px solid #cbd5e1 !important;
+  box-shadow: none !important;
 }
 
 .dark .prescription-paper th,
-.dark .bill-document th,
 .dark .bill-paper th {
   background: #f1f5f9 !important;
   background-color: #f1f5f9 !important;
@@ -6901,7 +6927,6 @@ tbody tr:active {
 }
 
 .dark .prescription-paper td,
-.dark .bill-document td,
 .dark .bill-paper td {
   background: #ffffff !important;
   background-color: #ffffff !important;
@@ -6909,17 +6934,24 @@ tbody tr:active {
   border-bottom: 1px solid #e2e8f0 !important;
 }
 
-.dark .prescription-paper :is(.rx-header, .rx-patient, .rx-vitals, .rx-clinical-info, .rx-diagnosis, .rx-instructions) {
+.dark .prescription-paper :is(.rx-header, .rx-patient, .rx-vitals, .rx-clinical-info, .rx-diagnosis, .rx-instructions),
+.dark .bill-paper :is(.rx-header, .rx-patient, .bill-footer) {
   border-color: #e2e8f0 !important;
 }
 
-.dark .prescription-paper .rx-header {
+.dark .prescription-paper .rx-header,
+.dark .bill-paper .rx-header {
   border-bottom: 2px solid #068D94 !important;
 }
 
 .dark .bill-document-totals .grand-total {
   background: #f0fdfa !important;
+  background-color: #f0fdfa !important;
   border-top: 2px solid #068D94 !important;
+  color: #0f172a !important;
+}
+
+.dark .bill-document-totals .grand-total span {
   color: #0f172a !important;
 }
 
@@ -6927,9 +6959,21 @@ tbody tr:active {
   color: #068D94 !important;
 }
 
+.dark .bill-remarks {
+  background: #f8fafc !important;
+  background-color: #f8fafc !important;
+  border: 1px solid #e2e8f0 !important;
+  color: #1e293b !important;
+}
+
+.dark .bill-remarks strong {
+  color: #0f172a !important;
+}
+
 .dark .bill-payment-note {
   background: #f0fdfa !important;
-  border-color: #ccfbf1 !important;
+  background-color: #f0fdfa !important;
+  border: 1px solid #ccfbf1 !important;
 }
 
 .dark .bill-payment-note strong {

@@ -254,8 +254,8 @@ export function BillPreview({
                     {clinicProfile?.phone && (
                       <p
                         style={{
-                          fontSize: "11px",
-                          color: "var(--text-muted, #64748b)",
+                          fontSize: "12px",
+                          color: "#1e293b",
                         }}
                       >
                         Ph: {clinicProfile.phone}
@@ -412,6 +412,7 @@ export function BillPreview({
 
           {bill.notes && (
             <section
+              className="bill-remarks"
               style={{
                 margin: "14px 0",
                 padding: "10px 14px",

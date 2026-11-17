@@ -132,24 +132,24 @@ describe("Billing Components & UX", () => {
   })
 
   describe("Invoice Data Contract & Version Alignment (Issues 21-24 & Release Prep)", () => {
-    it("ensures version 1.0.2 is synchronized across config files", async () => {
+    it("ensures version 1.0.3 is synchronized across config files", async () => {
       const fs = await import("node:fs")
       const path = await import("node:path")
 
       // package.json
       const pkgPath = path.resolve(process.cwd(), "package.json")
       const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf-8"))
-      expect(pkg.version).toBe("1.0.2")
+      expect(pkg.version).toBe("1.0.3")
 
       // src-tauri/Cargo.toml
       const cargoPath = path.resolve(process.cwd(), "src-tauri/Cargo.toml")
       const cargoContent = fs.readFileSync(cargoPath, "utf-8")
-      expect(cargoContent).toMatch(/version\s*=\s*"1\.0\.2"/)
+      expect(cargoContent).toMatch(/version\s*=\s*"1\.0\.3"/)
 
       // src-tauri/tauri.conf.json
       const tauriPath = path.resolve(process.cwd(), "src-tauri/tauri.conf.json")
       const tauriConf = JSON.parse(fs.readFileSync(tauriPath, "utf-8"))
-      expect(tauriConf.version).toBe("1.0.2")
+      expect(tauriConf.version).toBe("1.0.3")
     })
 
     it("ensures onFinalized in App.tsx updates return page without duplicate navigation", () => {

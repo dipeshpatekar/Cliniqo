@@ -7,7 +7,7 @@ use minisign_verify::{PublicKey, Signature};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::config::create_secure_http_client;
+use crate::config::{create_updater_http_client, is_trusted_updater_url};
 
 pub const DEFAULT_UPDATE_ENDPOINT: &str =
     "https://github.com/dipeshpatekar/Cliniqo/releases/latest/download/latest.json";
@@ -174,29 +174,51 @@ impl AppUpdater {
     pub async fn check_for_updates(
         custom_endpoint: Option<&str>,
     ) -> Result<UpdateCheckResult, UpdaterError> {
+        Self::check_for_updates_with_version(custom_endpoint, None).await
+    }
+
+    /// Queries the update endpoint and determines update availability against a specified or current version.
+    pub async fn check_for_updates_with_version(
+        custom_endpoint: Option<&str>,
+        version_override: Option<&str>,
+    ) -> Result<UpdateCheckResult, UpdaterError> {
         let endpoint = custom_endpoint.unwrap_or(DEFAULT_UPDATE_ENDPOINT);
 
-        if !endpoint.starts_with("https://") {
+        let parsed_url = reqwest::Url::parse(endpoint)
+            .map_err(|e| UpdaterError::VerificationFailed(format!("Invalid update URL: {e}")))?;
+
+        #[cfg(test)]
+        if !((parsed_url.scheme() == "http" || parsed_url.scheme() == "https")
+            && (parsed_url.host_str() == Some("127.0.0.1") || parsed_url.host_str() == Some("localhost")))
+        {
+            if parsed_url.scheme() != "https" {
+                return Err(UpdaterError::InsecureUrl);
+            }
+        }
+        #[cfg(not(test))]
+        if parsed_url.scheme() != "https" {
             return Err(UpdaterError::InsecureUrl);
         }
 
-        let current_version = env!("CARGO_PKG_VERSION").to_string();
-        let client = create_secure_http_client(Duration::from_secs(15)).map_err(UpdaterError::ClientInit)?;
+        if !is_trusted_updater_url(&parsed_url) {
+            return Err(UpdaterError::VerificationFailed(format!(
+                "Untrusted update endpoint host: {}",
+                parsed_url.host_str().unwrap_or("unknown")
+            )));
+        }
+
+        let current_version = version_override
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string());
+        let client = create_updater_http_client(Duration::from_secs(15)).map_err(UpdaterError::ClientInit)?;
 
         let resp = client.get(endpoint).send().await?;
         if !resp.status().is_success() {
-            log::info!("Update check endpoint returned status: {}", resp.status());
-            return Ok(UpdateCheckResult {
-                available: false,
-                current_version,
-                target_version: None,
-                release_notes: None,
-                pub_date: None,
-                download_url: None,
-                signature: None,
-                endpoint: endpoint.to_string(),
-                checked_at: chrono::Utc::now().to_rfc3339(),
-            });
+            log::warn!("Update check endpoint returned non-success status: {}", resp.status());
+            return Err(UpdaterError::VerificationFailed(format!(
+                "Failed to retrieve update manifest: server returned HTTP {}",
+                resp.status()
+            )));
         }
 
         let manifest: UpdateManifest = resp.json().await?;
@@ -231,8 +253,27 @@ impl AppUpdater {
         signature: Option<&str>,
         custom_endpoint: Option<&str>,
     ) -> Result<PathBuf, UpdaterError> {
-        if !download_url.starts_with("https://") {
+        let parsed_url = reqwest::Url::parse(download_url)
+            .map_err(|e| UpdaterError::VerificationFailed(format!("Invalid download URL: {e}")))?;
+
+        #[cfg(test)]
+        if !((parsed_url.scheme() == "http" || parsed_url.scheme() == "https")
+            && (parsed_url.host_str() == Some("127.0.0.1") || parsed_url.host_str() == Some("localhost")))
+        {
+            if parsed_url.scheme() != "https" {
+                return Err(UpdaterError::InsecureUrl);
+            }
+        }
+        #[cfg(not(test))]
+        if parsed_url.scheme() != "https" {
             return Err(UpdaterError::InsecureUrl);
+        }
+
+        if !is_trusted_updater_url(&parsed_url) {
+            return Err(UpdaterError::VerificationFailed(format!(
+                "Untrusted download URL host: {}",
+                parsed_url.host_str().unwrap_or("unknown")
+            )));
         }
 
         // 1. If signature was not directly provided, verify against the latest manifest at the official/trusted endpoint
@@ -263,8 +304,8 @@ impl AppUpdater {
             })?
         };
 
-        // 2. Download package bytes over HTTPS
-        let client = create_secure_http_client(Duration::from_secs(120)).map_err(UpdaterError::ClientInit)?;
+        // 2. Download package bytes using dedicated updater HTTP client with redirect support
+        let client = create_updater_http_client(Duration::from_secs(120)).map_err(UpdaterError::ClientInit)?;
         let resp = client.get(download_url).send().await?;
 
         if !resp.status().is_success() {
@@ -431,5 +472,245 @@ wLMDjy9FLAuxZ3q4NlEvkgtyhrr0gtTu6KC4KBJdITbbOeAi1zBIYo0v4iTgt8jJpIidRJnp94ABQkJA
         let win_info = manifest.platforms.get("windows-x86_64").unwrap();
         assert_eq!(win_info.signature, "mock_sig_win");
         assert!(win_info.url.starts_with("https://"));
+    }
+
+    use std::sync::Arc;
+
+    async fn setup_mock_updater_server<F>(handler: F) -> (String, tokio::task::JoinHandle<()>)
+    where
+        F: Fn(&str, &str) -> (u16, Vec<(&'static str, String)>, Vec<u8>) + Send + Sync + 'static,
+    {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handler = Arc::new(handler);
+
+        let server_handle = tokio::spawn(async move {
+            while let Ok((mut stream, _)) = listener.accept().await {
+                let h = handler.clone();
+                tokio::spawn(async move {
+                    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                    let mut buf = [0u8; 8192];
+                    if let Ok(n) = stream.read(&mut buf).await {
+                        let req_str = String::from_utf8_lossy(&buf[..n]);
+                        let (method, path) = if let Some(first_line) = req_str.lines().next() {
+                            let parts: Vec<&str> = first_line.split_whitespace().collect();
+                            (parts.first().copied().unwrap_or(""), parts.get(1).copied().unwrap_or(""))
+                        } else {
+                            ("", "")
+                        };
+
+                        let (status, headers, body) = h(method, path);
+                        let status_text = match status {
+                            200 => "200 OK",
+                            301 => "301 Moved Permanently",
+                            302 => "302 Found",
+                            404 => "404 Not Found",
+                            500 => "500 Internal Server Error",
+                            _ => "400 Bad Request",
+                        };
+
+                        let mut resp_str = format!(
+                            "HTTP/1.1 {}\r\nContent-Length: {}\r\nConnection: close\r\n",
+                            status_text,
+                            body.len()
+                        );
+                        for (k, v) in headers {
+                            resp_str.push_str(&format!("{}: {}\r\n", k, v));
+                        }
+                        resp_str.push_str("\r\n");
+
+                        let mut resp_bytes = resp_str.into_bytes();
+                        resp_bytes.extend_from_slice(&body);
+                        let _ = stream.write_all(&resp_bytes).await;
+                    }
+                });
+            }
+        });
+
+        (format!("http://{}", addr), server_handle)
+    }
+
+    #[tokio::test]
+    async fn test_check_for_updates_follows_302_redirect_and_detects_v1_0_2_from_v1_0_1() {
+        let (mock_url, server_handle) = setup_mock_updater_server(|_method, path| {
+            if path == "/releases/latest/download/latest.json" {
+                // Simulate GitHub 302 redirect to tagged release asset
+                (
+                    302,
+                    vec![("Location", "/releases/download/v1.0.2/latest.json".to_string())],
+                    Vec::new(),
+                )
+            } else if path == "/releases/download/v1.0.2/latest.json" {
+                let platform = AppUpdater::current_platform_target();
+                let manifest = serde_json::json!({
+                    "version": "1.0.2",
+                    "notes": "v1.0.2 release with vital fixes",
+                    "pub_date": "2026-11-17T00:00:00Z",
+                    "platforms": {
+                        platform: {
+                            "signature": "mock_sig_102",
+                            "url": "https://github.com/dipeshpatekar/Cliniqo/releases/download/v1.0.2/Cliniqo_1.0.2_x64-setup.exe"
+                        }
+                    }
+                });
+                (
+                    200,
+                    vec![("Content-Type", "application/json".to_string())],
+                    manifest.to_string().into_bytes(),
+                )
+            } else {
+                (404, Vec::new(), b"Not Found".to_vec())
+            }
+        }).await;
+
+        let endpoint = format!("{}/releases/latest/download/latest.json", mock_url);
+        let result = AppUpdater::check_for_updates_with_version(Some(&endpoint), Some("1.0.1"))
+            .await
+            .expect("Update check should succeed over 302 redirect");
+
+        assert_eq!(result.current_version, "1.0.1");
+        assert_eq!(result.target_version, Some("1.0.2".to_string()));
+        assert!(result.available, "Update should be flagged available");
+        assert_eq!(
+            result.download_url,
+            Some("https://github.com/dipeshpatekar/Cliniqo/releases/download/v1.0.2/Cliniqo_1.0.2_x64-setup.exe".to_string())
+        );
+        assert_eq!(result.release_notes, Some("v1.0.2 release with vital fixes".to_string()));
+
+        server_handle.abort();
+    }
+
+    #[tokio::test]
+    async fn test_check_for_updates_fails_on_server_error_and_never_reports_up_to_date() {
+        // Test 404
+        let (mock_url_404, server_handle_404) = setup_mock_updater_server(|_method, _path| {
+            (404, Vec::new(), b"Not Found".to_vec())
+        }).await;
+
+        let res_404 = AppUpdater::check_for_updates_with_version(
+            Some(&format!("{}/latest.json", mock_url_404)),
+            Some("1.0.1"),
+        ).await;
+
+        match res_404 {
+            Err(UpdaterError::VerificationFailed(msg)) => {
+                assert!(msg.contains("404"), "Expected HTTP 404 in error message, got: {msg}");
+            }
+            Ok(res) => panic!("Expected error on HTTP 404, but got Ok with available={}", res.available),
+            Err(other) => panic!("Expected VerificationFailed, got {:?}", other),
+        }
+        server_handle_404.abort();
+
+        // Test 500
+        let (mock_url_500, server_handle_500) = setup_mock_updater_server(|_method, _path| {
+            (500, Vec::new(), b"Internal Server Error".to_vec())
+        }).await;
+
+        let res_500 = AppUpdater::check_for_updates_with_version(
+            Some(&format!("{}/latest.json", mock_url_500)),
+            Some("1.0.1"),
+        ).await;
+
+        match res_500 {
+            Err(UpdaterError::VerificationFailed(msg)) => {
+                assert!(msg.contains("500"), "Expected HTTP 500 in error message, got: {msg}");
+            }
+            Ok(res) => panic!("Expected error on HTTP 500, but got Ok with available={}", res.available),
+            Err(other) => panic!("Expected VerificationFailed, got {:?}", other),
+        }
+        server_handle_500.abort();
+    }
+
+    #[tokio::test]
+    async fn test_check_for_updates_fails_on_invalid_json() {
+        let (mock_url, server_handle) = setup_mock_updater_server(|_method, _path| {
+            (200, vec![("Content-Type", "application/json".to_string())], b"<html>Not JSON</html>".to_vec())
+        }).await;
+
+        let res = AppUpdater::check_for_updates_with_version(
+            Some(&format!("{}/latest.json", mock_url)),
+            Some("1.0.1"),
+        ).await;
+
+        assert!(res.is_err(), "Invalid JSON payload must produce an error and never report up to date");
+        server_handle.abort();
+    }
+
+    #[tokio::test]
+    async fn test_updater_redirect_rejects_untrusted_destination() {
+        let (mock_url, server_handle) = setup_mock_updater_server(|_method, _path| {
+            (
+                302,
+                vec![("Location", "https://malicious-domain.com/latest.json".to_string())],
+                Vec::new(),
+            )
+        }).await;
+
+        let res = AppUpdater::check_for_updates(Some(&format!("{}/latest.json", mock_url))).await;
+        assert!(res.is_err(), "Redirect to untrusted host must be rejected");
+
+        server_handle.abort();
+    }
+
+    #[tokio::test]
+    async fn test_updater_redirect_rejects_redirect_loop_over_5_hops() {
+        let (mock_url, server_handle) = setup_mock_updater_server(|_method, path| {
+            let next_hop = match path {
+                "/hop1" => "/hop2",
+                "/hop2" => "/hop3",
+                "/hop3" => "/hop4",
+                "/hop4" => "/hop5",
+                "/hop5" => "/hop6",
+                "/hop6" => "/hop7",
+                _ => "/done",
+            };
+            (302, vec![("Location", next_hop.to_string())], Vec::new())
+        }).await;
+
+        let client = create_updater_http_client(Duration::from_secs(5)).expect("client created");
+        let res = client.get(&format!("{}/hop1", mock_url)).send().await;
+
+        assert!(res.is_err(), "Redirect chain exceeding 5 hops must fail");
+        let err_str = res.err().unwrap().to_string();
+        assert!(
+            err_str.contains("Too many redirects") || err_str.contains("redirect"),
+            "Expected redirect error, got: {err_str}"
+        );
+
+        server_handle.abort();
+    }
+
+    #[tokio::test]
+    async fn test_download_and_verify_update_follows_302_redirect_and_verifies_signature() {
+        let (mock_url, server_handle) = setup_mock_updater_server(|_method, path| {
+            if path == "/download/installer.exe" {
+                (302, vec![("Location", "/cdn/installer.exe".to_string())], Vec::new())
+            } else if path == "/cdn/installer.exe" {
+                (200, vec![("Content-Type", "application/octet-stream".to_string())], b"MZTestInstallerBinaryPayload".to_vec())
+            } else {
+                (404, Vec::new(), b"Not Found".to_vec())
+            }
+        }).await;
+
+        // An invalid signature must be rejected after downloading over 302 redirect
+        let res = AppUpdater::download_and_verify_update(
+            &format!("{}/download/installer.exe", mock_url),
+            "1.0.2",
+            Some("invalid_minisign_signature"),
+            None,
+        ).await;
+
+        match res {
+            Err(UpdaterError::VerificationFailed(msg)) => {
+                assert!(
+                    msg.contains("signature"),
+                    "Expected signature verification failure after download, got: {msg}"
+                );
+            }
+            Ok(path) => panic!("Expected signature verification error, but got Ok({:?})", path),
+            Err(other) => panic!("Expected VerificationFailed, got {:?}", other),
+        }
+
+        server_handle.abort();
     }
 }

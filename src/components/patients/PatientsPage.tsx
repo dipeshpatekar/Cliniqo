@@ -97,7 +97,7 @@ export function PatientsPage({
   const [patientPendingDelete, setPatientPendingDelete] =
     useState<Patient | null>(null)
 
-  const pageSize = 5
+  const pageSize = 50
   const hasDateFilter = Boolean(startDate || endDate)
 
   const filtered = useMemo(() => {

@@ -57,6 +57,12 @@ export interface SettingsPageProps {
   onShowClinicEmailChange: (visible: boolean) => void
   showAllergyWarning: boolean
   onShowAllergyWarningChange: (visible: boolean) => void
+  prescriptionTopSpacingMm?: number
+  onPrescriptionTopSpacingMmChange?: (spacing: number) => void
+  onRemoveLibraryItem?: (
+    category: ClinicalLibraryCategory,
+    value: string,
+  ) => void
   billLayout: BillLayoutPreferences
   onBillLayoutChange: (layout: BillLayoutPreferences) => void
   patientFormFieldPreferences?: PatientFormFieldPreferences
@@ -88,6 +94,9 @@ export function SettingsPage({
   onShowClinicEmailChange,
   showAllergyWarning,
   onShowAllergyWarningChange,
+  prescriptionTopSpacingMm = 0,
+  onPrescriptionTopSpacingMmChange,
+  onRemoveLibraryItem,
   billLayout,
   onBillLayoutChange,
   patientFormFieldPreferences = defaultPatientFormFieldPreferences,
@@ -193,6 +202,8 @@ export function SettingsPage({
               onShowClinicEmailChange={onShowClinicEmailChange}
               showAllergyWarning={showAllergyWarning}
               onShowAllergyWarningChange={onShowAllergyWarningChange}
+              topSpacingMm={prescriptionTopSpacingMm}
+              onTopSpacingMmChange={onPrescriptionTopSpacingMmChange}
             />
           )}
           {tab === "Bill layout" && (
@@ -208,6 +219,7 @@ export function SettingsPage({
             <ClinicalLibrarySettings
               library={clinicalLibrary}
               onAdd={onAddLibraryItem}
+              onRemove={onRemoveLibraryItem}
               onAddMedicine={onAddMedicine}
               desktopSession={desktopSession}
             />

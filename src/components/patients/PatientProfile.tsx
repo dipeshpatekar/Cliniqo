@@ -310,7 +310,6 @@ export function PatientProfile({
           {[
             "Overview",
             "Medical History",
-            "Consultations",
             "Prescriptions",
             "Invoices",
           ].map((item) => (
@@ -322,7 +321,6 @@ export function PatientProfile({
               onClick={() => handleSelectTab(item)}
             >
               {item}
-              {item === "Consultations" && <span>{consultations.length}</span>}
               {item === "Prescriptions" && <span>{prescriptions.length}</span>}
             </button>
           ))}

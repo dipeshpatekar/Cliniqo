@@ -25,6 +25,8 @@ export interface PrescriptionSettingsProps {
   onShowClinicEmailChange: (visible: boolean) => void
   showAllergyWarning: boolean
   onShowAllergyWarningChange: (visible: boolean) => void
+  topSpacingMm?: number
+  onTopSpacingMmChange?: (spacing: number) => void
 }
 
 export function PrescriptionSettings({
@@ -41,6 +43,8 @@ export function PrescriptionSettings({
   onShowClinicEmailChange,
   showAllergyWarning,
   onShowAllergyWarningChange,
+  topSpacingMm = 0,
+  onTopSpacingMmChange,
 }: PrescriptionSettingsProps) {
   const bannerInputRef = useRef<HTMLInputElement | null>(null)
   const signatureInputRef = useRef<HTMLInputElement | null>(null)
@@ -255,6 +259,45 @@ export function PrescriptionSettings({
           {signatureError}
         </div>
       )}
+
+      <div className="top-spacing-control">
+        <div className="top-spacing-header">
+          <div>
+            <strong>Top page spacing</strong>
+            <p>
+              Adjust vertical gap from the top edge for pre-printed letterheads
+            </p>
+          </div>
+          <div className="top-spacing-badge">
+            <span>{topSpacingMm} mm</span>
+            {topSpacingMm > 0 && onTopSpacingMmChange && (
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => onTopSpacingMmChange(0)}
+              >
+                Reset to default
+              </Button>
+            )}
+          </div>
+        </div>
+        <div className="top-spacing-slider-row">
+          <span className="slider-bound">0 mm</span>
+          <input
+            type="range"
+            min={0}
+            max={60}
+            step={1}
+            value={topSpacingMm}
+            onChange={(e) =>
+              onTopSpacingMmChange?.(Number(e.target.value))
+            }
+            className="top-spacing-slider"
+            aria-label="Prescription top page spacing in millimeters"
+          />
+          <span className="slider-bound">60 mm</span>
+        </div>
+      </div>
 
       <div className="layout-preview">
         <FileText size={28} />

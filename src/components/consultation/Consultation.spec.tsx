@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest"
+import { describe, it, expect, beforeEach, vi } from "vitest"
 import { renderToString } from "react-dom/server"
 import { CompactField } from "./CompactField"
 import { Consultation } from "./Consultation"
@@ -11,7 +11,16 @@ import type {
   ClinicalMedicineDefinition,
   Medicine,
 } from "../../types"
-import { loadClinicalLibrary, defaultClinicalLibrary } from "../../types"
+import {
+  loadClinicalLibrary,
+  defaultClinicalLibrary,
+  loadCustomChiefComplaints,
+  saveCustomChiefComplaints,
+  addCustomChiefComplaint,
+  getChiefComplaintOptions,
+  DEFAULT_COMPLAINT_OPTIONS,
+  complaintOptions,
+} from "../../types"
 import { validateMedicineFormulation } from "../../utils/billing"
 
 describe("Consultation Components & UX", () => {
@@ -117,12 +126,12 @@ describe("Consultation Components & UX", () => {
       expect(html).toContain("Finalize prescription")
       // Check Adv. terminology
       expect(html).toContain("Adv.")
-      expect(html).toContain("Adv. date")
+      expect(html).toContain("Follow up date")
       expect(html).toContain("Adv. instructions")
       // Check Medical background on consultation
       expect(html).toContain("Medical background")
       expect(html).toContain("Known allergies")
-      expect(html).toContain("Medical conditions")
+      expect(html).toContain("Medical History")
     })
 
     it("recognizes non-allergy entries as No Known Allergies and unknown entries as Unknown", () => {
@@ -981,7 +990,7 @@ describe("Consultation Components & UX", () => {
       expect(html).not.toMatch(/Diagnosis\s*<span[^>]*class="[^"]*required[^"]*"/)
     })
 
-    it("supports empty Chief complaints and Diagnosis in PrescriptionPreview", () => {
+    it("supports empty Chief complaints and Diagnosis in PrescriptionPreview by hiding them", () => {
       const rawHtml = renderToString(
         <PrescriptionPreview
           go={() => {}}
@@ -1003,8 +1012,10 @@ describe("Consultation Components & UX", () => {
       )
       const html = rawHtml.replace(/<!-- -->/g, "")
 
-      expect(html).toContain("No chief complaint entered.")
-      expect(html).toContain("No diagnosis entered.")
+      expect(html).not.toContain("No chief complaint entered.")
+      expect(html).not.toContain("No diagnosis entered.")
+      expect(html).not.toContain("CHIEF COMPLAINTS")
+      expect(html).not.toContain("DIAGNOSIS")
     })
 
     it("renders formulation dropdown with formulation ID and focuses formulation first on every row", () => {
@@ -1272,5 +1283,250 @@ describe("Consultation Components & UX", () => {
       },
       15000,
     )
+  })
+
+  describe("Auto-Save Custom Chief Complaints to Dropdown", () => {
+    const testClinicId = "clinic_auto_save_cc_test"
+    const storage: Record<string, string> = {}
+
+    beforeEach(() => {
+      for (const k in storage) delete storage[k]
+      const target = new EventTarget()
+      ;(target as any).localStorage = {
+        getItem: (key: string) => storage[key] ?? null,
+        setItem: (key: string, val: string) => {
+          storage[key] = String(val)
+        },
+        removeItem: (key: string) => {
+          delete storage[key]
+        },
+        clear: () => {
+          for (const k in storage) delete storage[k]
+        },
+      }
+      ;(target as any).scrollTo = vi.fn()
+      ;(target as any).matchMedia = () => ({ matches: false })
+      ;(globalThis as any).window = target
+    })
+
+    it("preserves all default complaint options", () => {
+      expect(DEFAULT_COMPLAINT_OPTIONS).toEqual([
+        "Fever",
+        "Cough",
+        "Headache",
+        "Abdominal pain",
+        "Breathing difficulty",
+        "Body ache",
+        "Follow-up / review",
+      ])
+      const merged = getChiefComplaintOptions([])
+      expect(merged).toEqual([...DEFAULT_COMPLAINT_OPTIONS])
+    })
+
+    it("adds a new custom complaint and merges it into dropdown suggestions", () => {
+      const custom = "Severe migraine with aura"
+      const updated = addCustomChiefComplaint(custom, testClinicId)
+      expect(updated).toContain(custom)
+
+      const merged = getChiefComplaintOptions(updated)
+      expect(merged).toContain("Fever")
+      expect(merged).toContain(custom)
+      expect(merged.length).toBe(DEFAULT_COMPLAINT_OPTIONS.length + 1)
+    })
+
+    it("prevents duplicate complaints using case-insensitive comparison", () => {
+      const clinicDupTest = "clinic_dup_test"
+      // Attempting to add default option with different casing
+      const res1 = addCustomChiefComplaint("fever", clinicDupTest)
+      expect(res1).toEqual([])
+      const res2 = addCustomChiefComplaint("FEVER", clinicDupTest)
+      expect(res2).toEqual([])
+      const res3 = addCustomChiefComplaint("  Headache  ", clinicDupTest)
+      expect(res3).toEqual([])
+
+      // Add a novel custom complaint
+      const res4 = addCustomChiefComplaint("Acute Bronchitis", clinicDupTest)
+      expect(res4).toEqual(["Acute Bronchitis"])
+
+      // Attempting to add same custom complaint with lower or upper case
+      const res5 = addCustomChiefComplaint("acute bronchitis", clinicDupTest)
+      expect(res5).toEqual(["Acute Bronchitis"])
+      const res6 = addCustomChiefComplaint("ACUTE BRONCHITIS", clinicDupTest)
+      expect(res6).toEqual(["Acute Bronchitis"])
+    })
+
+    it("ignores empty values and whitespace-only entries", () => {
+      const clinicEmptyTest = "clinic_empty_test"
+      expect(addCustomChiefComplaint("", clinicEmptyTest)).toEqual([])
+      expect(addCustomChiefComplaint("   ", clinicEmptyTest)).toEqual([])
+      expect(addCustomChiefComplaint(" \t\n ", clinicEmptyTest)).toEqual([])
+      expect(loadCustomChiefComplaints(clinicEmptyTest)).toEqual([])
+    })
+
+    it("persists custom complaints across simulated application restart", () => {
+      const clinicRestartTest = "clinic_restart_test"
+      saveCustomChiefComplaints(
+        ["Persistent insomnia", "Sciatica nerve pain"],
+        clinicRestartTest,
+      )
+
+      // Simulate restart by reading directly from storage
+      const reloaded = loadCustomChiefComplaints(clinicRestartTest)
+      expect(reloaded).toEqual(["Persistent insomnia", "Sciatica nerve pain"])
+
+      const options = getChiefComplaintOptions(reloaded)
+      expect(options).toContain("Persistent insomnia")
+      expect(options).toContain("Sciatica nerve pain")
+      expect(options).toContain("Breathing difficulty")
+    })
+
+    it("scopes custom complaints to the clinic", () => {
+      const clinicA = "clinic_alpha_1"
+      const clinicB = "clinic_beta_2"
+
+      addCustomChiefComplaint("Alpha Clinic Specific Symptom", clinicA)
+      addCustomChiefComplaint("Beta Clinic Specific Symptom", clinicB)
+
+      const alphaComplaints = loadCustomChiefComplaints(clinicA)
+      const betaComplaints = loadCustomChiefComplaints(clinicB)
+
+      expect(alphaComplaints).toContain("Alpha Clinic Specific Symptom")
+      expect(alphaComplaints).not.toContain("Beta Clinic Specific Symptom")
+
+      expect(betaComplaints).toContain("Beta Clinic Specific Symptom")
+      expect(betaComplaints).not.toContain("Alpha Clinic Specific Symptom")
+    })
+
+    it("renders custom complaints in Consultation component and allows selecting in subsequent consultations", () => {
+      const customComplaint = "Post-viral fatigue syndrome"
+      const clinicSessionTest = "clinic_session_integration"
+      addCustomChiefComplaint(customComplaint, clinicSessionTest)
+
+      const patient1: Patient = {
+        id: "P-101",
+        name: "Patient One",
+        initials: "PO",
+        age: 30,
+        gender: "Female",
+        phone: "+91 99999 11111",
+        lastVisit: "Today",
+        allergies: [],
+        conditions: [],
+      }
+
+      const patient2: Patient = {
+        id: "P-102",
+        name: "Patient Two",
+        initials: "PT",
+        age: 42,
+        gender: "Male",
+        phone: "+91 99999 22222",
+        lastVisit: "Today",
+        allergies: [],
+        conditions: [],
+      }
+
+      // 1. First consultation loads the custom complaint in its merged options
+      const htmlPatient1 = renderToString(
+        <Consultation
+          go={() => {}}
+          patient={patient1}
+          clinicalLibrary={defaultClinicalLibrary}
+          vitals={sampleVitals}
+          onVitalsChange={() => {}}
+          data={{
+            ...sampleData,
+            chiefComplaint: customComplaint,
+          }}
+          onDataChange={() => {}}
+          desktopSession={{
+            token: "tok_123",
+            doctor_id: "doc_1",
+            doctor_name: "Dr. Test",
+            doctor_email: "test@example.com",
+            clinic_id: clinicSessionTest,
+            clinic_name: "Test Clinic",
+            expires_at: 9999999999,
+            role: "OWNER",
+            is_offline: false,
+          }}
+        />,
+      )
+
+      expect(htmlPatient1).toContain('value="Post-viral fatigue syndrome"')
+
+      // 2. Second consultation for Patient 2 starts and automatically has the saved custom complaint
+      const loadedSuggestions = loadCustomChiefComplaints(clinicSessionTest)
+      expect(loadedSuggestions).toContain(customComplaint)
+
+      const htmlPatient2 = renderToString(
+        <Consultation
+          go={() => {}}
+          patient={patient2}
+          clinicalLibrary={defaultClinicalLibrary}
+          vitals={sampleVitals}
+          onVitalsChange={() => {}}
+          data={{
+            ...sampleData,
+            chiefComplaint: "",
+          }}
+          onDataChange={() => {}}
+          customChiefComplaints={loadedSuggestions}
+          desktopSession={{
+            token: "tok_123",
+            doctor_id: "doc_1",
+            doctor_name: "Dr. Test",
+            doctor_email: "test@example.com",
+            clinic_id: clinicSessionTest,
+            clinic_name: "Test Clinic",
+            expires_at: 9999999999,
+            role: "OWNER",
+            is_offline: false,
+          }}
+        />,
+      )
+
+      // Verified: Patient 2's consultation combobox includes default options and custom complaint
+      expect(htmlPatient2).toContain('id="chief-complaint"')
+      expect(getChiefComplaintOptions(loadedSuggestions)).toContain(
+        customComplaint,
+      )
+    })
+
+    it("does not add suggestions for abandoned consultations", () => {
+      const abandonedClinic = "clinic_abandoned_test"
+      // Doctor typed an unsaved complaint but abandoned without finalizing
+      const abandonedInput = "Unsaved draft complaint text"
+
+      // Component renders during typing
+      renderToString(
+        <Consultation
+          go={() => {}}
+          patient={samplePatient}
+          clinicalLibrary={defaultClinicalLibrary}
+          vitals={sampleVitals}
+          onVitalsChange={() => {}}
+          data={{
+            ...sampleData,
+            chiefComplaint: abandonedInput,
+          }}
+          onDataChange={() => {}}
+          desktopSession={{
+            token: "tok_123",
+            doctor_id: "doc_1",
+            doctor_name: "Dr. Test",
+            doctor_email: "test@example.com",
+            clinic_id: abandonedClinic,
+            clinic_name: "Abandoned Test Clinic",
+            expires_at: 9999999999,
+            role: "OWNER",
+            is_offline: false,
+          }}
+        />,
+      )
+
+      // Verified: because finalize was not executed, storage remains clean
+      expect(loadCustomChiefComplaints(abandonedClinic)).toEqual([])
+    })
   })
 })

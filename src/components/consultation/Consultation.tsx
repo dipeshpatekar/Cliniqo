@@ -30,6 +30,9 @@ import {
   topicalFormulations,
   medicineOptions,
   complaintOptions,
+  loadCustomChiefComplaints,
+  getChiefComplaintOptions,
+  addCustomChiefComplaint,
   symptomDurationOptions,
   diagnosisOptions,
   formatPatientAgeGender,
@@ -86,6 +89,8 @@ export interface ConsultationProps {
     allergies: string[],
     conditions: string[],
   ) => void
+  customChiefComplaints?: string[]
+  onAddCustomChiefComplaint?: (complaint: string) => void
 }
 
 export function Consultation({
@@ -100,6 +105,8 @@ export function Consultation({
   desktopSession,
   onFinalized,
   onUpdatePatientMedicalInfo,
+  customChiefComplaints,
+  onAddCustomChiefComplaint,
 }: ConsultationProps) {
   const [saved, setSaved] = useState(false)
   const [hasAttemptedSubmit, setHasAttemptedSubmit] = useState(false)
@@ -115,12 +122,38 @@ export function Consultation({
   const [catalogueSyncStatus, setCatalogueSyncStatus] =
     useState<CatalogueSyncStatus | null>(null)
 
-  const currentAllergies = useMemo(
+  const clinicId = desktopSession?.clinic_id
+  const [internalCustomComplaints, setInternalCustomComplaints] =
+    useState<string[]>(() =>
+      customChiefComplaints !== undefined
+        ? customChiefComplaints
+        : loadCustomChiefComplaints(clinicId),
+    )
+
+  useEffect(() => {
+    if (customChiefComplaints !== undefined) {
+      setInternalCustomComplaints(customChiefComplaints)
+    } else {
+      setInternalCustomComplaints(loadCustomChiefComplaints(clinicId))
+    }
+  }, [clinicId, customChiefComplaints])
+
+  const effectiveCustomComplaints =
+    customChiefComplaints !== undefined
+      ? customChiefComplaints
+      : internalCustomComplaints
+
+  const mergedComplaintOptions = useMemo(
+    () => getChiefComplaintOptions(effectiveCustomComplaints),
+    [effectiveCustomComplaints],
+  )
+
+  const initialAllergies = useMemo(
     () =>
       data.allergies !== undefined ? data.allergies : patient.allergies || [],
     [data.allergies, patient.allergies],
   )
-  const currentConditions = useMemo(
+  const initialConditions = useMemo(
     () =>
       data.conditions !== undefined
         ? data.conditions
@@ -128,10 +161,10 @@ export function Consultation({
     [data.conditions, patient.conditions],
   )
   const [allergiesInput, setAllergiesInput] = useState(
-    currentAllergies.join(", "),
+    initialAllergies.join(", "),
   )
   const [conditionsInput, setConditionsInput] = useState(
-    currentConditions.join(", "),
+    initialConditions.join(", "),
   )
 
   const allergyAnalysis = useMemo(
@@ -139,13 +172,14 @@ export function Consultation({
     [allergiesInput],
   )
 
+  const patientIdRef = useRef(patient.id)
   useEffect(() => {
-    setAllergiesInput(currentAllergies.join(", "))
-  }, [currentAllergies])
-
-  useEffect(() => {
-    setConditionsInput(currentConditions.join(", "))
-  }, [currentConditions])
+    if (patientIdRef.current !== patient.id) {
+      patientIdRef.current = patient.id
+      setAllergiesInput((data.allergies ?? patient.allergies ?? []).join(", "))
+      setConditionsInput((data.conditions ?? patient.conditions ?? []).join(", "))
+    }
+  }, [patient.id, data.allergies, data.conditions, patient.allergies, patient.conditions])
 
   const handleAllergiesChange = (val: string) => {
     setAllergiesInput(val)
@@ -154,7 +188,7 @@ export function Consultation({
       .map((s) => s.trim())
       .filter(Boolean)
     updateData({ allergies: list })
-    onUpdatePatientMedicalInfo?.(list, currentConditions)
+    onUpdatePatientMedicalInfo?.(list, data.conditions ?? patient.conditions ?? [])
   }
 
   const handleConditionsChange = (val: string) => {
@@ -164,7 +198,7 @@ export function Consultation({
       .map((s) => s.trim())
       .filter(Boolean)
     updateData({ conditions: list })
-    onUpdatePatientMedicalInfo?.(currentAllergies, list)
+    onUpdatePatientMedicalInfo?.(data.allergies ?? patient.allergies ?? [], list)
   }
 
   useEffect(() => {
@@ -629,6 +663,16 @@ export function Consultation({
               .then((items) => setLocalFormulary(items))
               .catch(() => {})
           }
+
+          // Auto-save valid custom chief complaints to dropdown suggestions
+          if (data.chiefComplaint?.trim()) {
+            const updated = addCustomChiefComplaint(
+              data.chiefComplaint,
+              desktopSession.clinic_id,
+            )
+            setInternalCustomComplaints(updated)
+            onAddCustomChiefComplaint?.(data.chiefComplaint.trim())
+          }
         }
         onFinalized?.(consultationId, finalizedTimestamp)
         go("preview")
@@ -646,6 +690,15 @@ export function Consultation({
         setIsFinalizing(false)
       }
     } else {
+      // Auto-save valid custom chief complaints to dropdown suggestions in web/preview
+      if (data.chiefComplaint?.trim()) {
+        const updated = addCustomChiefComplaint(
+          data.chiefComplaint,
+          desktopSession?.clinic_id,
+        )
+        setInternalCustomComplaints(updated)
+        onAddCustomChiefComplaint?.(data.chiefComplaint.trim())
+      }
       onFinalized?.(null, finalizedTimestamp)
       go("preview")
     }
@@ -849,26 +902,36 @@ export function Consultation({
             </button>
           </div>
 
-          <FormSection icon={CalendarDays} title="Consultation date and time">
-            <div className="form-grid two">
-              <Field label="Consultation date" required>
-                <TextInput
-                  type="date"
-                  required
-                  value={data.date}
-                  onChange={(event) => updateData({ date: event.target.value })}
-                />
-              </Field>
-              <Field label="Consultation time" required>
-                <TextInput
-                  type="time"
-                  required
-                  value={data.time}
-                  onChange={(event) => updateData({ time: event.target.value })}
-                />
-              </Field>
+          <section className="form-section consultation-datetime-section">
+            <div className="consultation-datetime-row flex flex-wrap lg:flex-nowrap items-center justify-between gap-4">
+              <div className="form-section-head flex items-center gap-3 shrink-0 mb-0">
+                <span>
+                  <CalendarDays size={18} />
+                </span>
+                <div>
+                  <h2>Consultation date and time</h2>
+                </div>
+              </div>
+              <div className="flex flex-wrap sm:flex-nowrap items-center gap-4 grow justify-end">
+                <Field label="Consultation date" required className="w-full sm:w-auto min-w-[170px]">
+                  <TextInput
+                    type="date"
+                    required
+                    value={data.date}
+                    onChange={(event) => updateData({ date: event.target.value })}
+                  />
+                </Field>
+                <Field label="Consultation time" required className="w-full sm:w-auto min-w-[150px]">
+                  <TextInput
+                    type="time"
+                    required
+                    value={data.time}
+                    onChange={(event) => updateData({ time: event.target.value })}
+                  />
+                </Field>
+              </div>
             </div>
-          </FormSection>
+          </section>
 
           <FormSection icon={Activity} title="Vitals">
             <div className="vitals-grid">
@@ -933,7 +996,7 @@ export function Consultation({
                 <SearchableOptionSelect
                   id="chief-complaint"
                   value={data.chiefComplaint}
-                  options={complaintOptions}
+                  options={mergedComplaintOptions}
                   onChange={(value) => updateData({ chiefComplaint: value })}
                   placeholder="Select or search a common complaint"
                   ariaLabel="Search and select chief complaint"
@@ -1017,7 +1080,7 @@ export function Consultation({
                 )}
               </Field>
               <Field
-                label="Medical conditions"
+                label="Medical History"
                 hint="Optional, comma-separated"
               >
                 <TextArea
@@ -1051,9 +1114,9 @@ export function Consultation({
             </div>
 
             {data.medicines.length === 0 ? (
-              <div className="medicine-empty">
-                <Pill size={22} />
-                <p>No medicines added</p>
+              <div className="medicine-empty flex flex-col items-center justify-center py-6 text-center">
+                <Pill size={22} className="text-slate-400 mb-1" />
+                <p className="text-sm text-slate-500 mb-3">No medicines added</p>
                 <Button
                   size="sm"
                   variant="secondary"
@@ -1511,7 +1574,7 @@ export function Consultation({
 
           <FormSection icon={CalendarDays} title="Adv.">
             <div className="form-grid two">
-              <Field label="Adv. date">
+              <Field label="Follow up date">
                 <TextInput
                   type="date"
                   value={data.followUpDate}

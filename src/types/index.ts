@@ -121,17 +121,141 @@ export const defaultPatientFormFieldPreferences: PatientFormFieldPreferences = {
   showAddress: true,
 }
 
-export const loadPatientFormFieldPreferences =
-  (): PatientFormFieldPreferences => {
-    try {
-      const saved = JSON.parse(
-        window.localStorage.getItem("cliniqo-patient-form-preferences") || "{}",
-      )
-      return { ...defaultPatientFormFieldPreferences, ...saved }
-    } catch {
-      return defaultPatientFormFieldPreferences
-    }
+export const loadPatientFormFieldPreferences = (
+  clinicId?: string,
+): PatientFormFieldPreferences => {
+  if (typeof window === "undefined" || !window.localStorage) {
+    return { ...defaultPatientFormFieldPreferences }
   }
+  try {
+    const scopedKey = clinicId
+      ? `cliniqo-patient-form-preferences_${clinicId}`
+      : "cliniqo-patient-form-preferences"
+    const raw =
+      window.localStorage.getItem(scopedKey) ||
+      window.localStorage.getItem("cliniqo-patient-form-preferences")
+    if (raw) {
+      const saved = JSON.parse(raw)
+      return {
+        showDob:
+          typeof saved.showDob === "boolean"
+            ? saved.showDob
+            : defaultPatientFormFieldPreferences.showDob,
+        showPhone:
+          typeof saved.showPhone === "boolean"
+            ? saved.showPhone
+            : defaultPatientFormFieldPreferences.showPhone,
+        showAlternatePhone:
+          typeof saved.showAlternatePhone === "boolean"
+            ? saved.showAlternatePhone
+            : defaultPatientFormFieldPreferences.showAlternatePhone,
+        showAddress:
+          typeof saved.showAddress === "boolean"
+            ? saved.showAddress
+            : defaultPatientFormFieldPreferences.showAddress,
+      }
+    }
+  } catch {}
+  return { ...defaultPatientFormFieldPreferences }
+}
+
+export const savePatientFormFieldPreferences = (
+  prefs: PatientFormFieldPreferences,
+  clinicId?: string,
+): void => {
+  if (typeof window === "undefined" || !window.localStorage) return
+  try {
+    const raw = JSON.stringify(prefs)
+    window.localStorage.setItem("cliniqo-patient-form-preferences", raw)
+    if (clinicId) {
+      window.localStorage.setItem(
+        `cliniqo-patient-form-preferences_${clinicId}`,
+        raw,
+      )
+    }
+  } catch {}
+}
+
+export type PrescriptionLayoutPreferences = {
+  bannerVisible: boolean
+  showClinicLogo: boolean
+  showClinicEmail: boolean
+  showAllergyWarning: boolean
+  topSpacingMm: number
+  bannerImage: { src: string; name: string } | null
+  signatureImage: { src: string; name: string } | null
+}
+
+export const defaultPrescriptionLayoutPreferences: PrescriptionLayoutPreferences = {
+  bannerVisible: true,
+  showClinicLogo: true,
+  showClinicEmail: true,
+  showAllergyWarning: true,
+  topSpacingMm: 0,
+  bannerImage: null,
+  signatureImage: null,
+}
+
+export const loadPrescriptionLayoutPreferences = (
+  clinicId?: string,
+): PrescriptionLayoutPreferences => {
+  if (typeof window === "undefined" || !window.localStorage) {
+    return { ...defaultPrescriptionLayoutPreferences }
+  }
+  try {
+    const scopedKey = clinicId
+      ? `cliniqo-prescription-layout-preferences_${clinicId}`
+      : "cliniqo-prescription-layout-preferences"
+    const raw =
+      window.localStorage.getItem(scopedKey) ||
+      window.localStorage.getItem("cliniqo-prescription-layout-preferences")
+    if (raw) {
+      const saved = JSON.parse(raw)
+      return {
+        bannerVisible:
+          typeof saved.bannerVisible === "boolean"
+            ? saved.bannerVisible
+            : defaultPrescriptionLayoutPreferences.bannerVisible,
+        showClinicLogo:
+          typeof saved.showClinicLogo === "boolean"
+            ? saved.showClinicLogo
+            : defaultPrescriptionLayoutPreferences.showClinicLogo,
+        showClinicEmail:
+          typeof saved.showClinicEmail === "boolean"
+            ? saved.showClinicEmail
+            : defaultPrescriptionLayoutPreferences.showClinicEmail,
+        showAllergyWarning:
+          typeof saved.showAllergyWarning === "boolean"
+            ? saved.showAllergyWarning
+            : defaultPrescriptionLayoutPreferences.showAllergyWarning,
+        topSpacingMm:
+          typeof saved.topSpacingMm === "number" && !isNaN(saved.topSpacingMm)
+            ? Math.max(0, Math.min(100, saved.topSpacingMm))
+            : defaultPrescriptionLayoutPreferences.topSpacingMm,
+        bannerImage: saved.bannerImage ?? null,
+        signatureImage: saved.signatureImage ?? null,
+      }
+    }
+  } catch {}
+  return { ...defaultPrescriptionLayoutPreferences }
+}
+
+export const savePrescriptionLayoutPreferences = (
+  prefs: PrescriptionLayoutPreferences,
+  clinicId?: string,
+): void => {
+  if (typeof window === "undefined" || !window.localStorage) return
+  try {
+    const raw = JSON.stringify(prefs)
+    window.localStorage.setItem("cliniqo-prescription-layout-preferences", raw)
+    if (clinicId) {
+      window.localStorage.setItem(
+        `cliniqo-prescription-layout-preferences_${clinicId}`,
+        raw,
+      )
+    }
+  } catch {}
+}
 
 export type BillItem = {
   id: number
@@ -158,6 +282,79 @@ export type BillLayoutPreferences = {
   showClinicEmail: boolean
   showSignature: boolean
   showPaymentNote: boolean
+  topSpacingMm: number
+}
+
+export const defaultBillLayoutPreferences: BillLayoutPreferences = {
+  showBanner: true,
+  showClinicLogo: true,
+  showClinicEmail: true,
+  showSignature: true,
+  showPaymentNote: true,
+  topSpacingMm: 0,
+}
+
+export const loadBillLayoutPreferences = (
+  clinicId?: string,
+): BillLayoutPreferences => {
+  if (typeof window === "undefined" || !window.localStorage) {
+    return { ...defaultBillLayoutPreferences }
+  }
+  try {
+    const scopedKey = clinicId
+      ? `cliniqo-bill-layout-preferences_${clinicId}`
+      : "cliniqo-bill-layout-preferences"
+    const raw =
+      window.localStorage.getItem(scopedKey) ||
+      window.localStorage.getItem("cliniqo-bill-layout-preferences")
+    if (raw) {
+      const saved = JSON.parse(raw)
+      return {
+        showBanner:
+          typeof saved.showBanner === "boolean"
+            ? saved.showBanner
+            : defaultBillLayoutPreferences.showBanner,
+        showClinicLogo:
+          typeof saved.showClinicLogo === "boolean"
+            ? saved.showClinicLogo
+            : defaultBillLayoutPreferences.showClinicLogo,
+        showClinicEmail:
+          typeof saved.showClinicEmail === "boolean"
+            ? saved.showClinicEmail
+            : defaultBillLayoutPreferences.showClinicEmail,
+        showSignature:
+          typeof saved.showSignature === "boolean"
+            ? saved.showSignature
+            : defaultBillLayoutPreferences.showSignature,
+        showPaymentNote:
+          typeof saved.showPaymentNote === "boolean"
+            ? saved.showPaymentNote
+            : defaultBillLayoutPreferences.showPaymentNote,
+        topSpacingMm:
+          typeof saved.topSpacingMm === "number" && !isNaN(saved.topSpacingMm)
+            ? Math.max(0, Math.min(100, saved.topSpacingMm))
+            : defaultBillLayoutPreferences.topSpacingMm,
+      }
+    }
+  } catch {}
+  return { ...defaultBillLayoutPreferences }
+}
+
+export const saveBillLayoutPreferences = (
+  prefs: BillLayoutPreferences,
+  clinicId?: string,
+): void => {
+  if (typeof window === "undefined" || !window.localStorage) return
+  try {
+    const raw = JSON.stringify(prefs)
+    window.localStorage.setItem("cliniqo-bill-layout-preferences", raw)
+    if (clinicId) {
+      window.localStorage.setItem(
+        `cliniqo-bill-layout-preferences_${clinicId}`,
+        raw,
+      )
+    }
+  } catch {}
 }
 
 export type ClinicalLibraryCategory =
@@ -914,6 +1111,105 @@ export const complaintOptions = [
   "Follow-up / review",
 ]
 
+export const DEFAULT_COMPLAINT_OPTIONS: readonly string[] = complaintOptions
+
+export const loadCustomChiefComplaints = (clinicId?: string): string[] => {
+  if (typeof window === "undefined" || !window.localStorage) {
+    return []
+  }
+  try {
+    const scopedKey = clinicId
+      ? `cliniqo-custom-chief-complaints_${clinicId}`
+      : "cliniqo-custom-chief-complaints"
+    const raw = window.localStorage.getItem(scopedKey)
+    if (raw) {
+      const parsed = JSON.parse(raw)
+      if (Array.isArray(parsed)) {
+        return parsed.filter(
+          (item): item is string =>
+            typeof item === "string" && item.trim().length > 0,
+        )
+      }
+    }
+  } catch {}
+  return []
+}
+
+export const saveCustomChiefComplaints = (
+  customList: string[],
+  clinicId?: string,
+): void => {
+  if (typeof window === "undefined" || !window.localStorage) return
+  try {
+    const scopedKey = clinicId
+      ? `cliniqo-custom-chief-complaints_${clinicId}`
+      : "cliniqo-custom-chief-complaints"
+    const cleaned: string[] = []
+    const seen = new Set<string>()
+    for (const c of customList) {
+      if (typeof c !== "string") continue
+      const trimmed = c.trim()
+      const lower = trimmed.toLowerCase()
+      if (trimmed && !seen.has(lower)) {
+        seen.add(lower)
+        cleaned.push(trimmed)
+      }
+    }
+    const raw = JSON.stringify(cleaned)
+    window.localStorage.setItem(scopedKey, raw)
+  } catch {}
+}
+
+export const getChiefComplaintOptions = (
+  customComplaints: string[] = [],
+): string[] => {
+  const result = [...complaintOptions]
+  const existingSet = new Set(
+    complaintOptions.map((c) => c.trim().toLowerCase()),
+  )
+
+  for (const custom of customComplaints) {
+    if (typeof custom !== "string") continue
+    const trimmed = custom.trim()
+    if (!trimmed) continue
+    const lower = trimmed.toLowerCase()
+    if (!existingSet.has(lower)) {
+      existingSet.add(lower)
+      result.push(trimmed)
+    }
+  }
+  return result
+}
+
+export const addCustomChiefComplaint = (
+  complaint: string,
+  clinicId?: string,
+): string[] => {
+  if (typeof complaint !== "string") {
+    return loadCustomChiefComplaints(clinicId)
+  }
+  const trimmed = complaint.trim()
+  if (!trimmed) {
+    return loadCustomChiefComplaints(clinicId)
+  }
+
+  const existingCustom = loadCustomChiefComplaints(clinicId)
+  const isDefault = complaintOptions.some(
+    (opt) => opt.trim().toLowerCase() === trimmed.toLowerCase(),
+  )
+  const isAlreadyCustom = existingCustom.some(
+    (c) => c.trim().toLowerCase() === trimmed.toLowerCase(),
+  )
+
+  if (!isDefault && !isAlreadyCustom) {
+    const updated = [...existingCustom, trimmed]
+    saveCustomChiefComplaints(updated, clinicId)
+    return updated
+  }
+
+  return existingCustom
+}
+
 export const symptomDurationOptions = [
   "Less than 24 hours",
   "1–3 days",
@@ -1002,41 +1298,39 @@ export const defaultClinicalLibrary: ClinicalLibrary = {
 
 export const loadClinicalLibrary = (): ClinicalLibrary => {
   try {
-    const saved = JSON.parse(
-      window.localStorage.getItem("cliniqo-clinical-library") || "{}",
-    ) as Partial<ClinicalLibrary>
-    const formulations = Array.isArray(saved.Formulations)
-      ? Array.from(
-          new Set([
-            ...defaultClinicalLibrary.Formulations,
-            ...saved.Formulations,
-          ]),
-        )
-      : defaultClinicalLibrary.Formulations
-    const frequencies = Array.isArray(saved.Frequencies)
-      ? Array.from(
-          new Set([
-            ...defaultClinicalLibrary.Frequencies,
-            ...saved.Frequencies,
-          ]),
-        )
-      : defaultClinicalLibrary.Frequencies
-    const foodInstructions = Array.isArray(saved.FoodInstructions)
-      ? Array.from(
-          new Set([
-            ...defaultClinicalLibrary.FoodInstructions,
-            ...saved.FoodInstructions,
-          ]),
-        )
-      : defaultClinicalLibrary.FoodInstructions
+    const raw =
+      typeof window !== "undefined" && window.localStorage
+        ? window.localStorage.getItem("cliniqo-clinical-library")
+        : null
+    if (!raw) return { ...defaultClinicalLibrary }
+    const saved = JSON.parse(raw) as Partial<ClinicalLibrary>
     return {
-      ...defaultClinicalLibrary,
-      ...saved,
-      Formulations: formulations,
-      Frequencies: frequencies,
-      FoodInstructions: foodInstructions,
+      Medicines: Array.isArray(saved.Medicines)
+        ? saved.Medicines
+        : defaultClinicalLibrary.Medicines,
+      Formulations: Array.isArray(saved.Formulations)
+        ? saved.Formulations
+        : defaultClinicalLibrary.Formulations,
+      Strengths: Array.isArray(saved.Strengths)
+        ? saved.Strengths
+        : defaultClinicalLibrary.Strengths,
+      Doses: Array.isArray(saved.Doses)
+        ? saved.Doses
+        : defaultClinicalLibrary.Doses,
+      Durations: Array.isArray(saved.Durations)
+        ? saved.Durations
+        : defaultClinicalLibrary.Durations,
+      Frequencies: Array.isArray(saved.Frequencies)
+        ? saved.Frequencies
+        : defaultClinicalLibrary.Frequencies,
+      FoodInstructions: Array.isArray(saved.FoodInstructions)
+        ? saved.FoodInstructions
+        : defaultClinicalLibrary.FoodInstructions,
+      MedicineDefinitions: Array.isArray(saved.MedicineDefinitions)
+        ? saved.MedicineDefinitions
+        : defaultClinicalLibrary.MedicineDefinitions,
     }
   } catch {
-    return defaultClinicalLibrary
+    return { ...defaultClinicalLibrary }
   }
 }

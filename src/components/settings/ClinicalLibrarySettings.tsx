@@ -55,6 +55,7 @@ import {
 export interface ClinicalLibrarySettingsProps {
   library: ClinicalLibrary
   onAdd: (category: ClinicalLibraryCategory, value: string) => void
+  onRemove?: (category: ClinicalLibraryCategory, value: string) => void
   onAddMedicine: (medicine: ClinicalMedicineDefinition) => void
   desktopSession?: DesktopSessionContext | null
   initialTab?: MainTab
@@ -66,6 +67,7 @@ type ImportStep = "upload" | "mapping" | "preview" | "complete"
 export function ClinicalLibrarySettings({
   library,
   onAdd,
+  onRemove,
   onAddMedicine,
   desktopSession,
   initialTab = "import",
@@ -1034,7 +1036,23 @@ export function ClinicalLibrarySettings({
 
           <div className="library-list">
             {(library[optionCategory] || []).map((item) => (
-              <span key={item}>{item}</span>
+              <span key={item} className="library-chip">
+                <span>{item}</span>
+                {onRemove && (
+                  <button
+                    type="button"
+                    className="library-chip-remove"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      onRemove(optionCategory, item)
+                    }}
+                    aria-label={`Remove ${item}`}
+                    title={`Remove ${item}`}
+                  >
+                    <X size={12} />
+                  </button>
+                )}
+              </span>
             ))}
           </div>
 

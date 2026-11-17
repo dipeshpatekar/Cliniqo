@@ -235,52 +235,27 @@ export function OverviewTab({
 }
 
 export function HistoryTab({ patient }: { patient: Patient }) {
+  const hasConditions = patient.conditions && patient.conditions.length > 0
   return (
     <section className="panel history-layout">
       <div className="history-block">
         <h2>Medical history</h2>
-        <p>
-          {patient.conditions.join(", ") || "No medical conditions recorded."}
-        </p>
-      </div>
-      <div className="history-block">
-        <h2>Family history</h2>
-        <p>No significant family history recorded.</p>
-      </div>
-      <div className="history-block">
-        <h2>Current medicines</h2>
-        <p>No current long-term medicines recorded.</p>
-      </div>
-      <div className="history-block">
-        <h2>Allergy record</h2>
-        {(() => {
-          const allergyAnalysis = analyzeAllergies(patient.allergies)
-          return (
-            <>
-              <p>
-                {allergyAnalysis.hasGenuineAllergies ? (
-                  allergyAnalysis.genuineAllergies.map((allergy) => (
-                    <StatusPill key={allergy} tone="danger">
-                      {allergy}
-                    </StatusPill>
-                  ))
-                ) : allergyAnalysis.isNoKnownAllergies ? (
-                  <StatusPill tone="success">No known allergies</StatusPill>
-                ) : allergyAnalysis.isUnknown ? (
-                  <StatusPill tone="warning">Unknown (not allergy-free)</StatusPill>
-                ) : (
-                  "No known allergies recorded."
-                )}
-              </p>
-              {allergyAnalysis.hasGenuineAllergies && (
-                <small>
-                  Reaction details not recorded. Confirm with patient before
-                  prescribing.
-                </small>
-              )}
-            </>
-          )
-        })()}
+        {hasConditions ? (
+          <div className="flex flex-wrap gap-2 mt-2">
+            {patient.conditions.map((condition, idx) => (
+              <span
+                key={idx}
+                className="px-3 py-1.5 rounded-md bg-slate-100 dark:bg-slate-800 text-slate-800 dark:text-slate-200 text-sm font-medium border border-slate-200 dark:border-slate-700"
+              >
+                {condition}
+              </span>
+            ))}
+          </div>
+        ) : (
+          <p className="text-slate-500 text-sm mt-2">
+            No medical history recorded for this patient.
+          </p>
+        )}
       </div>
     </section>
   )

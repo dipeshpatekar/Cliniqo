@@ -29,10 +29,19 @@ import {
   createEmptyConsultationData,
   loadClinicalLibrary,
   loadPatientFormFieldPreferences,
+  savePatientFormFieldPreferences,
+  loadPrescriptionLayoutPreferences,
+  savePrescriptionLayoutPreferences,
+  loadBillLayoutPreferences,
+  saveBillLayoutPreferences,
   mapLocalRecordToPatient,
   initialPatients,
   formatSequentialPatientId,
   parseSequentialPatientId,
+  loadCustomChiefComplaints,
+  saveCustomChiefComplaints,
+  addCustomChiefComplaint,
+  complaintOptions,
 } from "./types"
 import { cn } from "./utils/cn"
 
@@ -273,26 +282,32 @@ export default function App({
   )
   const [clinicalLibrary, setClinicalLibrary] =
     useState<ClinicalLibrary>(loadClinicalLibrary)
-  const [prescriptionBannerVisible, setPrescriptionBannerVisible] =
-    useState(true)
+  const initialRxPrefs = loadPrescriptionLayoutPreferences()
+  const [prescriptionBannerVisible, setPrescriptionBannerVisible] = useState(
+    initialRxPrefs.bannerVisible,
+  )
   const [prescriptionBannerImage, setPrescriptionBannerImage] = useState<{
     src: string
     name: string
-  } | null>(null)
+  } | null>(initialRxPrefs.bannerImage)
   const [doctorSignatureImage, setDoctorSignatureImage] = useState<{
     src: string
     name: string
-  } | null>(null)
-  const [showClinicLogo, setShowClinicLogo] = useState(true)
-  const [showClinicEmail, setShowClinicEmail] = useState(true)
-  const [showAllergyWarning, setShowAllergyWarning] = useState(true)
-  const [billLayout, setBillLayout] = useState<BillLayoutPreferences>({
-    showBanner: true,
-    showClinicLogo: true,
-    showClinicEmail: true,
-    showSignature: true,
-    showPaymentNote: true,
-  })
+  } | null>(initialRxPrefs.signatureImage)
+  const [showClinicLogo, setShowClinicLogo] = useState(
+    initialRxPrefs.showClinicLogo,
+  )
+  const [showClinicEmail, setShowClinicEmail] = useState(
+    initialRxPrefs.showClinicEmail,
+  )
+  const [showAllergyWarning, setShowAllergyWarning] = useState(
+    initialRxPrefs.showAllergyWarning,
+  )
+  const [prescriptionTopSpacingMm, setPrescriptionTopSpacingMm] =
+    useState<number>(() => initialRxPrefs.topSpacingMm || 0)
+  const [billLayout, setBillLayout] = useState<BillLayoutPreferences>(() =>
+    loadBillLayoutPreferences(),
+  )
   const [billData, setBillData] = useState<BillData>({
     invoiceNumber: "INV-2025-1048",
     date: "2025-07-01",
@@ -303,7 +318,41 @@ export default function App({
     items: [{ id: 1, description: "Consultation fee", quantity: 1, rate: 800 }],
   })
   const [patientFormFieldPreferences, setPatientFormFieldPreferences] =
-    useState<PatientFormFieldPreferences>(loadPatientFormFieldPreferences)
+    useState<PatientFormFieldPreferences>(() =>
+      loadPatientFormFieldPreferences(),
+    )
+  const [customChiefComplaints, setCustomChiefComplaints] = useState<string[]>(
+    () => loadCustomChiefComplaints(desktopSession?.clinic_id),
+  )
+
+  const handleAddCustomChiefComplaint = (complaint: string) => {
+    const updated = addCustomChiefComplaint(
+      complaint,
+      desktopSession?.clinic_id,
+    )
+    setCustomChiefComplaints(updated)
+  }
+
+  useEffect(() => {
+    if (!desktopSession?.clinic_id) return
+    const clinicId = desktopSession.clinic_id
+    const clinicRxPrefs = loadPrescriptionLayoutPreferences(clinicId)
+    setPrescriptionBannerVisible(clinicRxPrefs.bannerVisible)
+    if (clinicRxPrefs.bannerImage) setPrescriptionBannerImage(clinicRxPrefs.bannerImage)
+    if (clinicRxPrefs.signatureImage) setDoctorSignatureImage(clinicRxPrefs.signatureImage)
+    setShowClinicLogo(clinicRxPrefs.showClinicLogo)
+    setShowClinicEmail(clinicRxPrefs.showClinicEmail)
+    setShowAllergyWarning(clinicRxPrefs.showAllergyWarning)
+    setPrescriptionTopSpacingMm(clinicRxPrefs.topSpacingMm || 0)
+
+    const clinicBillPrefs = loadBillLayoutPreferences(clinicId)
+    setBillLayout(clinicBillPrefs)
+
+    const clinicPatientFormPrefs = loadPatientFormFieldPreferences(clinicId)
+    setPatientFormFieldPreferences(clinicPatientFormPrefs)
+
+    setCustomChiefComplaints(loadCustomChiefComplaints(clinicId))
+  }, [desktopSession?.clinic_id])
 
   useEffect(() => {
     if (typeof window === "undefined") return
@@ -340,16 +389,134 @@ export default function App({
       window.removeEventListener("cliniqo:profile-updated", handleProfileUpdate)
     }
   }, [])
+
+  const updatePrescriptionBannerVisible = (visible: boolean) => {
+    setPrescriptionBannerVisible(visible)
+    savePrescriptionLayoutPreferences(
+      {
+        bannerVisible: visible,
+        showClinicLogo,
+        showClinicEmail,
+        showAllergyWarning,
+        topSpacingMm: prescriptionTopSpacingMm,
+        bannerImage: prescriptionBannerImage,
+        signatureImage: doctorSignatureImage,
+      },
+      desktopSession?.clinic_id,
+    )
+  }
+
+  const updatePrescriptionBannerImage = (
+    image: { src: string; name: string } | null,
+  ) => {
+    setPrescriptionBannerImage(image)
+    savePrescriptionLayoutPreferences(
+      {
+        bannerVisible: prescriptionBannerVisible,
+        showClinicLogo,
+        showClinicEmail,
+        showAllergyWarning,
+        topSpacingMm: prescriptionTopSpacingMm,
+        bannerImage: image,
+        signatureImage: doctorSignatureImage,
+      },
+      desktopSession?.clinic_id,
+    )
+  }
+
+  const updateDoctorSignatureImage = (
+    image: { src: string; name: string } | null,
+  ) => {
+    setDoctorSignatureImage(image)
+    savePrescriptionLayoutPreferences(
+      {
+        bannerVisible: prescriptionBannerVisible,
+        showClinicLogo,
+        showClinicEmail,
+        showAllergyWarning,
+        topSpacingMm: prescriptionTopSpacingMm,
+        bannerImage: prescriptionBannerImage,
+        signatureImage: image,
+      },
+      desktopSession?.clinic_id,
+    )
+  }
+
+  const updateShowClinicLogo = (visible: boolean) => {
+    setShowClinicLogo(visible)
+    savePrescriptionLayoutPreferences(
+      {
+        bannerVisible: prescriptionBannerVisible,
+        showClinicLogo: visible,
+        showClinicEmail,
+        showAllergyWarning,
+        topSpacingMm: prescriptionTopSpacingMm,
+        bannerImage: prescriptionBannerImage,
+        signatureImage: doctorSignatureImage,
+      },
+      desktopSession?.clinic_id,
+    )
+  }
+
+  const updateShowClinicEmail = (visible: boolean) => {
+    setShowClinicEmail(visible)
+    savePrescriptionLayoutPreferences(
+      {
+        bannerVisible: prescriptionBannerVisible,
+        showClinicLogo,
+        showClinicEmail: visible,
+        showAllergyWarning,
+        topSpacingMm: prescriptionTopSpacingMm,
+        bannerImage: prescriptionBannerImage,
+        signatureImage: doctorSignatureImage,
+      },
+      desktopSession?.clinic_id,
+    )
+  }
+
+  const updateShowAllergyWarning = (visible: boolean) => {
+    setShowAllergyWarning(visible)
+    savePrescriptionLayoutPreferences(
+      {
+        bannerVisible: prescriptionBannerVisible,
+        showClinicLogo,
+        showClinicEmail,
+        showAllergyWarning: visible,
+        topSpacingMm: prescriptionTopSpacingMm,
+        bannerImage: prescriptionBannerImage,
+        signatureImage: doctorSignatureImage,
+      },
+      desktopSession?.clinic_id,
+    )
+  }
+
+  const updatePrescriptionTopSpacingMm = (spacing: number) => {
+    const clamped = Math.max(0, Math.min(60, spacing))
+    setPrescriptionTopSpacingMm(clamped)
+    savePrescriptionLayoutPreferences(
+      {
+        bannerVisible: prescriptionBannerVisible,
+        showClinicLogo,
+        showClinicEmail,
+        showAllergyWarning,
+        topSpacingMm: clamped,
+        bannerImage: prescriptionBannerImage,
+        signatureImage: doctorSignatureImage,
+      },
+      desktopSession?.clinic_id,
+    )
+  }
+
+  const updateBillLayout = (layout: BillLayoutPreferences) => {
+    setBillLayout(layout)
+    saveBillLayoutPreferences(layout, desktopSession?.clinic_id)
+  }
+
   const updatePatientFormFieldPreferences = (
     prefs: PatientFormFieldPreferences,
   ) => {
     setPatientFormFieldPreferences(prefs)
-    try {
-      window.localStorage.setItem(
-        "cliniqo-patient-form-preferences",
-        JSON.stringify(prefs),
-      )
-    } catch {}
+    savePatientFormFieldPreferences(prefs, desktopSession?.clinic_id)
   }
 
   const updatePatientMedicalInfo = (
@@ -563,6 +730,40 @@ export default function App({
     }
   }
 
+  const loadAndMergeChiefComplaints = async (clinicId: string) => {
+    if (!isTauriDesktop()) return
+    try {
+      const consultations = await getLocalConsultations(clinicId)
+      if (Array.isArray(consultations) && consultations.length > 0) {
+        let changed = false
+        const currentCustom = loadCustomChiefComplaints(clinicId)
+        const currentSet = new Set([
+          ...complaintOptions.map((c) => c.trim().toLowerCase()),
+          ...currentCustom.map((c) => c.trim().toLowerCase()),
+        ])
+        const toAdd: string[] = []
+        for (const c of consultations) {
+          const comp = c.chief_complaint?.trim()
+          if (comp && !currentSet.has(comp.toLowerCase())) {
+            currentSet.add(comp.toLowerCase())
+            toAdd.push(comp)
+            changed = true
+          }
+        }
+        if (changed) {
+          const merged = [...currentCustom, ...toAdd]
+          saveCustomChiefComplaints(merged, clinicId)
+          setCustomChiefComplaints(merged)
+        }
+      }
+    } catch (err) {
+      console.warn(
+        "[Cliniqo Desktop] Failed to load local chief complaints:",
+        err,
+      )
+    }
+  }
+
   // Desktop session bootstrap: check active in-memory session or restore via DPAPI refresh token
   useEffect(() => {
     if (!isTauriDesktop()) return
@@ -595,6 +796,7 @@ export default function App({
           curr === "login" || curr === "register" ? "dashboard" : curr,
         )
         loadAndMergeLocalFormulary(restored.session.clinic_id).catch(() => {})
+        loadAndMergeChiefComplaints(restored.session.clinic_id).catch(() => {})
         startCatalogueSync().catch(() => {})
       } else {
         // Incomplete onboarding: restored refresh token valid, but 0 clinics -> resume setup!
@@ -639,6 +841,7 @@ export default function App({
                 curr === "login" || curr === "register" ? "dashboard" : curr,
               )
               loadAndMergeLocalFormulary(active.clinic_id).catch(() => {})
+              loadAndMergeChiefComplaints(active.clinic_id).catch(() => {})
               startCatalogueSync().catch(() => {})
             } else {
               // Incomplete onboarding: session established but clinic not created yet
@@ -1270,6 +1473,7 @@ export default function App({
       )
     }
     loadAndMergeLocalFormulary(session.clinic_id).catch(() => {})
+    loadAndMergeChiefComplaints(session.clinic_id).catch(() => {})
     startCatalogueSync().catch(() => {})
     go("dashboard", session)
   }
@@ -1278,6 +1482,16 @@ export default function App({
     setClinicalLibrary((library) => ({
       ...library,
       [category]: [...library[category], value],
+    }))
+  }
+
+  const removeLibraryItem = (
+    category: ClinicalLibraryCategory,
+    value: string,
+  ) => {
+    setClinicalLibrary((library) => ({
+      ...library,
+      [category]: (library[category] || []).filter((item) => item !== value),
     }))
   }
 
@@ -1748,7 +1962,12 @@ export default function App({
         onAddMedicine={addMedicineDefinition}
         desktopSession={desktopSession}
         onUpdatePatientMedicalInfo={updatePatientMedicalInfo}
+        customChiefComplaints={customChiefComplaints}
+        onAddCustomChiefComplaint={handleAddCustomChiefComplaint}
         onFinalized={(_consultationId, finalizedTimestamp) => {
+          if (consultationData.chiefComplaint?.trim()) {
+            handleAddCustomChiefComplaint(consultationData.chiefComplaint)
+          }
           const visitTimestamp = finalizedTimestamp || new Date().toISOString()
           setSelectedPatient((prev) => ({
             ...prev,
@@ -1793,6 +2012,7 @@ export default function App({
         showClinicLogo={showClinicLogo}
         showClinicEmail={showClinicEmail}
         showAllergyWarning={showAllergyWarning}
+        topSpacingMm={prescriptionTopSpacingMm}
         returnPage={prescriptionPreviewReturnPage}
         desktopSession={desktopSession}
         prescriptionRecord={
@@ -1844,21 +2064,24 @@ export default function App({
         onDarkModeChange={setDarkMode}
         clinicalLibrary={clinicalLibrary}
         onAddLibraryItem={addLibraryItem}
+        onRemoveLibraryItem={removeLibraryItem}
         onAddMedicine={addMedicineDefinition}
         bannerVisible={prescriptionBannerVisible}
-        onBannerVisibleChange={setPrescriptionBannerVisible}
+        onBannerVisibleChange={updatePrescriptionBannerVisible}
         bannerImage={prescriptionBannerImage}
-        onBannerImageChange={setPrescriptionBannerImage}
+        onBannerImageChange={updatePrescriptionBannerImage}
         signatureImage={doctorSignatureImage}
-        onSignatureImageChange={setDoctorSignatureImage}
+        onSignatureImageChange={updateDoctorSignatureImage}
         showClinicLogo={showClinicLogo}
-        onShowClinicLogoChange={setShowClinicLogo}
+        onShowClinicLogoChange={updateShowClinicLogo}
         showClinicEmail={showClinicEmail}
-        onShowClinicEmailChange={setShowClinicEmail}
+        onShowClinicEmailChange={updateShowClinicEmail}
         showAllergyWarning={showAllergyWarning}
-        onShowAllergyWarningChange={setShowAllergyWarning}
+        onShowAllergyWarningChange={updateShowAllergyWarning}
+        prescriptionTopSpacingMm={prescriptionTopSpacingMm}
+        onPrescriptionTopSpacingMmChange={updatePrescriptionTopSpacingMm}
         billLayout={billLayout}
-        onBillLayoutChange={setBillLayout}
+        onBillLayoutChange={updateBillLayout}
         patientFormFieldPreferences={patientFormFieldPreferences}
         onPatientFormFieldPreferencesChange={updatePatientFormFieldPreferences}
         initialTab={settingsInitialTab}

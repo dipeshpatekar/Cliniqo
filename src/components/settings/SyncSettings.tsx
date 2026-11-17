@@ -54,7 +54,7 @@ export function SyncSettings({ onOpenConflictModal }: SyncSettingsProps) {
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   // Updater state
-  const [appVersion, setAppVersion] = useState<string>("1.0.3")
+  const [appVersion, setAppVersion] = useState<string>("1.0.4")
   const [isCheckingUpdate, setIsCheckingUpdate] = useState(false)
   const [updateResult, setUpdateResult] = useState<UpdateCheckResult | null>(null)
   const [updateError, setUpdateError] = useState<string | null>(null)

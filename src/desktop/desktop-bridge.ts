@@ -2408,7 +2408,7 @@ export async function exportEncryptedBackup(
     version: 1,
     clinic_id: clinicId,
     created_at: new Date().toISOString(),
-    app_version: "1.0.3",
+    app_version: "1.0.4",
     schema_version: 12,
     patients_count: 5,
     consultations_count: 8,
@@ -2462,7 +2462,7 @@ export async function restoreEncryptedBackup(options: {
       version: 1,
       clinic_id: options.clinicId || "clinic_demo",
       created_at: new Date().toISOString(),
-      app_version: "1.0.3",
+      app_version: "1.0.4",
       schema_version: 12,
       patients_count: 5,
       consultations_count: 8,
@@ -2512,7 +2512,7 @@ export async function checkAppUpdate(endpoint?: string): Promise<UpdateCheckResu
 
   return {
     available: false,
-    current_version: "1.0.3",
+    current_version: "1.0.4",
     target_version: null,
     release_notes: null,
     pub_date: null,

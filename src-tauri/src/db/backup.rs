@@ -1,5 +1,5 @@
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use aes_gcm::aead::OsRng;
 use aes_gcm::aead::rand_core::RngCore;
 use hmac::{Hmac, Mac};
@@ -132,12 +132,66 @@ impl BackupManager {
         key
     }
 
+    /// Resolves the default backup directory: Documents/Cliniqo/Backups/
+    ///
+    /// Precedence for resolving the Documents folder:
+    /// 1. Provided `documents_dir` override (e.g. from Tauri's AppHandle `app.path().document_dir()`).
+    /// 2. `CLINIQO_DOCUMENTS_DIR` environment variable (for testing and manual overrides).
+    /// 3. OS environment resolution:
+    ///    - On Windows: `%USERPROFILE%\Documents` (or `%HOMEDRIVE%%HOMEPATH%\Documents`).
+    ///    - On macOS / Unix: `$HOME/Documents`.
+    /// 4. Fallback: temporary directory / `Documents`.
+    pub fn resolve_default_backup_directory(documents_dir: Option<&Path>) -> PathBuf {
+        let docs = if let Some(d) = documents_dir {
+            d.to_path_buf()
+        } else if let Ok(env_docs) = std::env::var("CLINIQO_DOCUMENTS_DIR") {
+            PathBuf::from(env_docs)
+        } else {
+            Self::get_system_documents_dir()
+        };
+
+        docs.join("Cliniqo").join("Backups")
+    }
+
+    /// Resolves the operating system's Documents directory without requiring a Tauri AppHandle.
+    pub fn get_system_documents_dir() -> PathBuf {
+        #[cfg(target_os = "windows")]
+        {
+            if let Ok(user_profile) = std::env::var("USERPROFILE") {
+                return PathBuf::from(user_profile).join("Documents");
+            }
+            if let (Ok(drive), Ok(path)) = (std::env::var("HOMEDRIVE"), std::env::var("HOMEPATH")) {
+                return PathBuf::from(format!("{}{}", drive, path)).join("Documents");
+            }
+        }
+
+        #[cfg(not(target_os = "windows"))]
+        {
+            if let Ok(home) = std::env::var("HOME") {
+                return PathBuf::from(home).join("Documents");
+            }
+        }
+
+        std::env::temp_dir().join("Documents")
+    }
+
     /// Exports an encrypted SQLite backup to file or returns base64-encoded package.
     pub fn export_backup(
         db: &DatabaseManager,
         clinic_id: &str,
         passphrase: Option<&str>,
         destination_path: Option<&Path>,
+    ) -> Result<BackupExportResult, BackupError> {
+        Self::export_backup_with_documents_dir(db, clinic_id, passphrase, destination_path, None)
+    }
+
+    /// Exports an encrypted SQLite backup with an explicit Documents directory base.
+    pub fn export_backup_with_documents_dir(
+        db: &DatabaseManager,
+        clinic_id: &str,
+        passphrase: Option<&str>,
+        destination_path: Option<&Path>,
+        documents_dir: Option<&Path>,
     ) -> Result<BackupExportResult, BackupError> {
         if clinic_id.trim().is_empty() {
             return Err(BackupError::AuthFailed("Clinic ID cannot be empty".to_string()));
@@ -272,9 +326,9 @@ impl BackupManager {
         container.extend_from_slice(&nonce);
         container.extend_from_slice(&ciphertext);
 
-        // 9. Save backup file to destination or default backup path
+        // 9. Save backup file to destination or default backup path (Documents/Cliniqo/Backups/)
         let timestamp_str = chrono::Utc::now().format("%Y%m%d_%H%M%S").to_string();
-        let backup_file_name = format!("cliniqo_backup_{}_{}.clxbk", clinic_id, timestamp_str);
+        let mut backup_file_name = format!("cliniqo_backup_{}_{}.clxbk", clinic_id, timestamp_str);
 
         let final_path = if let Some(p) = destination_path {
             if let Some(parent) = p.parent() {
@@ -283,12 +337,27 @@ impl BackupManager {
             fs::write(p, &container)?;
             Some(p.to_string_lossy().to_string())
         } else {
-            let app_data_dir = db.get_db_path().parent().and_then(|p| p.parent()).unwrap_or_else(|| Path::new("."));
-            let backup_dir = app_data_dir.join("backups");
+            let backup_dir = Self::resolve_default_backup_directory(documents_dir);
             fs::create_dir_all(&backup_dir)?;
-            let p = backup_dir.join(&backup_file_name);
-            fs::write(&p, &container)?;
-            Some(p.to_string_lossy().to_string())
+
+            let mut final_file_path = backup_dir.join(&backup_file_name);
+            if final_file_path.exists() {
+                let mut counter = 1;
+                loop {
+                    let candidate_name = format!("cliniqo_backup_{}_{}_{}.clxbk", clinic_id, timestamp_str, counter);
+                    let candidate_path = backup_dir.join(&candidate_name);
+                    if !candidate_path.exists() {
+                        final_file_path = candidate_path;
+                        backup_file_name = candidate_name;
+                        break;
+                    }
+                    counter += 1;
+                }
+            }
+
+            fs::write(&final_file_path, &container)?;
+            log::info!("Encrypted backup successfully exported to: {:?}", final_file_path);
+            Some(final_file_path.to_string_lossy().to_string())
         };
 
         let file_size_bytes = container.len();
@@ -675,6 +744,105 @@ mod tests {
             let next_code = DbOperations::get_next_patient_code(&mut conn, clinic_id).unwrap();
             assert_eq!(next_code, "AAA-0002");
         }
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_default_backup_directory_resolution() {
+        let test_docs = Path::new("/custom/user/Documents");
+        let backup_dir = BackupManager::resolve_default_backup_directory(Some(test_docs));
+        assert_eq!(
+            backup_dir,
+            PathBuf::from("/custom/user/Documents").join("Cliniqo").join("Backups")
+        );
+        assert!(backup_dir.ends_with(Path::new("Cliniqo").join("Backups")));
+    }
+
+    #[test]
+    fn test_backup_folder_auto_created_and_exported_to_documents() {
+        let (db, temp_dir) = setup_test_db("cliniqo_test_backup_doc_create");
+        let clinic_id = "clinic_doc_test";
+        let test_docs = temp_dir.join("MyDocuments");
+
+        let expected_backup_dir = test_docs.join("Cliniqo").join("Backups");
+        assert!(!expected_backup_dir.exists(), "Backup directory must not exist prior to export");
+
+        let export_res = BackupManager::export_backup_with_documents_dir(
+            &db,
+            clinic_id,
+            None,
+            None,
+            Some(&test_docs),
+        ).expect("Export to documents succeeds");
+
+        assert!(expected_backup_dir.exists(), "Documents/Cliniqo/Backups must be auto-created");
+        let exported_path_str = export_res.backup_file_path.expect("Backup file path returned");
+        let exported_path = PathBuf::from(&exported_path_str);
+
+        assert!(exported_path.exists(), "Exported backup file must exist on disk");
+        assert!(exported_path.starts_with(&expected_backup_dir), "File must be directly inside Documents/Cliniqo/Backups");
+        assert!(export_res.backup_file_name.starts_with(&format!("cliniqo_backup_{}", clinic_id)));
+        assert!(export_res.backup_file_name.ends_with(".clxbk"));
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_repeated_exports_create_separate_files_without_overwriting() {
+        let (db, temp_dir) = setup_test_db("cliniqo_test_backup_separate");
+        let clinic_id = "clinic_multi";
+        let test_docs = temp_dir.join("Docs");
+
+        let res1 = BackupManager::export_backup_with_documents_dir(
+            &db,
+            clinic_id,
+            None,
+            None,
+            Some(&test_docs),
+        ).expect("First export succeeds");
+
+        let res2 = BackupManager::export_backup_with_documents_dir(
+            &db,
+            clinic_id,
+            None,
+            None,
+            Some(&test_docs),
+        ).expect("Second export succeeds");
+
+        let path1 = PathBuf::from(res1.backup_file_path.unwrap());
+        let path2 = PathBuf::from(res2.backup_file_path.unwrap());
+
+        assert_ne!(path1, path2, "Repeated exports must create distinct backup files");
+        assert!(path1.exists(), "First backup file must remain present");
+        assert!(path2.exists(), "Second backup file must exist");
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_previous_backups_remain_unaffected() {
+        let (db, temp_dir) = setup_test_db("cliniqo_test_backup_prior");
+        let clinic_id = "clinic_prior";
+        let test_docs = temp_dir.join("Docs");
+        let backup_dir = test_docs.join("Cliniqo").join("Backups");
+        fs::create_dir_all(&backup_dir).unwrap();
+
+        let prior_file = backup_dir.join("cliniqo_backup_clinic_prior_20261101_120000.clxbk");
+        fs::write(&prior_file, b"prior_backup_content").unwrap();
+
+        // Export a new backup
+        let res = BackupManager::export_backup_with_documents_dir(
+            &db,
+            clinic_id,
+            None,
+            None,
+            Some(&test_docs),
+        ).expect("New export succeeds");
+
+        let new_path = PathBuf::from(res.backup_file_path.unwrap());
+        assert_ne!(new_path, prior_file);
+        assert_eq!(fs::read(&prior_file).unwrap(), b"prior_backup_content", "Prior backup must not be modified or deleted");
 
         let _ = fs::remove_dir_all(&temp_dir);
     }

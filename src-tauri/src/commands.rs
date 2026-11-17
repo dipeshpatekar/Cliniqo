@@ -2603,22 +2603,26 @@ pub async fn start_catalogue_sync(
 
 #[tauri::command]
 pub fn export_encrypted_backup(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     clinic_id: String,
     passphrase: Option<String>,
     destination_path: Option<String>,
 ) -> Result<crate::db::backup::BackupExportResult, String> {
+    use tauri::Manager;
     let _session = state
         .session_mgr
         .validate_session(Some(&clinic_id))
         .map_err(|e| e.to_string())?;
 
+    let docs_dir = app.path().document_dir().ok();
     let dest = destination_path.as_deref().map(std::path::Path::new);
-    crate::db::backup::BackupManager::export_backup(
+    crate::db::backup::BackupManager::export_backup_with_documents_dir(
         &state.db,
         &clinic_id,
         passphrase.as_deref(),
         dest,
+        docs_dir.as_deref(),
     )
     .map_err(|e| e.to_string())
 }

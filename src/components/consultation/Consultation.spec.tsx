@@ -117,12 +117,12 @@ describe("Consultation Components & UX", () => {
       expect(html).toContain("Finalize prescription")
       // Check Adv. terminology
       expect(html).toContain("Adv.")
-      expect(html).toContain("Adv. date")
+      expect(html).toContain("Follow up date")
       expect(html).toContain("Adv. instructions")
       // Check Medical background on consultation
       expect(html).toContain("Medical background")
       expect(html).toContain("Known allergies")
-      expect(html).toContain("Medical conditions")
+      expect(html).toContain("Medical History")
     })
 
     it("recognizes non-allergy entries as No Known Allergies and unknown entries as Unknown", () => {
@@ -981,7 +981,7 @@ describe("Consultation Components & UX", () => {
       expect(html).not.toMatch(/Diagnosis\s*<span[^>]*class="[^"]*required[^"]*"/)
     })
 
-    it("supports empty Chief complaints and Diagnosis in PrescriptionPreview", () => {
+    it("supports empty Chief complaints and Diagnosis in PrescriptionPreview by hiding them", () => {
       const rawHtml = renderToString(
         <PrescriptionPreview
           go={() => {}}
@@ -1003,8 +1003,10 @@ describe("Consultation Components & UX", () => {
       )
       const html = rawHtml.replace(/<!-- -->/g, "")
 
-      expect(html).toContain("No chief complaint entered.")
-      expect(html).toContain("No diagnosis entered.")
+      expect(html).not.toContain("No chief complaint entered.")
+      expect(html).not.toContain("No diagnosis entered.")
+      expect(html).not.toContain("CHIEF COMPLAINTS")
+      expect(html).not.toContain("DIAGNOSIS")
     })
 
     it("renders formulation dropdown with formulation ID and focuses formulation first on every row", () => {

@@ -189,11 +189,31 @@ export function PatientForm({
       const customEvent = e as CustomEvent<{ action: string }>
       if (customEvent.detail?.action === "save-and-start-consultation") {
         performSave(true)
+      } else if (
+        customEvent.detail?.action === "save-draft" ||
+        customEvent.detail?.action === "save-patient"
+      ) {
+        performSave(false)
       }
     }
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (
+        (e.ctrlKey || e.metaKey) &&
+        (e.key === "s" || e.key === "S") &&
+        !e.shiftKey
+      ) {
+        e.preventDefault()
+        e.stopPropagation()
+        performSave(false)
+      }
+    }
+
     window.addEventListener("cliniqo-shortcut", handleShortcut)
+    window.addEventListener("keydown", handleKeyDown)
     return () => {
       window.removeEventListener("cliniqo-shortcut", handleShortcut)
+      window.removeEventListener("keydown", handleKeyDown)
     }
   }, [
     name,

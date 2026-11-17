@@ -121,17 +121,135 @@ export const defaultPatientFormFieldPreferences: PatientFormFieldPreferences = {
   showAddress: true,
 }
 
-export const loadPatientFormFieldPreferences =
-  (): PatientFormFieldPreferences => {
-    try {
-      const saved = JSON.parse(
-        window.localStorage.getItem("cliniqo-patient-form-preferences") || "{}",
-      )
-      return { ...defaultPatientFormFieldPreferences, ...saved }
-    } catch {
-      return defaultPatientFormFieldPreferences
-    }
+export const loadPatientFormFieldPreferences = (
+  clinicId?: string,
+): PatientFormFieldPreferences => {
+  if (typeof window === "undefined" || !window.localStorage) {
+    return { ...defaultPatientFormFieldPreferences }
   }
+  try {
+    const scopedKey = clinicId
+      ? `cliniqo-patient-form-preferences_${clinicId}`
+      : "cliniqo-patient-form-preferences"
+    const raw =
+      window.localStorage.getItem(scopedKey) ||
+      window.localStorage.getItem("cliniqo-patient-form-preferences")
+    if (raw) {
+      const saved = JSON.parse(raw)
+      return {
+        showDob:
+          typeof saved.showDob === "boolean"
+            ? saved.showDob
+            : defaultPatientFormFieldPreferences.showDob,
+        showPhone:
+          typeof saved.showPhone === "boolean"
+            ? saved.showPhone
+            : defaultPatientFormFieldPreferences.showPhone,
+        showAlternatePhone:
+          typeof saved.showAlternatePhone === "boolean"
+            ? saved.showAlternatePhone
+            : defaultPatientFormFieldPreferences.showAlternatePhone,
+        showAddress:
+          typeof saved.showAddress === "boolean"
+            ? saved.showAddress
+            : defaultPatientFormFieldPreferences.showAddress,
+      }
+    }
+  } catch {}
+  return { ...defaultPatientFormFieldPreferences }
+}
+
+export const savePatientFormFieldPreferences = (
+  prefs: PatientFormFieldPreferences,
+  clinicId?: string,
+): void => {
+  if (typeof window === "undefined" || !window.localStorage) return
+  try {
+    const raw = JSON.stringify(prefs)
+    window.localStorage.setItem("cliniqo-patient-form-preferences", raw)
+    if (clinicId) {
+      window.localStorage.setItem(
+        `cliniqo-patient-form-preferences_${clinicId}`,
+        raw,
+      )
+    }
+  } catch {}
+}
+
+export type PrescriptionLayoutPreferences = {
+  bannerVisible: boolean
+  showClinicLogo: boolean
+  showClinicEmail: boolean
+  showAllergyWarning: boolean
+  bannerImage: { src: string; name: string } | null
+  signatureImage: { src: string; name: string } | null
+}
+
+export const defaultPrescriptionLayoutPreferences: PrescriptionLayoutPreferences = {
+  bannerVisible: true,
+  showClinicLogo: true,
+  showClinicEmail: true,
+  showAllergyWarning: true,
+  bannerImage: null,
+  signatureImage: null,
+}
+
+export const loadPrescriptionLayoutPreferences = (
+  clinicId?: string,
+): PrescriptionLayoutPreferences => {
+  if (typeof window === "undefined" || !window.localStorage) {
+    return { ...defaultPrescriptionLayoutPreferences }
+  }
+  try {
+    const scopedKey = clinicId
+      ? `cliniqo-prescription-layout-preferences_${clinicId}`
+      : "cliniqo-prescription-layout-preferences"
+    const raw =
+      window.localStorage.getItem(scopedKey) ||
+      window.localStorage.getItem("cliniqo-prescription-layout-preferences")
+    if (raw) {
+      const saved = JSON.parse(raw)
+      return {
+        bannerVisible:
+          typeof saved.bannerVisible === "boolean"
+            ? saved.bannerVisible
+            : defaultPrescriptionLayoutPreferences.bannerVisible,
+        showClinicLogo:
+          typeof saved.showClinicLogo === "boolean"
+            ? saved.showClinicLogo
+            : defaultPrescriptionLayoutPreferences.showClinicLogo,
+        showClinicEmail:
+          typeof saved.showClinicEmail === "boolean"
+            ? saved.showClinicEmail
+            : defaultPrescriptionLayoutPreferences.showClinicEmail,
+        showAllergyWarning:
+          typeof saved.showAllergyWarning === "boolean"
+            ? saved.showAllergyWarning
+            : defaultPrescriptionLayoutPreferences.showAllergyWarning,
+        bannerImage: saved.bannerImage ?? null,
+        signatureImage: saved.signatureImage ?? null,
+      }
+    }
+  } catch {}
+  return { ...defaultPrescriptionLayoutPreferences }
+}
+
+export const savePrescriptionLayoutPreferences = (
+  prefs: PrescriptionLayoutPreferences,
+  clinicId?: string,
+): void => {
+  if (typeof window === "undefined" || !window.localStorage) return
+  try {
+    const raw = JSON.stringify(prefs)
+    window.localStorage.setItem("cliniqo-prescription-layout-preferences", raw)
+    if (clinicId) {
+      window.localStorage.setItem(
+        `cliniqo-prescription-layout-preferences_${clinicId}`,
+        raw,
+      )
+    }
+  } catch {}
+}
 
 export type BillItem = {
   id: number
@@ -158,6 +276,73 @@ export type BillLayoutPreferences = {
   showClinicEmail: boolean
   showSignature: boolean
   showPaymentNote: boolean
+}
+
+export const defaultBillLayoutPreferences: BillLayoutPreferences = {
+  showBanner: true,
+  showClinicLogo: true,
+  showClinicEmail: true,
+  showSignature: true,
+  showPaymentNote: true,
+}
+
+export const loadBillLayoutPreferences = (
+  clinicId?: string,
+): BillLayoutPreferences => {
+  if (typeof window === "undefined" || !window.localStorage) {
+    return { ...defaultBillLayoutPreferences }
+  }
+  try {
+    const scopedKey = clinicId
+      ? `cliniqo-bill-layout-preferences_${clinicId}`
+      : "cliniqo-bill-layout-preferences"
+    const raw =
+      window.localStorage.getItem(scopedKey) ||
+      window.localStorage.getItem("cliniqo-bill-layout-preferences")
+    if (raw) {
+      const saved = JSON.parse(raw)
+      return {
+        showBanner:
+          typeof saved.showBanner === "boolean"
+            ? saved.showBanner
+            : defaultBillLayoutPreferences.showBanner,
+        showClinicLogo:
+          typeof saved.showClinicLogo === "boolean"
+            ? saved.showClinicLogo
+            : defaultBillLayoutPreferences.showClinicLogo,
+        showClinicEmail:
+          typeof saved.showClinicEmail === "boolean"
+            ? saved.showClinicEmail
+            : defaultBillLayoutPreferences.showClinicEmail,
+        showSignature:
+          typeof saved.showSignature === "boolean"
+            ? saved.showSignature
+            : defaultBillLayoutPreferences.showSignature,
+        showPaymentNote:
+          typeof saved.showPaymentNote === "boolean"
+            ? saved.showPaymentNote
+            : defaultBillLayoutPreferences.showPaymentNote,
+      }
+    }
+  } catch {}
+  return { ...defaultBillLayoutPreferences }
+}
+
+export const saveBillLayoutPreferences = (
+  prefs: BillLayoutPreferences,
+  clinicId?: string,
+): void => {
+  if (typeof window === "undefined" || !window.localStorage) return
+  try {
+    const raw = JSON.stringify(prefs)
+    window.localStorage.setItem("cliniqo-bill-layout-preferences", raw)
+    if (clinicId) {
+      window.localStorage.setItem(
+        `cliniqo-bill-layout-preferences_${clinicId}`,
+        raw,
+      )
+    }
+  } catch {}
 }
 
 export type ClinicalLibraryCategory =

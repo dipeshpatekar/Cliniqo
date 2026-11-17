@@ -25,7 +25,7 @@ import {
   type Medicine,
 } from "../../types"
 import { cn } from "../../utils/cn"
-import { analyzeAllergies } from "../../utils/allergy"
+import { getGenuineAllergies } from "../../utils/allergy"
 import { Button, IconButton, Modal } from "../common"
 import { AppHeader } from "../layout"
 import {
@@ -363,80 +363,128 @@ export function PrescriptionPreview({
             )}
           </div>
 
+          {/* Patient Info Row: PATIENT NAME · AGE · GENDER | PATIENT ID | RX NO. | DATE */}
           <section className="rx-patient">
             <div>
-              <span>Patient</span>
-              <strong>{patient.name}</strong>
-              <small>
-                {formatPatientAgeGender(patient.age, patient.gender, "years")}
-              </small>
+              <span>PATIENT NAME · AGE · GENDER</span>
+              <strong>
+                {patient.name}
+                {formatPatientAgeGender(patient.age, patient.gender, "yrs") &&
+                formatPatientAgeGender(patient.age, patient.gender, "yrs") !== "— · —"
+                  ? ` (${formatPatientAgeGender(patient.age, patient.gender, "yrs")})`
+                  : ""}
+              </strong>
             </div>
             <div>
-              <span>Patient ID</span>
+              <span>PATIENT ID</span>
               <strong>{getPublicPatientId(patient)}</strong>
             </div>
-            {prescriptionRecord && (
-              <div>
-                <span>Rx No. & Revision</span>
-                <strong>
-                  {prescriptionRecord.prescription_number} (
-                  {prescriptionRecord.revision_number > 1
-                    ? `Rev ${prescriptionRecord.revision_number}`
-                    : "Original"}
-                  )
-                </strong>
-                <small>{prescriptionRecord.status}</small>
-              </div>
-            )}
             <div>
-              <span>Date</span>
+              <span>RX NO.</span>
+              <strong>
+                {prescriptionRecord
+                  ? prescriptionRecord.revision_number > 1
+                    ? `${prescriptionRecord.prescription_number} (Rev ${prescriptionRecord.revision_number})`
+                    : prescriptionRecord.prescription_number
+                  : "RX-PREVIEW"}
+              </strong>
+            </div>
+            <div>
+              <span>DATE</span>
               <strong>
                 {formatPrescriptionDateWithTime(data.date, data.time)}
               </strong>
             </div>
           </section>
 
-          <section className="rx-vitals">
-            <span className="rx-section-label">Vitals</span>
-            <div>
-              <span>Blood pressure</span>
-              <strong>
-                {vitals.systolic && vitals.diastolic
-                  ? `${vitals.systolic}/${vitals.diastolic} mmHg`
-                  : "—"}
-              </strong>
-            </div>
-            <div>
-              <span>Heart rate</span>
-              <strong>
-                {vitals.heartRate ? `${vitals.heartRate} bpm` : "—"}
-              </strong>
-            </div>
-            <div>
-              <span>SpO₂</span>
-              <strong>{vitals.spo2 ? `${vitals.spo2}%` : "—"}</strong>
-            </div>
-            <div>
-              <span>Temperature</span>
-              <strong>
-                {vitals.temperature ? `${vitals.temperature} °F` : "—"}
-              </strong>
-            </div>
-            <div>
-              <span>Height</span>
-              <strong>{vitals.height ? `${vitals.height} cm` : "—"}</strong>
-            </div>
-            <div>
-              <span>Weight</span>
-              <strong>{vitals.weight ? `${vitals.weight} kg` : "—"}</strong>
-            </div>
-          </section>
+          {/* Vitals Row (no section heading; hidden completely if all empty) */}
+          {Boolean(
+            (vitals.systolic && vitals.diastolic) ||
+              vitals.heartRate ||
+              vitals.spo2 ||
+              vitals.temperature ||
+              vitals.height ||
+              vitals.weight,
+          ) && (
+            <section className="rx-vitals">
+              <div>
+                <span>BLOOD PRESSURE</span>
+                <strong>
+                  {vitals.systolic && vitals.diastolic
+                    ? `${vitals.systolic}/${vitals.diastolic} mmHg`
+                    : "—"}
+                </strong>
+              </div>
+              <div>
+                <span>HEART RATE</span>
+                <strong>
+                  {vitals.heartRate ? `${vitals.heartRate} bpm` : "—"}
+                </strong>
+              </div>
+              <div>
+                <span>SPO₂</span>
+                <strong>{vitals.spo2 ? `${vitals.spo2}%` : "—"}</strong>
+              </div>
+              <div>
+                <span>TEMPERATURE</span>
+                <strong>
+                  {vitals.temperature ? `${vitals.temperature} °F` : "—"}
+                </strong>
+              </div>
+              <div>
+                <span>HEIGHT</span>
+                <strong>{vitals.height ? `${vitals.height} cm` : "—"}</strong>
+              </div>
+              <div>
+                <span>WEIGHT</span>
+                <strong>{vitals.weight ? `${vitals.weight} kg` : "—"}</strong>
+              </div>
+            </section>
+          )}
 
-          <section className="rx-diagnosis">
-            <span>Diagnosis</span>
-            <p>{data.diagnosis || "No diagnosis entered."}</p>
-          </section>
+          {/* Clinical Information Row (Chief Complaints, Medical History, Diagnosis; dynamic visibility) */}
+          {(() => {
+            const chiefComplaintText = data.chiefComplaint?.trim()
+              ? `${data.chiefComplaint.trim()}${data.symptomDuration?.trim() ? ` · Duration: ${data.symptomDuration.trim()}` : ""}`
+              : null
+            const medicalHistoryList = (data.conditions || []).filter(
+              (c) => c && c.trim(),
+            )
+            const medicalHistoryText =
+              medicalHistoryList.length > 0
+                ? medicalHistoryList.join(", ")
+                : patient.medical_conditions?.trim() || null
+            const diagnosisText = data.diagnosis?.trim() || null
 
+            if (!chiefComplaintText && !medicalHistoryText && !diagnosisText) {
+              return null
+            }
+
+            return (
+              <section className="rx-clinical-info">
+                {chiefComplaintText && (
+                  <div className="rx-clinical-item">
+                    <span>CHIEF COMPLAINTS</span>
+                    <p>{chiefComplaintText}</p>
+                  </div>
+                )}
+                {medicalHistoryText && (
+                  <div className="rx-clinical-item">
+                    <span>MEDICAL HISTORY</span>
+                    <p>{medicalHistoryText}</p>
+                  </div>
+                )}
+                {diagnosisText && (
+                  <div className="rx-clinical-item">
+                    <span>DIAGNOSIS</span>
+                    <p>{diagnosisText}</p>
+                  </div>
+                )}
+              </section>
+            )
+          })()}
+
+          {/* Medicines Table (℞ symbol, columns: MEDICINE | DOSE & FREQUENCY | INSTRUCTIONS | DURATION) */}
           <section
             className={cn(
               "rx-medicines",
@@ -447,10 +495,10 @@ export function PrescriptionPreview({
             <table>
               <thead>
                 <tr>
-                  <th>Medicine</th>
-                  <th>Dose & frequency</th>
-                  <th>Duration</th>
-                  <th>Instructions</th>
+                  <th>MEDICINE</th>
+                  <th>DOSE & FREQUENCY</th>
+                  <th>INSTRUCTIONS</th>
+                  <th>DURATION</th>
                 </tr>
               </thead>
               <tbody>
@@ -484,27 +532,13 @@ export function PrescriptionPreview({
                   data.medicines.map((medicine) => (
                     <tr key={medicine.id}>
                       <td>
-                        <strong>{medicine.name || "Unnamed medicine"}</strong>
-                        <br />
-                        <span>
-                          {[
-                            medicine.formulation,
-                            medicine.strength,
-                            medicine.releaseType &&
-                            medicine.releaseType !== "IMMEDIATE_RELEASE"
-                              ? medicine.releaseType
-                                  .replace("_RELEASE", "")
-                                  .replace("GASTRO_RESISTANT", "EC")
-                                  .replace("_", " ")
-                              : null,
-                            medicine.activeIngredient &&
-                            medicine.activeIngredient !== medicine.name
-                              ? `(${medicine.activeIngredient})`
-                              : null,
-                          ]
-                            .filter(Boolean)
-                            .join(" · ")}
-                        </span>
+                        <strong className="rx-med-name">
+                          {medicine.formulation ? `${medicine.formulation} · ` : ""}
+                          {medicine.name || "Unnamed medicine"}
+                        </strong>
+                        {medicine.strength && (
+                          <span className="rx-med-strength">{medicine.strength}</span>
+                        )}
                       </td>
                       <td>
                         {[
@@ -517,12 +551,12 @@ export function PrescriptionPreview({
                           .filter(Boolean)
                           .join(" · ") || "—"}
                       </td>
-                      <td>{medicine.duration || "—"}</td>
                       <td>
                         {[medicine.route, medicine.food, medicine.directions]
                           .filter(Boolean)
                           .join(" · ") || "—"}
                       </td>
+                      <td>{medicine.duration || "—"}</td>
                     </tr>
                   ))
                 ) : (
@@ -542,57 +576,46 @@ export function PrescriptionPreview({
             </table>
           </section>
 
-          <section className="rx-instructions">
-            <h3>Clinical summary</h3>
-            <p>
-              {data.chiefComplaint || "No chief complaint entered."}
-              {data.symptomDuration
-                ? ` · Duration: ${data.symptomDuration}`
-                : ""}
-            </p>
-            <div>
-              <strong>Adv.</strong>
-              <span>
-                {[
-                  formatDateDDMMYYYY(data.followUpDate),
-                  data.followUpInstructions,
-                ]
-                  .filter(Boolean)
-                  .join(" · ") || "No advice entered."}
-              </span>
-            </div>
-          </section>
-
+          {/* Footer: Allergy & Follow-up (left) | Doctor's signature & Page (right) */}
           <footer className="rx-footer">
-            <div className={cn(!showAllergyWarning && "rx-content-hidden")}>
-              {(() => {
-                const allergyAnalysis = analyzeAllergies(patient.allergies)
-                return allergyAnalysis.hasGenuineAllergies ? (
-                  <>
-                    <span>Allergy alert</span>
-                    <strong>{allergyAnalysis.displayLabel}</strong>
-                  </>
-                ) : (
-                  <>
-                    <span>Allergies</span>
-                    <strong>{allergyAnalysis.displayLabel}</strong>
-                  </>
+            <div className="rx-footer-left">
+              {showAllergyWarning && (() => {
+                const genuine = getGenuineAllergies(patient.allergies)
+                if (genuine.length === 0) return null
+                return (
+                  <div className="rx-allergy">
+                    <span className="rx-allergy-label" aria-label="Allergy alert">
+                      ALLERGY
+                    </span>
+                    <strong className="rx-allergy-val">{genuine.join(", ")}</strong>
+                  </div>
                 )
               })()}
-            </div>
-            <div className="signature">
-              {signatureImage && (
-                <img
-                  src={signatureImage.src}
-                  alt={`${doctorProfile?.full_name || desktopSession?.doctor_name || "Doctor"}’s signature`}
-                />
+              {(data.followUpDate || data.followUpInstructions) && (
+                <div className="rx-follow-up">
+                  <span>
+                    follow up : {formatDateDDMMYYYY(data.followUpDate) || "N/A"} · adv :{" "}
+                    {data.followUpInstructions || "N/A"}
+                  </span>
+                </div>
               )}
-              <span>Doctor’s signature</span>
-              <strong>
-                {doctorProfile?.full_name ||
-                  desktopSession?.doctor_name ||
-                  "Doctor"}
-              </strong>
+            </div>
+            <div className="rx-footer-right">
+              <div className="signature">
+                {signatureImage && (
+                  <img
+                    src={signatureImage.src}
+                    alt={`${doctorProfile?.full_name || desktopSession?.doctor_name || "Doctor"}’s signature`}
+                  />
+                )}
+                <span>Doctor’s signature</span>
+                <strong>
+                  {doctorProfile?.full_name ||
+                    desktopSession?.doctor_name ||
+                    "Doctor"}
+                </strong>
+              </div>
+              <div className="rx-page-number">1/1</div>
             </div>
           </footer>
         </article>

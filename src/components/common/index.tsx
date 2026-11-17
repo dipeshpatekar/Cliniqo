@@ -489,7 +489,7 @@ export function Modal({
   description?: string
   onClose: () => void
   children: ReactNode
-  width?: "small" | "medium"
+  width?: "small" | "medium" | "large" | "wide"
 }) {
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -506,7 +506,12 @@ export function Modal({
       onMouseDown={(event) => event.target === event.currentTarget && onClose()}
     >
       <section
-        className={cn("modal", width === "small" && "modal-small")}
+        className={cn(
+          "modal",
+          width === "small" && "modal-small",
+          width === "large" && "modal-large",
+          width === "wide" && "modal-wide",
+        )}
         role="dialog"
         aria-modal="true"
         aria-labelledby="modal-title"

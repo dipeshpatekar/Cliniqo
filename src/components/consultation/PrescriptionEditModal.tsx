@@ -127,9 +127,9 @@ export function PrescriptionEditModal({
           : `Please confirm the changes for Revision ${currentRevisionNumber + 1}. Previous revisions remain unchanged.`
       }
       onClose={onClose}
-      width="medium"
+      width="large"
     >
-      <div className="space-y-4 max-h-[75vh] overflow-y-auto px-1">
+      <div className="space-y-4 max-h-[75vh] overflow-y-auto px-4 py-3">
         {error && (
           <div
             className="p-3 bg-red-50 dark:bg-red-950/40 border border-red-300 dark:border-red-800 text-red-700 dark:text-red-300 rounded-lg text-sm flex items-start gap-2"
@@ -151,71 +151,78 @@ export function PrescriptionEditModal({
               </Button>
             </div>
 
-            <div className="space-y-3">
+            <div className="space-y-3.5">
               {medicines.map((medicine, idx) => {
                 const doseConfig = getDoseConfig(medicine.formulation)
                 const validation = validationResults[idx]
                 return (
                   <div
                     key={medicine.id}
-                    className={`p-3 rounded-lg border ${
+                    className={`p-3.5 rounded-xl border ${
                       validation.valid
-                        ? "border-slate-200 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-900/50"
+                        ? "border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900/60"
                         : "border-amber-300 dark:border-amber-800 bg-amber-50/30 dark:bg-amber-950/20"
-                    } space-y-2.5`}
+                    } shadow-xs space-y-3`}
                   >
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="text-xs font-bold text-slate-500 uppercase tracking-wider">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-semibold text-slate-400 dark:text-slate-500">
                         #{idx + 1}
                       </span>
                       <IconButton
                         label={`Remove medicine ${idx + 1}`}
                         onClick={() => removeRow(medicine.id)}
                         disabled={medicines.length <= 1}
+                        className="text-red-400 hover:text-red-600 dark:text-red-400 dark:hover:text-red-300 p-1"
                       >
-                        <Trash2 size={16} className="text-red-500 hover:text-red-700" />
+                        <Trash2 size={16} />
                       </IconButton>
                     </div>
 
-                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-                      <Field label="Formulation *">
-                        <SelectInput
-                          value={medicine.formulation}
-                          onChange={(e) =>
-                            handleFormulationChange(medicine.id, e.target.value)
-                          }
-                        >
-                          <option value="">Select</option>
-                          {(clinicalLibrary?.Formulations || defaultClinicalLibrary.Formulations).map((f) => (
-                            <option key={f} value={f}>
-                              {f}
-                            </option>
-                          ))}
-                        </SelectInput>
-                      </Field>
+                    <div className="grid grid-cols-1 sm:grid-cols-12 gap-3">
+                      <div className="sm:col-span-4">
+                        <Field label="Formulation *">
+                          <SelectInput
+                            value={medicine.formulation}
+                            onChange={(e) =>
+                              handleFormulationChange(medicine.id, e.target.value)
+                            }
+                          >
+                            <option value="">Select</option>
+                            {(clinicalLibrary?.Formulations || defaultClinicalLibrary.Formulations).map((f) => (
+                              <option key={f} value={f}>
+                                {f}
+                              </option>
+                            ))}
+                          </SelectInput>
+                        </Field>
+                      </div>
 
-                      <Field label="Medicine Name *">
-                        <TextInput
-                          value={medicine.name}
-                          onChange={(e) =>
-                            updateRow(medicine.id, "name", e.target.value)
-                          }
-                          placeholder="e.g. Paracetamol"
-                        />
-                      </Field>
+                      <div className="sm:col-span-5">
+                        <Field label="Medicine Name *">
+                          <TextInput
+                            value={medicine.name}
+                            onChange={(e) =>
+                              updateRow(medicine.id, "name", e.target.value)
+                            }
+                            placeholder="e.g. Paracetamol"
+                          />
+                        </Field>
+                      </div>
 
-                      <Field label="Strength *">
-                        <TextInput
-                          value={medicine.strength}
-                          onChange={(e) =>
-                            updateRow(medicine.id, "strength", e.target.value)
-                          }
-                          placeholder="e.g. 500 mg"
-                        />
-                      </Field>
+                      <div className="sm:col-span-3">
+                        <Field label="Strength *">
+                          <TextInput
+                            value={medicine.strength}
+                            onChange={(e) =>
+                              updateRow(medicine.id, "strength", e.target.value)
+                            }
+                            placeholder="e.g. 500 mg"
+                          />
+                        </Field>
+                      </div>
                     </div>
 
-                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
                       <Field label={`Dose (${doseConfig.unit || "unit"}) *`}>
                         <TextInput
                           value={medicine.dose}
@@ -234,10 +241,10 @@ export function PrescriptionEditModal({
                           }
                         >
                           <option value="">Select</option>
-                          <option value="Once daily">Once daily (OD)</option>
-                          <option value="Twice daily">Twice daily (BD)</option>
-                          <option value="Three times daily">Three times daily (TDS)</option>
-                          <option value="Four times daily">Four times daily (QID)</option>
+                          <option value="Once daily">Once daily</option>
+                          <option value="Twice daily">Twice daily</option>
+                          <option value="Three times daily">Three times</option>
+                          <option value="Four times daily">Four times</option>
                           <option value="As needed">As needed (SOS)</option>
                         </SelectInput>
                       </Field>
@@ -306,6 +313,12 @@ export function PrescriptionEditModal({
               })}
             </div>
 
+            <div className="flex justify-center pt-1">
+              <Button size="sm" variant="secondary" icon={Plus} onClick={addRow}>
+                Add medicine
+              </Button>
+            </div>
+
             <div className="pt-2">
               <Field
                 label="Reason for revision (Required, min 5 characters) *"
@@ -320,7 +333,7 @@ export function PrescriptionEditModal({
               </Field>
             </div>
 
-            <div className="flex justify-end gap-2 pt-3 border-t border-slate-200 dark:border-slate-800">
+            <div className="flex justify-end items-center gap-3 pt-3 border-t border-slate-200 dark:border-slate-800">
               <Button variant="ghost" onClick={onClose}>
                 Cancel
               </Button>

@@ -30,6 +30,9 @@ import {
   topicalFormulations,
   medicineOptions,
   complaintOptions,
+  loadCustomChiefComplaints,
+  getChiefComplaintOptions,
+  addCustomChiefComplaint,
   symptomDurationOptions,
   diagnosisOptions,
   formatPatientAgeGender,
@@ -86,6 +89,8 @@ export interface ConsultationProps {
     allergies: string[],
     conditions: string[],
   ) => void
+  customChiefComplaints?: string[]
+  onAddCustomChiefComplaint?: (complaint: string) => void
 }
 
 export function Consultation({
@@ -100,6 +105,8 @@ export function Consultation({
   desktopSession,
   onFinalized,
   onUpdatePatientMedicalInfo,
+  customChiefComplaints,
+  onAddCustomChiefComplaint,
 }: ConsultationProps) {
   const [saved, setSaved] = useState(false)
   const [hasAttemptedSubmit, setHasAttemptedSubmit] = useState(false)
@@ -114,6 +121,32 @@ export function Consultation({
   const [isOfflineSearchActive, setIsOfflineSearchActive] = useState(false)
   const [catalogueSyncStatus, setCatalogueSyncStatus] =
     useState<CatalogueSyncStatus | null>(null)
+
+  const clinicId = desktopSession?.clinic_id
+  const [internalCustomComplaints, setInternalCustomComplaints] =
+    useState<string[]>(() =>
+      customChiefComplaints !== undefined
+        ? customChiefComplaints
+        : loadCustomChiefComplaints(clinicId),
+    )
+
+  useEffect(() => {
+    if (customChiefComplaints !== undefined) {
+      setInternalCustomComplaints(customChiefComplaints)
+    } else {
+      setInternalCustomComplaints(loadCustomChiefComplaints(clinicId))
+    }
+  }, [clinicId, customChiefComplaints])
+
+  const effectiveCustomComplaints =
+    customChiefComplaints !== undefined
+      ? customChiefComplaints
+      : internalCustomComplaints
+
+  const mergedComplaintOptions = useMemo(
+    () => getChiefComplaintOptions(effectiveCustomComplaints),
+    [effectiveCustomComplaints],
+  )
 
   const initialAllergies = useMemo(
     () =>
@@ -630,6 +663,16 @@ export function Consultation({
               .then((items) => setLocalFormulary(items))
               .catch(() => {})
           }
+
+          // Auto-save valid custom chief complaints to dropdown suggestions
+          if (data.chiefComplaint?.trim()) {
+            const updated = addCustomChiefComplaint(
+              data.chiefComplaint,
+              desktopSession.clinic_id,
+            )
+            setInternalCustomComplaints(updated)
+            onAddCustomChiefComplaint?.(data.chiefComplaint.trim())
+          }
         }
         onFinalized?.(consultationId, finalizedTimestamp)
         go("preview")
@@ -647,6 +690,15 @@ export function Consultation({
         setIsFinalizing(false)
       }
     } else {
+      // Auto-save valid custom chief complaints to dropdown suggestions in web/preview
+      if (data.chiefComplaint?.trim()) {
+        const updated = addCustomChiefComplaint(
+          data.chiefComplaint,
+          desktopSession?.clinic_id,
+        )
+        setInternalCustomComplaints(updated)
+        onAddCustomChiefComplaint?.(data.chiefComplaint.trim())
+      }
       onFinalized?.(null, finalizedTimestamp)
       go("preview")
     }
@@ -944,7 +996,7 @@ export function Consultation({
                 <SearchableOptionSelect
                   id="chief-complaint"
                   value={data.chiefComplaint}
-                  options={complaintOptions}
+                  options={mergedComplaintOptions}
                   onChange={(value) => updateData({ chiefComplaint: value })}
                   placeholder="Select or search a common complaint"
                   ariaLabel="Search and select chief complaint"

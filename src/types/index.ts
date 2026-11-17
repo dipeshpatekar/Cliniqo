@@ -1111,6 +1111,105 @@ export const complaintOptions = [
   "Follow-up / review",
 ]
 
+export const DEFAULT_COMPLAINT_OPTIONS: readonly string[] = complaintOptions
+
+export const loadCustomChiefComplaints = (clinicId?: string): string[] => {
+  if (typeof window === "undefined" || !window.localStorage) {
+    return []
+  }
+  try {
+    const scopedKey = clinicId
+      ? `cliniqo-custom-chief-complaints_${clinicId}`
+      : "cliniqo-custom-chief-complaints"
+    const raw = window.localStorage.getItem(scopedKey)
+    if (raw) {
+      const parsed = JSON.parse(raw)
+      if (Array.isArray(parsed)) {
+        return parsed.filter(
+          (item): item is string =>
+            typeof item === "string" && item.trim().length > 0,
+        )
+      }
+    }
+  } catch {}
+  return []
+}
+
+export const saveCustomChiefComplaints = (
+  customList: string[],
+  clinicId?: string,
+): void => {
+  if (typeof window === "undefined" || !window.localStorage) return
+  try {
+    const scopedKey = clinicId
+      ? `cliniqo-custom-chief-complaints_${clinicId}`
+      : "cliniqo-custom-chief-complaints"
+    const cleaned: string[] = []
+    const seen = new Set<string>()
+    for (const c of customList) {
+      if (typeof c !== "string") continue
+      const trimmed = c.trim()
+      const lower = trimmed.toLowerCase()
+      if (trimmed && !seen.has(lower)) {
+        seen.add(lower)
+        cleaned.push(trimmed)
+      }
+    }
+    const raw = JSON.stringify(cleaned)
+    window.localStorage.setItem(scopedKey, raw)
+  } catch {}
+}
+
+export const getChiefComplaintOptions = (
+  customComplaints: string[] = [],
+): string[] => {
+  const result = [...complaintOptions]
+  const existingSet = new Set(
+    complaintOptions.map((c) => c.trim().toLowerCase()),
+  )
+
+  for (const custom of customComplaints) {
+    if (typeof custom !== "string") continue
+    const trimmed = custom.trim()
+    if (!trimmed) continue
+    const lower = trimmed.toLowerCase()
+    if (!existingSet.has(lower)) {
+      existingSet.add(lower)
+      result.push(trimmed)
+    }
+  }
+  return result
+}
+
+export const addCustomChiefComplaint = (
+  complaint: string,
+  clinicId?: string,
+): string[] => {
+  if (typeof complaint !== "string") {
+    return loadCustomChiefComplaints(clinicId)
+  }
+  const trimmed = complaint.trim()
+  if (!trimmed) {
+    return loadCustomChiefComplaints(clinicId)
+  }
+
+  const existingCustom = loadCustomChiefComplaints(clinicId)
+  const isDefault = complaintOptions.some(
+    (opt) => opt.trim().toLowerCase() === trimmed.toLowerCase(),
+  )
+  const isAlreadyCustom = existingCustom.some(
+    (c) => c.trim().toLowerCase() === trimmed.toLowerCase(),
+  )
+
+  if (!isDefault && !isAlreadyCustom) {
+    const updated = [...existingCustom, trimmed]
+    saveCustomChiefComplaints(updated, clinicId)
+    return updated
+  }
+
+  return existingCustom
+}
+
 export const symptomDurationOptions = [
   "Less than 24 hours",
   "1–3 days",

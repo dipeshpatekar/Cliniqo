@@ -38,6 +38,10 @@ import {
   initialPatients,
   formatSequentialPatientId,
   parseSequentialPatientId,
+  loadCustomChiefComplaints,
+  saveCustomChiefComplaints,
+  addCustomChiefComplaint,
+  complaintOptions,
 } from "./types"
 import { cn } from "./utils/cn"
 
@@ -317,6 +321,17 @@ export default function App({
     useState<PatientFormFieldPreferences>(() =>
       loadPatientFormFieldPreferences(),
     )
+  const [customChiefComplaints, setCustomChiefComplaints] = useState<string[]>(
+    () => loadCustomChiefComplaints(desktopSession?.clinic_id),
+  )
+
+  const handleAddCustomChiefComplaint = (complaint: string) => {
+    const updated = addCustomChiefComplaint(
+      complaint,
+      desktopSession?.clinic_id,
+    )
+    setCustomChiefComplaints(updated)
+  }
 
   useEffect(() => {
     if (!desktopSession?.clinic_id) return
@@ -335,6 +350,8 @@ export default function App({
 
     const clinicPatientFormPrefs = loadPatientFormFieldPreferences(clinicId)
     setPatientFormFieldPreferences(clinicPatientFormPrefs)
+
+    setCustomChiefComplaints(loadCustomChiefComplaints(clinicId))
   }, [desktopSession?.clinic_id])
 
   useEffect(() => {
@@ -713,6 +730,40 @@ export default function App({
     }
   }
 
+  const loadAndMergeChiefComplaints = async (clinicId: string) => {
+    if (!isTauriDesktop()) return
+    try {
+      const consultations = await getLocalConsultations(clinicId)
+      if (Array.isArray(consultations) && consultations.length > 0) {
+        let changed = false
+        const currentCustom = loadCustomChiefComplaints(clinicId)
+        const currentSet = new Set([
+          ...complaintOptions.map((c) => c.trim().toLowerCase()),
+          ...currentCustom.map((c) => c.trim().toLowerCase()),
+        ])
+        const toAdd: string[] = []
+        for (const c of consultations) {
+          const comp = c.chief_complaint?.trim()
+          if (comp && !currentSet.has(comp.toLowerCase())) {
+            currentSet.add(comp.toLowerCase())
+            toAdd.push(comp)
+            changed = true
+          }
+        }
+        if (changed) {
+          const merged = [...currentCustom, ...toAdd]
+          saveCustomChiefComplaints(merged, clinicId)
+          setCustomChiefComplaints(merged)
+        }
+      }
+    } catch (err) {
+      console.warn(
+        "[Cliniqo Desktop] Failed to load local chief complaints:",
+        err,
+      )
+    }
+  }
+
   // Desktop session bootstrap: check active in-memory session or restore via DPAPI refresh token
   useEffect(() => {
     if (!isTauriDesktop()) return
@@ -745,6 +796,7 @@ export default function App({
           curr === "login" || curr === "register" ? "dashboard" : curr,
         )
         loadAndMergeLocalFormulary(restored.session.clinic_id).catch(() => {})
+        loadAndMergeChiefComplaints(restored.session.clinic_id).catch(() => {})
         startCatalogueSync().catch(() => {})
       } else {
         // Incomplete onboarding: restored refresh token valid, but 0 clinics -> resume setup!
@@ -789,6 +841,7 @@ export default function App({
                 curr === "login" || curr === "register" ? "dashboard" : curr,
               )
               loadAndMergeLocalFormulary(active.clinic_id).catch(() => {})
+              loadAndMergeChiefComplaints(active.clinic_id).catch(() => {})
               startCatalogueSync().catch(() => {})
             } else {
               // Incomplete onboarding: session established but clinic not created yet
@@ -1420,6 +1473,7 @@ export default function App({
       )
     }
     loadAndMergeLocalFormulary(session.clinic_id).catch(() => {})
+    loadAndMergeChiefComplaints(session.clinic_id).catch(() => {})
     startCatalogueSync().catch(() => {})
     go("dashboard", session)
   }
@@ -1908,7 +1962,12 @@ export default function App({
         onAddMedicine={addMedicineDefinition}
         desktopSession={desktopSession}
         onUpdatePatientMedicalInfo={updatePatientMedicalInfo}
+        customChiefComplaints={customChiefComplaints}
+        onAddCustomChiefComplaint={handleAddCustomChiefComplaint}
         onFinalized={(_consultationId, finalizedTimestamp) => {
+          if (consultationData.chiefComplaint?.trim()) {
+            handleAddCustomChiefComplaint(consultationData.chiefComplaint)
+          }
           const visitTimestamp = finalizedTimestamp || new Date().toISOString()
           setSelectedPatient((prev) => ({
             ...prev,

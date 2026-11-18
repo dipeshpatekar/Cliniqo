@@ -6424,15 +6424,26 @@ tbody tr:active {
   margin: 0;
 }
 
-/* Prescription Patient Name Value: exactly 10% larger than Age & Gender (13.2px * 1.1 = 14.52px) */
-.rx-patient-name-val {
-  font-size: 14.52px !important;
+/* Prescription Patient Information Row: Separated Name & Demographics */
+.prescription-paper .rx-patient-demographics,
+.prescription-paper .rx-patient-age-gender {
+  font-size: 13.2px !important;
   font-weight: 600 !important;
   font-family: inherit !important;
+  font-style: normal !important;
+  color: #0f172a !important;
+  text-transform: none !important;
 }
 
+.prescription-paper .rx-patient-name,
 .prescription-paper .rx-patient-name-val {
+  font-size: 14.52px !important; /* exactly 10% larger than age/gender 13.2px (13.2 * 1.1 = 14.52px) */
+  font-weight: 600 !important;
+  font-family: inherit !important;
+  font-style: normal !important;
+  color: #0f172a !important;
   text-transform: uppercase !important;
+  letter-spacing: 0.2px;
 }
 
 .bill-patient-name .rx-patient-name-val {
@@ -8668,15 +8679,26 @@ body {
     margin: 0 !important;
   }
 
-  /* Prescription Patient Name Value: exactly 10% larger than Age & Gender (13.2px * 1.1 = 14.52px) in print / PDF */
-  .rx-patient-name-val {
-    font-size: 14.52px !important;
+  /* Prescription Patient Information Row in print / PDF: Separated Name & Demographics */
+  .prescription-paper .rx-patient-demographics,
+  .prescription-paper .rx-patient-age-gender {
+    font-size: 13.2px !important;
     font-weight: 600 !important;
     font-family: inherit !important;
+    font-style: normal !important;
+    color: #0f172a !important;
+    text-transform: none !important;
   }
 
+  .prescription-paper .rx-patient-name,
   .prescription-paper .rx-patient-name-val {
+    font-size: 14.52px !important; /* exactly 10% larger than age/gender 13.2px (13.2 * 1.1 = 14.52px) */
+    font-weight: 600 !important;
+    font-family: inherit !important;
+    font-style: normal !important;
+    color: #0f172a !important;
     text-transform: uppercase !important;
+    letter-spacing: 0.2px !important;
   }
 
   .bill-patient-name .rx-patient-name-val {

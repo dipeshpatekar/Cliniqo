@@ -415,12 +415,16 @@ export function PrescriptionPreview({
           <section className="rx-patient">
             <div>
               <span>PATIENT NAME · AGE · GENDER</span>
-              <strong>
-                <span className="rx-patient-name-val">{patient.name}</span>
+              <strong className="rx-patient-info-val">
+                <span className="rx-patient-name rx-patient-name-val">
+                  {patient.name ? patient.name.toUpperCase() : ""}
+                </span>
                 {formatPatientAgeGender(patient.age, patient.gender, "yrs", patient.ageMonths) &&
-                formatPatientAgeGender(patient.age, patient.gender, "yrs", patient.ageMonths) !== "— · —"
-                  ? ` (${formatPatientAgeGender(patient.age, patient.gender, "yrs", patient.ageMonths)})`
-                  : ""}
+                formatPatientAgeGender(patient.age, patient.gender, "yrs", patient.ageMonths) !== "— · —" && (
+                  <span className="rx-patient-demographics rx-patient-age-gender">
+                    {" "}({formatPatientAgeGender(patient.age, patient.gender, "yrs", patient.ageMonths)})
+                  </span>
+                )}
               </strong>
             </div>
             <div>

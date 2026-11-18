@@ -170,7 +170,7 @@ describe("Prescription History Viewing and Revision Workflow", () => {
     )
 
     // Patient info
-    expect(html).toContain("Aarav Sharma")
+    expect(html).toContain("AARAV SHARMA")
     // Prescription number & Revision badge
     expect(html).toContain("RX-2026-0001")
     expect(html).toContain("Original")

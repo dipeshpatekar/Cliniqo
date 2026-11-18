@@ -124,7 +124,7 @@ describe("Doctor and Clinic Profile Global Live Synchronization", () => {
     expect(html).toContain("Prescription preview")
     expect(html).toContain("Dr. Initial Name")
     expect(html).toContain("Doctor’s signature")
-    expect(html).toContain("Aarav Sharma")
+    expect(html).toContain("AARAV SHARMA")
   })
 
   it("renders BillPreview with invoice details and doctor name", () => {

@@ -367,10 +367,11 @@ describe("CLINIQUO — Prescription Editor, Clinical Library & UI Enhancements (
         />,
       )
 
-      // Patient name value is wrapped with rx-patient-name-val (which has font-size: 14.52px, 1.1x of 13.2px, uppercase in CSS)
-      expect(html).toContain('<span class="rx-patient-name-val">krishna</span>')
-      // Demographics remain in original formatting at base font-size
-      expect(html).toContain("(21 yrs · Female)")
+      // Patient name value is separated into .rx-patient-name and in UPPERCASE (font-size: 14.52px, 1.1x of 13.2px)
+      expect(html).toContain('<span class="rx-patient-name rx-patient-name-val">KRISHNA</span>')
+      // Demographics are separated into .rx-patient-demographics with original formatting at base font-size
+      expect(html).toContain('class="rx-patient-demographics rx-patient-age-gender"')
+      expect(html).toContain("21 yrs · Female")
       // Patient ID remains unchanged
       expect(html).toContain("<strong>AAA-0007</strong>")
     })

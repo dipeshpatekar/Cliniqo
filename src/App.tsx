@@ -106,7 +106,11 @@ import {
   type ViewingHistoricalPrescriptionState,
 } from "./routing/prescriptionRouting"
 
-export type { PrescriptionPreviewReturnPage, BillPreviewReturnPage, ViewingHistoricalPrescriptionState }
+export type {
+  PrescriptionPreviewReturnPage,
+  BillPreviewReturnPage,
+  ViewingHistoricalPrescriptionState,
+}
 
 export interface AppProps {
   initialPage?: Page
@@ -218,7 +222,9 @@ export default function App({
   const [page, setPage] = useState<Page>(initialPage)
   const [desktopSession, setDesktopSession] =
     useState<DesktopSessionContext | null>(initialDesktopSession)
-  const desktopSessionRef = useRef<DesktopSessionContext | null>(initialDesktopSession)
+  const desktopSessionRef = useRef<DesktopSessionContext | null>(
+    initialDesktopSession,
+  )
   const [onboardingDoctor, setOnboardingDoctor] = useState<{
     id: string
     email: string
@@ -244,21 +250,22 @@ export default function App({
   const [patientRecords, setPatientRecords] = useState<Patient[]>(() =>
     isTauriDesktop() ? [] : initialPatients,
   )
-  const [selectedPatient, setSelectedPatient] = useState<Patient>(() =>
-    initialSelectedPatient ||
-    (isTauriDesktop()
-      ? {
-          id: "PT-INIT",
-          name: "No patient selected",
-          initials: "--",
-          age: 0,
-          gender: "Other",
-          phone: "",
-          lastVisit: "No visits yet",
-          allergies: [],
-          conditions: [],
-        }
-      : initialPatients[0]),
+  const [selectedPatient, setSelectedPatient] = useState<Patient>(
+    () =>
+      initialSelectedPatient ||
+      (isTauriDesktop()
+        ? {
+            id: "PT-INIT",
+            name: "No patient selected",
+            initials: "--",
+            age: 0,
+            gender: "Other",
+            phone: "",
+            lastVisit: "No visits yet",
+            allergies: [],
+            conditions: [],
+          }
+        : initialPatients[0]),
   )
   const [editingPatient, setEditingPatient] = useState<Patient | null>(null)
   const [newPatientFormKey, setNewPatientFormKey] = useState(0)
@@ -267,12 +274,20 @@ export default function App({
   const [settingsKey, setSettingsKey] = useState(0)
   const [settingsInitialTab, setSettingsInitialTab] = useState("Doctor profile")
   const [prescriptionPreviewReturnPage, setPrescriptionPreviewReturnPage] =
-    useState<PrescriptionPreviewReturnPage>(initialPrescriptionPreviewReturnPage)
+    useState<PrescriptionPreviewReturnPage>(
+      initialPrescriptionPreviewReturnPage,
+    )
   const [viewingHistoricalPrescription, setViewingHistoricalPrescription] =
-    useState<ViewingHistoricalPrescriptionState | null>(initialViewingHistoricalPrescription)
-  const [patientProfileTab, setPatientProfileTab] = useState(initialPatientProfileTab)
-  const [activeConsultationPrescriptionRecord, setActiveConsultationPrescriptionRecord] =
-    useState<LocalPrescriptionRecord | null>(null)
+    useState<ViewingHistoricalPrescriptionState | null>(
+      initialViewingHistoricalPrescription,
+    )
+  const [patientProfileTab, setPatientProfileTab] = useState(
+    initialPatientProfileTab,
+  )
+  const [
+    activeConsultationPrescriptionRecord,
+    setActiveConsultationPrescriptionRecord,
+  ] = useState<LocalPrescriptionRecord | null>(null)
   const [billPreviewReturnPage, setBillPreviewReturnPage] =
     useState<"bill-form" | "settings" | "patient-profile">("bill-form")
   const [vitals, setVitals] = useState<Vitals>({
@@ -347,10 +362,7 @@ export default function App({
   }
 
   const handleAddCustomDiagnosis = (diagnosis: string) => {
-    const updated = addCustomDiagnosis(
-      diagnosis,
-      desktopSession?.clinic_id,
-    )
+    const updated = addCustomDiagnosis(diagnosis, desktopSession?.clinic_id)
     setCustomDiagnoses(updated)
   }
 
@@ -359,8 +371,10 @@ export default function App({
     const clinicId = desktopSession.clinic_id
     const clinicRxPrefs = loadPrescriptionLayoutPreferences(clinicId)
     setPrescriptionBannerVisible(clinicRxPrefs.bannerVisible)
-    if (clinicRxPrefs.bannerImage) setPrescriptionBannerImage(clinicRxPrefs.bannerImage)
-    if (clinicRxPrefs.signatureImage) setDoctorSignatureImage(clinicRxPrefs.signatureImage)
+    if (clinicRxPrefs.bannerImage)
+      setPrescriptionBannerImage(clinicRxPrefs.bannerImage)
+    if (clinicRxPrefs.signatureImage)
+      setDoctorSignatureImage(clinicRxPrefs.signatureImage)
     setShowClinicLogo(clinicRxPrefs.showClinicLogo)
     setShowClinicEmail(clinicRxPrefs.showClinicEmail)
     setShowAllergyWarning(clinicRxPrefs.showAllergyWarning)
@@ -430,7 +444,7 @@ export default function App({
   }
 
   const updatePrescriptionBannerImage = (
-    image: { src: string; name: string } | null,
+    image: { src: string name: string } | null,
   ) => {
     setPrescriptionBannerImage(image)
     savePrescriptionLayoutPreferences(
@@ -448,7 +462,7 @@ export default function App({
   }
 
   const updateDoctorSignatureImage = (
-    image: { src: string; name: string } | null,
+    image: { src: string name: string } | null,
   ) => {
     setDoctorSignatureImage(image)
     savePrescriptionLayoutPreferences(
@@ -992,7 +1006,10 @@ export default function App({
 
     if (next === "preview") {
       const { returnPage, clearHistorical, settingsTab } =
-        resolvePrescriptionPreviewNavigation(page, prescriptionPreviewReturnPage)
+        resolvePrescriptionPreviewNavigation(
+          page,
+          prescriptionPreviewReturnPage,
+        )
       setPrescriptionPreviewReturnPage(returnPage)
       if (settingsTab) {
         setSettingsInitialTab(settingsTab)
@@ -1005,8 +1022,10 @@ export default function App({
       setViewingHistoricalPrescription(null)
     }
     if (next === "bill-preview") {
-      const { returnPage, settingsTab } =
-        resolveBillPreviewNavigation(page, billPreviewReturnPage)
+      const { returnPage, settingsTab } = resolveBillPreviewNavigation(
+        page,
+        billPreviewReturnPage,
+      )
       setBillPreviewReturnPage(returnPage)
       if (settingsTab) {
         setSettingsInitialTab(settingsTab)
@@ -1408,14 +1427,20 @@ export default function App({
 
     const currentYear = new Date().getFullYear()
     let invoiceNumber = `INV-${currentYear}-0001`
-    const activeClinicId = desktopSession?.clinic_id || (desktopSession as any)?.clinicId || "clinic_local"
+    const activeClinicId =
+      desktopSession?.clinic_id ||
+      (desktopSession as any)?.clinicId ||
+      "clinic_local"
     try {
       const nextNum = await getNextInvoiceNumber(activeClinicId)
       if (nextNum && nextNum.trim().length > 0) {
         invoiceNumber = nextNum
       }
     } catch (err) {
-      console.warn("Failed to get next invoice number, fallback to default", err)
+      console.warn(
+        "Failed to get next invoice number, fallback to default",
+        err,
+      )
     }
 
     setBillData({
@@ -1476,8 +1501,7 @@ export default function App({
               : nextPatientId)
 
         const notesObj = {
-          registeredAt:
-            patient.registeredAt || getIndiaDateTimeLocalString(),
+          registeredAt: patient.registeredAt || getIndiaDateTimeLocalString(),
           alternatePhone: patient.alternatePhone,
           address: patient.address,
           ageMonths: patient.ageMonths !== undefined ? patient.ageMonths : 0,
@@ -1851,14 +1875,20 @@ export default function App({
         if (key === "p" && !e.shiftKey) {
           e.preventDefault()
           if (page === "consultation") {
-            go("preview")
-          } else if (page === "bill-form") {
+            dispatchShortcutEvent("consultation-ctrl-p")
+            return
+          }
+          if (page === "preview") {
+            dispatchShortcutEvent("print-prescription")
+            return
+          }
+          if (page === "bill-form") {
             if (billData.status === "FINALIZED") {
               go("bill-preview")
             }
-          } else {
-            window.print()
+            return
           }
+          window.print()
           return
         }
 

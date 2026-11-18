@@ -46,8 +46,8 @@ export interface PrescriptionPreviewProps {
   vitals: Vitals
   data: ConsultationData
   bannerVisible: boolean
-  bannerImage: { src: string; name: string } | null
-  signatureImage: { src: string; name: string } | null
+  bannerImage: { src: string name: string } | null
+  signatureImage: { src: string name: string } | null
   showClinicLogo: boolean
   showClinicEmail: boolean
   showAllergyWarning: boolean
@@ -145,6 +145,36 @@ export function PrescriptionPreview({
     }
   }
 
+  useEffect(() => {
+    const handleShortcut = (e: Event) => {
+      const customEvent = e as CustomEvent<{ action?: string }>
+      const { action } = customEvent.detail || {}
+      if (action === "print" || action === "print-prescription") {
+        handlePrint()
+      }
+    }
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (
+        (e.ctrlKey || e.metaKey) &&
+        e.key.toLowerCase() === "p" &&
+        !e.shiftKey
+      ) {
+        if (!e.defaultPrevented) {
+          e.preventDefault()
+          handlePrint()
+        }
+      }
+    }
+
+    window.addEventListener("cliniqo-shortcut", handleShortcut)
+    window.addEventListener("keydown", handleKeyDown)
+    return () => {
+      window.removeEventListener("cliniqo-shortcut", handleShortcut)
+      window.removeEventListener("keydown", handleKeyDown)
+    }
+  }, [])
+
   const send = () => {
     setDelivery("sending")
     window.setTimeout(() => setDelivery("queued"), 1000)
@@ -165,7 +195,11 @@ export function PrescriptionPreview({
             ? "Sample preview · Layout changes apply to all future prescriptions"
             : prescriptionRecord
               ? returnPage === "patient-profile"
-                ? `${prescriptionRecord.revision_number > 1 ? `Revision ${prescriptionRecord.revision_number}` : "Original"} · Finalized ${formatDateDDMMYYYY(prescriptionRecord.created_at)} · Read-only historical record`
+                ? `${
+                    prescriptionRecord.revision_number > 1
+                      ? `Revision ${prescriptionRecord.revision_number}`
+                      : "Original"
+                  } · Finalized ${formatDateDDMMYYYY(prescriptionRecord.created_at)} · Read-only historical record`
                 : `${prescriptionRecord.prescription_number} · Finalized ${formatDateDDMMYYYY(prescriptionRecord.created_at || new Date().toISOString())}`
               : "Local session preview · Not persisted"
         }
@@ -183,20 +217,23 @@ export function PrescriptionPreview({
         >
           <ArrowLeft size={18} />
         </IconButton>
-        {prescriptionRecord && prescriptionRecord.status === "ACTIVE" && onRevisePrescription && (
-          <Button
-            type="button"
-            variant="primary"
-            icon={Edit3}
-            onClick={() => setShowEditModal(true)}
-          >
-            Edit prescription
-          </Button>
-        )}
+        {prescriptionRecord &&
+          prescriptionRecord.status === "ACTIVE" &&
+          onRevisePrescription && (
+            <Button
+              type="button"
+              variant="primary"
+              icon={Edit3}
+              onClick={() => setShowEditModal(true)}
+            >
+              Edit prescription
+            </Button>
+          )}
         <Button
           type="button"
           variant="secondary"
           icon={Printer}
+          title="Print prescription (Ctrl+P)"
           onClick={handlePrint}
         >
           Print prescription
@@ -242,7 +279,10 @@ export function PrescriptionPreview({
               fontSize: "0.875rem",
             }}
           >
-            <AlertCircle size={18} style={{ flexShrink: 0, color: "#dc2626" }} />
+            <AlertCircle
+              size={18}
+              style={{ flexShrink: 0, color: "#dc2626" }}
+            />
             <div>
               <strong>Prescription Data Warning:</strong> {itemsError}
             </div>
@@ -419,12 +459,30 @@ export function PrescriptionPreview({
                 <span className="rx-patient-name rx-patient-name-val">
                   {patient.name ? patient.name.toUpperCase() : ""}
                 </span>
-                {formatPatientAgeGender(patient.age, patient.gender, "yrs", patient.ageMonths) &&
-                formatPatientAgeGender(patient.age, patient.gender, "yrs", patient.ageMonths) !== "— · —" && (
-                  <span className="rx-patient-demographics rx-patient-age-gender">
-                    {" "}({formatPatientAgeGender(patient.age, patient.gender, "yrs", patient.ageMonths)})
-                  </span>
-                )}
+                {formatPatientAgeGender(
+                  patient.age,
+                  patient.gender,
+                  "yrs",
+                  patient.ageMonths,
+                ) &&
+                  formatPatientAgeGender(
+                    patient.age,
+                    patient.gender,
+                    "yrs",
+                    patient.ageMonths,
+                  ) !== "— · —" && (
+                    <span className="rx-patient-demographics rx-patient-age-gender">
+                      {" "}
+                      (
+                      {formatPatientAgeGender(
+                        patient.age,
+                        patient.gender,
+                        "yrs",
+                        patient.ageMonths,
+                      )}
+                      )
+                    </span>
+                  )}
               </strong>
             </div>
             <div>
@@ -497,7 +555,11 @@ export function PrescriptionPreview({
           {/* Clinical Information Row (Chief Complaints, Medical History, Diagnosis; dynamic visibility) */}
           {(() => {
             const chiefComplaintText = data.chiefComplaint?.trim()
-              ? `${data.chiefComplaint.trim()}${data.symptomDuration?.trim() ? ` · Duration: ${data.symptomDuration.trim()}` : ""}`
+              ? `${data.chiefComplaint.trim()}${
+                  data.symptomDuration?.trim()
+                    ? ` · Duration: ${data.symptomDuration.trim()}`
+                    : ""
+                }`
               : null
             const medicalHistoryList = (data.conditions || []).filter(
               (c) => c && c.trim(),
@@ -585,11 +647,15 @@ export function PrescriptionPreview({
                     <tr key={medicine.id}>
                       <td>
                         <strong className="rx-med-name">
-                          {medicine.formulation ? `${medicine.formulation} · ` : ""}
+                          {medicine.formulation
+                            ? `${medicine.formulation} · `
+                            : ""}
                           {medicine.name || "Unnamed medicine"}
                         </strong>
                         {medicine.strength && (
-                          <span className="rx-med-strength">{medicine.strength}</span>
+                          <span className="rx-med-strength">
+                            {medicine.strength}
+                          </span>
                         )}
                       </td>
                       <td>
@@ -631,18 +697,24 @@ export function PrescriptionPreview({
           {/* Footer: Allergy & Follow-up (left) | Doctor's signature & Page (right) */}
           <footer className="rx-footer">
             <div className="rx-footer-left">
-              {showAllergyWarning && (() => {
-                const genuine = getGenuineAllergies(patient.allergies)
-                if (genuine.length === 0) return null
-                return (
-                  <div className="rx-allergy">
-                    <span className="rx-allergy-label" aria-label="Allergy alert">
-                      ALLERGY
-                    </span>
-                    <strong className="rx-allergy-val">{genuine.join(", ")}</strong>
-                  </div>
-                )
-              })()}
+              {showAllergyWarning &&
+                (() => {
+                  const genuine = getGenuineAllergies(patient.allergies)
+                  if (genuine.length === 0) return null
+                  return (
+                    <div className="rx-allergy">
+                      <span
+                        className="rx-allergy-label"
+                        aria-label="Allergy alert"
+                      >
+                        ALLERGY
+                      </span>
+                      <strong className="rx-allergy-val">
+                        {genuine.join(", ")}
+                      </strong>
+                    </div>
+                  )
+                })()}
               {(data.followUpDate || data.followUpInstructions) && (
                 <div className="rx-follow-up">
                   <strong className="rx-follow-up-label">follow up : </strong>

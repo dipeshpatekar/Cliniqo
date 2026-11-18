@@ -105,7 +105,7 @@ export interface ConsultationProps {
 export function Consultation({
   go,
   patient,
-  clinicalLibrary,
+  clinicalLibrary = defaultClinicalLibrary,
   vitals,
   onVitalsChange,
   data,
@@ -122,6 +122,7 @@ export function Consultation({
   const [saved, setSaved] = useState(false)
   const [hasAttemptedSubmit, setHasAttemptedSubmit] = useState(false)
   const [isFinalizing, setIsFinalizing] = useState(false)
+  const isFinalizingRef = useRef(false)
   const [finalizeError, setFinalizeError] = useState<string | null>(null)
   const [localFormulary, setLocalFormulary] =
     useState<LocalFormularyItemRecord[]>([])
@@ -175,9 +176,7 @@ export function Consultation({
   }, [clinicId, customDiagnoses])
 
   const effectiveCustomDiagnoses =
-    customDiagnoses !== undefined
-      ? customDiagnoses
-      : internalCustomDiagnoses
+    customDiagnoses !== undefined ? customDiagnoses : internalCustomDiagnoses
 
   const mergedDiagnosisOptions = useMemo(
     () => getDiagnosisOptions(effectiveCustomDiagnoses),
@@ -213,9 +212,17 @@ export function Consultation({
     if (patientIdRef.current !== patient.id) {
       patientIdRef.current = patient.id
       setAllergiesInput((data.allergies ?? patient.allergies ?? []).join(", "))
-      setConditionsInput((data.conditions ?? patient.conditions ?? []).join(", "))
+      setConditionsInput(
+        (data.conditions ?? patient.conditions ?? []).join(", "),
+      )
     }
-  }, [patient.id, data.allergies, data.conditions, patient.allergies, patient.conditions])
+  }, [
+    patient.id,
+    data.allergies,
+    data.conditions,
+    patient.allergies,
+    patient.conditions,
+  ])
 
   const handleAllergiesChange = (val: string) => {
     setAllergiesInput(val)
@@ -224,7 +231,10 @@ export function Consultation({
       .map((s) => s.trim())
       .filter(Boolean)
     updateData({ allergies: list })
-    onUpdatePatientMedicalInfo?.(list, data.conditions ?? patient.conditions ?? [])
+    onUpdatePatientMedicalInfo?.(
+      list,
+      data.conditions ?? patient.conditions ?? [],
+    )
   }
 
   const handleConditionsChange = (val: string) => {
@@ -234,7 +244,10 @@ export function Consultation({
       .map((s) => s.trim())
       .filter(Boolean)
     updateData({ conditions: list })
-    onUpdatePatientMedicalInfo?.(data.allergies ?? patient.allergies ?? [], list)
+    onUpdatePatientMedicalInfo?.(
+      data.allergies ?? patient.allergies ?? [],
+      list,
+    )
   }
 
   useEffect(() => {
@@ -488,8 +501,9 @@ export function Consultation({
     }
   }
 
+  const effectiveLibrary = clinicalLibrary || defaultClinicalLibrary
   const mergedDefinitions: ClinicalMedicineDefinition[] = useMemo(() => {
-    const list = [...clinicalLibrary.MedicineDefinitions]
+    const list = [...(effectiveLibrary?.MedicineDefinitions || [])]
     for (const item of localFormulary) {
       if (
         !list.some(
@@ -513,7 +527,7 @@ export function Consultation({
       }
     }
     return list
-  }, [clinicalLibrary.MedicineDefinitions, localFormulary])
+  }, [effectiveLibrary?.MedicineDefinitions, localFormulary])
 
   const updateData = (updates: Partial<ConsultationData>) =>
     onDataChange({ ...data, ...updates })
@@ -592,10 +606,7 @@ export function Consultation({
   const addMedicine = () => {
     const nextId = Math.max(...data.medicines.map((row) => row.id), 0) + 1
     updateData({
-      medicines: [
-        ...data.medicines,
-        emptyMedicine(nextId),
-      ],
+      medicines: [...data.medicines, emptyMedicine(nextId)],
     })
     window.setTimeout(() => {
       const el = document.getElementById(`formulation-${nextId}`)
@@ -609,6 +620,9 @@ export function Consultation({
     })
 
   const handleFinalize = async () => {
+    if (isFinalizingRef.current) return
+    isFinalizingRef.current = true
+    setIsFinalizing(true)
     setFinalizeError(null)
     const finalizedDate = new Date()
     const finalizedDateStr = finalizedDate.toISOString().slice(0, 10)
@@ -633,9 +647,8 @@ export function Consultation({
     }
     onDataChange(updatedData)
 
-    if (isTauriDesktop() && desktopSession?.clinic_id) {
-      setIsFinalizing(true)
-      try {
+    try {
+      if (isTauriDesktop() && desktopSession?.clinic_id) {
         const consultationId = await saveLocalConsultation({
           clinic_id: desktopSession.clinic_id,
           patient_id: patient.id,
@@ -685,7 +698,10 @@ export function Consultation({
 
           if (savedRxId) {
             try {
-              const rxList = await getLocalPrescriptions(desktopSession.clinic_id, patient.id)
+              const rxList = await getLocalPrescriptions(
+                desktopSession.clinic_id,
+                patient.id,
+              )
               const matched = rxList.find(
                 (r) => r.id === savedRxId || r.prescription_number === rxNumber,
               )
@@ -774,62 +790,71 @@ export function Consultation({
             onAddCustomDiagnosis?.(data.diagnosis.trim())
           }
         }
-        onFinalized?.(consultationId, finalizedTimestamp, savedRxRecord)
+        onFinalized?.(
+          consultationId,
+          combinedConsultationDate || finalizedTimestamp,
+          savedRxRecord,
+        )
         go("preview")
-      } catch (err: unknown) {
-        console.error(
-          "[Cliniqo Desktop] Failed to save consultation/prescription to SQLite:",
-          err,
-        )
-        setFinalizeError(
-          err instanceof Error
-            ? err.message
-            : "Failed to persist consultation to local encrypted storage. Your inputs are preserved.",
-        )
-      } finally {
-        setIsFinalizing(false)
-      }
-    } else {
-      // Auto-save valid custom chief complaints to dropdown suggestions in web/preview
-      if (data.chiefComplaint?.trim()) {
-        const updated = addCustomChiefComplaint(
-          data.chiefComplaint,
-          desktopSession?.clinic_id,
-        )
-        setInternalCustomComplaints(updated)
-        onAddCustomChiefComplaint?.(data.chiefComplaint.trim())
-      }
+      } else {
+        // Auto-save valid custom chief complaints to dropdown suggestions in web/preview
+        if (data.chiefComplaint?.trim()) {
+          const updated = addCustomChiefComplaint(
+            data.chiefComplaint,
+            desktopSession?.clinic_id,
+          )
+          setInternalCustomComplaints(updated)
+          onAddCustomChiefComplaint?.(data.chiefComplaint.trim())
+        }
 
-      // Auto-save valid custom diagnoses to dropdown suggestions in web/preview
-      if (data.diagnosis?.trim()) {
-        const updated = addCustomDiagnosis(
-          data.diagnosis,
-          desktopSession?.clinic_id,
+        // Auto-save valid custom diagnoses to dropdown suggestions in web/preview
+        if (data.diagnosis?.trim()) {
+          const updated = addCustomDiagnosis(
+            data.diagnosis,
+            desktopSession?.clinic_id,
+          )
+          setInternalCustomDiagnoses(updated)
+          onAddCustomDiagnosis?.(data.diagnosis.trim())
+        }
+        const rxNumber = `RX-${Date.now().toString().slice(-6)}`
+        const mockRxRecord: LocalPrescriptionRecord = {
+          id: `rx-browser-${Date.now()}`,
+          server_id: null,
+          clinic_id: desktopSession?.clinic_id || "browser-clinic",
+          consultation_id: `c-browser-${Date.now()}`,
+          patient_id: patient.id,
+          doctor_id: desktopSession?.doctor_id || "DOCTOR",
+          prescription_number: rxNumber,
+          revision_number: 1,
+          status: "ACTIVE",
+          items_json: JSON.stringify(data.medicines),
+          sync_status: "PENDING",
+          server_version: 0,
+          local_version: 1,
+          created_at: finalizedTimestamp,
+        }
+        updatedData.prescriptionNumber = rxNumber
+        onDataChange(updatedData)
+        onFinalized?.(
+          null,
+          combinedConsultationDate || finalizedTimestamp,
+          mockRxRecord,
         )
-        setInternalCustomDiagnoses(updated)
-        onAddCustomDiagnosis?.(data.diagnosis.trim())
+        go("preview")
       }
-      const rxNumber = `RX-${Date.now().toString().slice(-6)}`
-      const mockRxRecord: LocalPrescriptionRecord = {
-        id: `rx-browser-${Date.now()}`,
-        server_id: null,
-        clinic_id: desktopSession?.clinic_id || "browser-clinic",
-        consultation_id: `c-browser-${Date.now()}`,
-        patient_id: patient.id,
-        doctor_id: desktopSession?.doctor_id || "DOCTOR",
-        prescription_number: rxNumber,
-        revision_number: 1,
-        status: "ACTIVE",
-        items_json: JSON.stringify(data.medicines),
-        sync_status: "PENDING",
-        server_version: 0,
-        local_version: 1,
-        created_at: finalizedTimestamp,
-      }
-      updatedData.prescriptionNumber = rxNumber
-      onDataChange(updatedData)
-      onFinalized?.(null, finalizedTimestamp, mockRxRecord)
-      go("preview")
+    } catch (err: unknown) {
+      console.error(
+        "[Cliniqo Desktop] Failed to save consultation/prescription to SQLite:",
+        err,
+      )
+      setFinalizeError(
+        err instanceof Error
+          ? err.message
+          : "Failed to persist consultation to local encrypted storage. Your inputs are preserved.",
+      )
+    } finally {
+      isFinalizingRef.current = false
+      setIsFinalizing(false)
     }
   }
 
@@ -840,10 +865,17 @@ export function Consultation({
   }
 
   const handleTriggerFinalize = async () => {
+    if (isFinalizingRef.current || isFinalizing) return
     setHasAttemptedSubmit(true)
     if (!consultationComplete) return
     await handleFinalize()
   }
+
+  const handleTriggerFinalizeRef = useRef(handleTriggerFinalize)
+  handleTriggerFinalizeRef.current = handleTriggerFinalize
+
+  const handleSaveDraftRef = useRef(handleSaveDraft)
+  handleSaveDraftRef.current = handleSaveDraft
 
   useEffect(() => {
     const handleShortcut = (event: Event) => {
@@ -853,9 +885,13 @@ export function Consultation({
       }>
       const { action, direction } = customEvent.detail || {}
       if (action === "save-draft") {
-        handleSaveDraft()
-      } else if (action === "finalize-prescription") {
-        handleTriggerFinalize()
+        handleSaveDraftRef.current()
+      } else if (
+        action === "finalize-prescription" ||
+        action === "consultation-ctrl-p" ||
+        action === "print"
+      ) {
+        handleTriggerFinalizeRef.current()
       } else if (action === "add-medicine") {
         addMedicine()
       } else if (action === "focus-vitals") {
@@ -898,9 +934,7 @@ export function Consultation({
           targetIdx = currentIdx > 0 ? currentIdx - 1 : meds.length - 1
         } else {
           targetIdx =
-            currentIdx >= 0 && currentIdx < meds.length - 1
-              ? currentIdx + 1
-              : 0
+            currentIdx >= 0 && currentIdx < meds.length - 1 ? currentIdx + 1 : 0
         }
         const targetInput = document.getElementById(
           isOnFormulation
@@ -911,9 +945,24 @@ export function Consultation({
       }
     }
 
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (
+        (e.ctrlKey || e.metaKey) &&
+        e.key.toLowerCase() === "p" &&
+        !e.shiftKey
+      ) {
+        if (!e.defaultPrevented) {
+          e.preventDefault()
+          handleTriggerFinalizeRef.current()
+        }
+      }
+    }
+
     window.addEventListener("cliniqo-shortcut", handleShortcut)
+    window.addEventListener("keydown", handleKeyDown)
     return () => {
       window.removeEventListener("cliniqo-shortcut", handleShortcut)
+      window.removeEventListener("keydown", handleKeyDown)
     }
   }, [consultationComplete, data.medicines])
 
@@ -1003,7 +1052,8 @@ export function Consultation({
             <div className="patient-strip-identity">
               <strong className="patient-strip-name">{patient.name}</strong>
               <span className="patient-strip-details">
-                · {[
+                ·{" "}
+                {[
                   formatPatientAgeGender(
                     patient.age,
                     patient.gender,
@@ -1018,7 +1068,8 @@ export function Consultation({
             </div>
             {allergyAnalysis.hasGenuineAllergies && (
               <span className="patient-allergy danger">
-                <AlertCircle size={15} /> Allergy: {allergyAnalysis.displayLabel}
+                <AlertCircle size={15} /> Allergy:{" "}
+                {allergyAnalysis.displayLabel}
               </span>
             )}
             {allergyAnalysis.isNoKnownAllergies && (
@@ -1047,20 +1098,32 @@ export function Consultation({
                 </div>
               </div>
               <div className="flex flex-wrap sm:flex-nowrap items-center gap-4 grow justify-end">
-                <Field label="Consultation date" required className="w-full sm:w-auto min-w-[170px]">
+                <Field
+                  label="Consultation date"
+                  required
+                  className="w-full sm:w-auto min-w-[170px]"
+                >
                   <TextInput
                     type="date"
                     required
                     value={data.date}
-                    onChange={(event) => updateData({ date: event.target.value })}
+                    onChange={(event) =>
+                      updateData({ date: event.target.value })
+                    }
                   />
                 </Field>
-                <Field label="Consultation time" required className="w-full sm:w-auto min-w-[150px]">
+                <Field
+                  label="Consultation time"
+                  required
+                  className="w-full sm:w-auto min-w-[150px]"
+                >
                   <TextInput
                     type="time"
                     required
                     value={data.time}
-                    onChange={(event) => updateData({ time: event.target.value })}
+                    onChange={(event) =>
+                      updateData({ time: event.target.value })
+                    }
                   />
                 </Field>
               </div>
@@ -1195,28 +1258,31 @@ export function Consultation({
                     {allergyAnalysis.hasGenuineAllergies && (
                       <>
                         <AlertCircle size={13} />
-                        <span>Recorded allergy: {allergyAnalysis.displayLabel}</span>
+                        <span>
+                          Recorded allergy: {allergyAnalysis.displayLabel}
+                        </span>
                       </>
                     )}
                     {allergyAnalysis.isNoKnownAllergies && (
                       <>
                         <Check size={13} />
-                        <span>No Known Allergies (non-allergy entry recognized)</span>
+                        <span>
+                          No Known Allergies (non-allergy entry recognized)
+                        </span>
                       </>
                     )}
                     {allergyAnalysis.isUnknown && (
                       <>
                         <AlertCircle size={13} />
-                        <span>Unknown (status unconfirmed, not allergy-free)</span>
+                        <span>
+                          Unknown (status unconfirmed, not allergy-free)
+                        </span>
                       </>
                     )}
                   </div>
                 )}
               </Field>
-              <Field
-                label="Medical History"
-                hint="Optional, comma-separated"
-              >
+              <Field label="Medical History" hint="Optional, comma-separated">
                 <TextArea
                   value={conditionsInput}
                   onChange={(e) => handleConditionsChange(e.target.value)}
@@ -1250,7 +1316,9 @@ export function Consultation({
             {data.medicines.length === 0 ? (
               <div className="medicine-empty flex flex-col items-center justify-center py-6 text-center">
                 <Pill size={22} className="text-slate-400 mb-1" />
-                <p className="text-sm text-slate-500 mb-3">No medicines added</p>
+                <p className="text-sm text-slate-500 mb-3">
+                  No medicines added
+                </p>
                 <Button
                   size="sm"
                   variant="secondary"
@@ -1287,7 +1355,8 @@ export function Consultation({
                     ]),
                   ]
                   const availableFrequencies =
-                    clinicalLibrary.Frequencies && clinicalLibrary.Frequencies.length > 0
+                    clinicalLibrary.Frequencies &&
+                    clinicalLibrary.Frequencies.length > 0
                       ? clinicalLibrary.Frequencies
                       : defaultClinicalLibrary.Frequencies
                   const defaultBadgeMap: Record<string, string> = {
@@ -1297,11 +1366,12 @@ export function Consultation({
                     "Four times daily": "4",
                     "As needed": "5",
                   }
-                  const frequencyOptions: SearchOptionItem[] = availableFrequencies.map((freq, idx) => ({
-                    value: freq,
-                    label: freq,
-                    badge: defaultBadgeMap[freq] || String(idx + 1),
-                  }))
+                  const frequencyOptions: SearchOptionItem[] =
+                    availableFrequencies.map((freq, idx) => ({
+                      value: freq,
+                      label: freq,
+                      badge: defaultBadgeMap[freq] || String(idx + 1),
+                    }))
                   const validation = validateMedicineFormulation(medicine)
 
                   const rowSuggestions: SearchOptionItem[] = [
@@ -1332,44 +1402,45 @@ export function Consultation({
                         )
                       })
                       .map((cat) => {
-                      const isStock = cat.sourceProvenance === "LOCAL_INVENTORY"
-                      const cleanName =
-                        cat.productName || cat.brandName || cat.name
-                      const releaseBadge =
-                        cat.releaseType &&
-                        cat.releaseType !== "IMMEDIATE_RELEASE"
-                          ? cat.releaseType
-                              .replace("_RELEASE", "")
-                              .replace("GASTRO_RESISTANT", "EC")
-                              .replace("_", " ")
-                          : null
-                      const badgeText =
-                        cat.sourceProvenance === "CLINICAL_LIBRARY"
-                          ? "Clinic Library"
-                          : isStock
-                            ? "Pharmacy Stock"
-                            : releaseBadge ||
-                              (cat.isCombination ? "Combo" : cat.type)
-                      const subtitleParts = [
-                        cat.sourceProvenance === "CLINICAL_LIBRARY"
-                          ? "Custom Clinic Import"
-                          : null,
-                        isStock
-                          ? `Manufacturer: ${cat.manufacturer || "Unknown"}`
-                          : cat.manufacturer,
-                        isStock
-                          ? `In Stock: ${cat.rawStrengthSummary || ""}`
-                          : cat.productName || cat.genericName,
-                      ].filter(Boolean)
+                        const isStock =
+                          cat.sourceProvenance === "LOCAL_INVENTORY"
+                        const cleanName =
+                          cat.productName || cat.brandName || cat.name
+                        const releaseBadge =
+                          cat.releaseType &&
+                          cat.releaseType !== "IMMEDIATE_RELEASE"
+                            ? cat.releaseType
+                                .replace("_RELEASE", "")
+                                .replace("GASTRO_RESISTANT", "EC")
+                                .replace("_", " ")
+                            : null
+                        const badgeText =
+                          cat.sourceProvenance === "CLINICAL_LIBRARY"
+                            ? "Clinic Library"
+                            : isStock
+                              ? "Pharmacy Stock"
+                              : releaseBadge ||
+                                (cat.isCombination ? "Combo" : cat.type)
+                        const subtitleParts = [
+                          cat.sourceProvenance === "CLINICAL_LIBRARY"
+                            ? "Custom Clinic Import"
+                            : null,
+                          isStock
+                            ? `Manufacturer: ${cat.manufacturer || "Unknown"}`
+                            : cat.manufacturer,
+                          isStock
+                            ? `In Stock: ${cat.rawStrengthSummary || ""}`
+                            : cat.productName || cat.genericName,
+                        ].filter(Boolean)
 
-                      return {
-                        value: cleanName,
-                        label: isStock ? cat.name : cleanName,
-                        badge: badgeText || undefined,
-                        subtitle: subtitleParts.join(" • ") || undefined,
-                        meta: cat,
-                      }
-                    }),
+                        return {
+                          value: cleanName,
+                          label: isStock ? cat.name : cleanName,
+                          badge: badgeText || undefined,
+                          subtitle: subtitleParts.join(" • ") || undefined,
+                          meta: cat,
+                        }
+                      }),
                   ]
 
                   return (
@@ -1622,13 +1693,15 @@ export function Consultation({
                                   }
                                 >
                                   <option value="">Select</option>
-                                  {(
-                                    clinicalLibrary.FoodInstructions &&
-                                    clinicalLibrary.FoodInstructions.length > 0
-                                      ? clinicalLibrary.FoodInstructions
-                                      : defaultClinicalLibrary.FoodInstructions
+                                  {(clinicalLibrary.FoodInstructions &&
+                                  clinicalLibrary.FoodInstructions.length > 0
+                                    ? clinicalLibrary.FoodInstructions
+                                    : defaultClinicalLibrary.FoodInstructions
                                   ).map((instruction) => (
-                                    <option key={instruction} value={instruction}>
+                                    <option
+                                      key={instruction}
+                                      value={instruction}
+                                    >
                                       {instruction}
                                     </option>
                                   ))}

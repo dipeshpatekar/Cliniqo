@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect } from "react"
+import React, { useState, useMemo, useEffect, useRef } from "react"
 import {
   type Medicine,
   type ClinicalLibrary,
@@ -6,6 +6,7 @@ import {
   type ConsultationData,
   type Patient,
   type PrescriptionRevisionData,
+  type ClinicalMedicineDefinition,
   getDoseConfig,
   topicalFormulations,
   defaultClinicalLibrary,
@@ -25,6 +26,13 @@ import {
   getLocalFormulary,
   type LocalFormularyItemRecord,
   isTauriDesktop,
+  searchCatalogue,
+  getCatalogueStrengths,
+  getCatalogueSyncStatus,
+  type CatalogueSyncStatus,
+  type CatalogueItem,
+  mapStockUnitToFormulation,
+  type DesktopSessionContext,
 } from "../../desktop/desktop-bridge"
 import { validateMedicineFormulation } from "../../utils/billing"
 import {
@@ -34,6 +42,7 @@ import {
   TextInput,
   SelectInput,
   SearchableOptionSelect,
+  type SearchOptionItem,
   Modal,
   StatusPill,
 } from "../common"
@@ -65,6 +74,7 @@ export interface PrescriptionEditModalProps {
   customChiefComplaints?: string[]
   customDiagnoses?: string[]
   clinicId?: string
+  desktopSession?: DesktopSessionContext | null
   onSaveRevision: (
     revisionData: PrescriptionRevisionData | Medicine[],
     reasonForRevision?: string,
@@ -84,6 +94,7 @@ export function PrescriptionEditModal({
   customChiefComplaints,
   customDiagnoses,
   clinicId,
+  desktopSession,
   onSaveRevision,
 }: PrescriptionEditModalProps) {
   // --- SECTION A: Vitals State ---
@@ -163,6 +174,39 @@ export function PrescriptionEditModal({
   // --- SQLite Local Formulary Items (Desktop) ---
   const [localFormulary, setLocalFormulary] = useState<LocalFormularyItemRecord[]>([])
 
+  // --- Dynamic Catalogue Search & Autocomplete State ---
+  const [catalogueSuggestions, setCatalogueSuggestions] = useState<
+    Record<number, CatalogueItem[]>
+  >({})
+  const [catalogueStrengthsMap, setCatalogueStrengthsMap] = useState<
+    Record<number, string[]>
+  >({})
+  const [catalogueSyncStatus, setCatalogueSyncStatus] =
+    useState<CatalogueSyncStatus | null>(null)
+  const searchDebounceTimers = useRef<
+    Record<number, ReturnType<typeof setTimeout>>
+  >({})
+
+  useEffect(() => {
+    return () => {
+      Object.values(searchDebounceTimers.current).forEach((t) => clearTimeout(t))
+    }
+  }, [])
+
+  useEffect(() => {
+    let mounted = true
+    if (isTauriDesktop()) {
+      getCatalogueSyncStatus()
+        .then((status) => {
+          if (mounted && status) setCatalogueSyncStatus(status)
+        })
+        .catch(() => {})
+    }
+    return () => {
+      mounted = false
+    }
+  }, [])
+
   useEffect(() => {
     let mounted = true
     if (isTauriDesktop() && clinicId) {
@@ -179,6 +223,28 @@ export function PrescriptionEditModal({
     }
   }, [clinicId])
 
+  // Automatically lookup catalogue strengths for initial medicines on mount
+  useEffect(() => {
+    medicines.forEach((m) => {
+      if (m.name?.trim() && !catalogueStrengthsMap[m.id]) {
+        getCatalogueStrengths(
+          m.name.trim(),
+          desktopSession?.doctor_id,
+          m.formulation,
+        )
+          .then((res) => {
+            if (res.strengths && res.strengths.length > 0) {
+              setCatalogueStrengthsMap((prev) => ({
+                ...prev,
+                [m.id]: res.strengths || [],
+              }))
+            }
+          })
+          .catch(() => {})
+      }
+    })
+  }, [medicines.length])
+
   if (!isOpen) return null
 
   // --- Options & Suggestions (with Custom Clinical Library Values) ---
@@ -189,6 +255,48 @@ export function PrescriptionEditModal({
       defaultClinicalLibrary
     )
   }, [clinicalLibrary, clinicId])
+
+  // Unified definitions list combining clinical library and SQLite local formulary
+  const mergedDefinitions: ClinicalMedicineDefinition[] = useMemo(() => {
+    const list = [...(lib?.MedicineDefinitions || [])]
+    for (const item of localFormulary) {
+      if (
+        !list.some(
+          (existing) =>
+            existing.name.toLowerCase() === item.name.toLowerCase() &&
+            existing.formulation === item.formulation,
+        )
+      ) {
+        list.push({
+          id: item.id,
+          name: item.name,
+          formulation: item.formulation,
+          strength: item.strength || "",
+          activeIngredient: item.active_ingredient || undefined,
+          defaultDosage: item.default_dosage || undefined,
+          defaultRoute: item.default_route || undefined,
+          defaultFrequency: item.default_frequency || undefined,
+          defaultDuration: item.default_duration || undefined,
+          defaultInstructions: item.default_instructions || undefined,
+        })
+      }
+    }
+    for (const name of lib?.Medicines || []) {
+      if (
+        name &&
+        !list.some(
+          (existing) => existing.name.toLowerCase() === name.toLowerCase(),
+        )
+      ) {
+        list.push({
+          name,
+          formulation: "Tablet",
+          strength: "",
+        })
+      }
+    }
+    return list
+  }, [lib?.MedicineDefinitions, lib?.Medicines, localFormulary])
 
   // Backfill missing fields in medicines if matched with local formulary or definitions
   useEffect(() => {
@@ -385,7 +493,21 @@ export function PrescriptionEditModal({
   }
 
   const removeRow = (id: number) => {
+    if (searchDebounceTimers.current[id]) {
+      clearTimeout(searchDebounceTimers.current[id])
+      delete searchDebounceTimers.current[id]
+    }
     setMedicines(medicines.filter((m) => m.id !== id))
+    setCatalogueSuggestions((prev) => {
+      const copy = { ...prev }
+      delete copy[id]
+      return copy
+    })
+    setCatalogueStrengthsMap((prev) => {
+      const copy = { ...prev }
+      delete copy[id]
+      return copy
+    })
   }
 
   const updateRow = (id: number, key: keyof Medicine, value: string) => {
@@ -394,55 +516,173 @@ export function PrescriptionEditModal({
     )
   }
 
-  const handleMedicineNameChange = (id: number, name: string) => {
-    const trimmed = name.trim()
-    const def =
-      localFormulary.find(
-        (f) => f.name.toLowerCase() === trimmed.toLowerCase(),
-      ) ||
-      lib.MedicineDefinitions?.find(
-        (d) => d.name.toLowerCase() === trimmed.toLowerCase(),
+  const handleMedicineSearch = (
+    medicineId: number,
+    query: string,
+    formulation?: string,
+  ) => {
+    // 1. Immediately update medicine name in state for instant typing responsiveness
+    updateRow(medicineId, "name", query)
+
+    const trimmed = query.trim()
+    if (!trimmed) {
+      setCatalogueSuggestions((prev) => ({ ...prev, [medicineId]: [] }))
+      setCatalogueStrengthsMap((prev) => ({ ...prev, [medicineId]: [] }))
+      return
+    }
+
+    if (searchDebounceTimers.current[medicineId]) {
+      clearTimeout(searchDebounceTimers.current[medicineId])
+    }
+
+    searchDebounceTimers.current[medicineId] = setTimeout(() => {
+      // 2. Fetch catalogue suggestions (SQLite offline cache, stock items, or online catalogue)
+      searchCatalogue(trimmed, desktopSession?.access_token, 20, formulation)
+        .then((res) => {
+          setCatalogueSuggestions((prev) => ({
+            ...prev,
+            [medicineId]: res.items || [],
+          }))
+        })
+        .catch(() => {})
+
+      // 3. Automatic strength lookup
+      getCatalogueStrengths(trimmed, desktopSession?.doctor_id, formulation)
+        .then((res) => {
+          setCatalogueStrengthsMap((prev) => ({
+            ...prev,
+            [medicineId]: res.strengths || [],
+          }))
+          if (res.strengths && res.strengths.length === 1) {
+            updateRow(medicineId, "strength", res.strengths[0])
+          }
+        })
+        .catch(() => {})
+    }, 100)
+  }
+
+  const handleSelectMedicineOption = (
+    medicineId: number,
+    option: SearchOptionItem,
+    formulation?: string,
+  ) => {
+    const catItem = option.meta as CatalogueItem | undefined
+
+    if (catItem) {
+      const isStock = catItem.sourceProvenance === "LOCAL_INVENTORY"
+      const cleanName = catItem.productName || catItem.brandName || option.value
+      const resolvedFormulation =
+        formulation ||
+        (catItem.dosageForm
+          ? mapStockUnitToFormulation(catItem.dosageForm)
+          : "") ||
+        ""
+
+      const singleStrength = isStock
+        ? "" // Do not treat packaging unit (e.g. TAB) as chemical strength
+        : catItem.strengths && catItem.strengths.length === 1
+          ? catItem.rawStrengthSummary
+          : catItem.rawStrengthSummary || ""
+
+      const defaultDose =
+        resolvedFormulation === "Tablet"
+          ? "1 tablet"
+          : resolvedFormulation === "Capsule"
+            ? "1 capsule"
+            : resolvedFormulation === "Syrup"
+              ? "5 mL"
+              : ""
+
+      setMedicines((prev) =>
+        prev.map((row) => {
+          if (row.id !== medicineId) return row
+          return {
+            ...row,
+            name: cleanName,
+            formulation: resolvedFormulation || row.formulation || "Tablet",
+            strength: singleStrength || row.strength,
+            dose: row.dose || defaultDose,
+            activeIngredient: catItem.genericName || row.activeIngredient,
+            route:
+              catItem.route ||
+              row.route ||
+              (resolvedFormulation === "Injection" ? "" : "Oral"),
+            sourceIdentifier: catItem.sourceIdentifier,
+            sourceProvenance: catItem.sourceProvenance,
+            isCombination: catItem.isCombination,
+            isStrengthVerified: catItem.isStrengthVerified ?? true,
+            brandName: catItem.brandName || cleanName,
+            genericName: catItem.genericName,
+            productName: cleanName,
+            releaseType: catItem.releaseType,
+            manufacturer: catItem.manufacturer,
+            isCustom: false,
+          }
+        }),
       )
 
-    setMedicines((prev) =>
-      prev.map((row) => {
-        if (row.id !== id) return row
-        if (!def) return { ...row, name }
+      if (!isStock) {
+        getCatalogueStrengths(
+          cleanName,
+          desktopSession?.doctor_id,
+          resolvedFormulation || formulation,
+        )
+          .then((res) => {
+            setCatalogueStrengthsMap((prev) => ({
+              ...prev,
+              [medicineId]: res.strengths || [],
+            }))
+            if (res.strengths && res.strengths.length === 1) {
+              updateRow(medicineId, "strength", res.strengths[0])
+            }
+          })
+          .catch(() => {})
+      }
+    } else {
+      const def =
+        mergedDefinitions.find(
+          (item) =>
+            item.name.toLowerCase() === option.value.toLowerCase() &&
+            (!formulation || item.formulation === formulation),
+        ) ||
+        mergedDefinitions.find(
+          (item) => item.name.toLowerCase() === option.value.toLowerCase(),
+        )
 
-        const doseVal =
-          ("default_dosage" in def
-            ? def.default_dosage
-            : (def as any).defaultDosage) || ""
-        const freqVal =
-          ("default_frequency" in def
-            ? def.default_frequency
-            : (def as any).defaultFrequency) || ""
-        const durVal =
-          ("default_duration" in def
-            ? def.default_duration
-            : (def as any).defaultDuration) || ""
-        const dirVal =
-          ("default_instructions" in def
-            ? def.default_instructions
-            : (def as any).defaultInstructions) || ""
-        const routeVal =
-          ("default_route" in def
-            ? def.default_route
-            : (def as any).defaultRoute) || ""
-
-        return {
-          ...row,
-          name,
-          formulation: row.formulation || def.formulation || "Tablet",
-          strength: row.strength || def.strength || "",
-          dose: row.dose || doseVal || "",
-          frequency: row.frequency || freqVal || "",
-          duration: row.duration || durVal || "",
-          route: row.route || routeVal || "",
-          directions: row.directions || dirVal || "",
-        }
-      }),
-    )
+      if (def) {
+        setMedicines((prev) =>
+          prev.map((row) => {
+            if (row.id !== medicineId) return row
+            return {
+              ...row,
+              name: def.name,
+              formulation: row.formulation || def.formulation || "Tablet",
+              strength: row.strength || def.strength || "",
+              activeIngredient: row.activeIngredient || def.activeIngredient,
+              dose: row.dose || def.defaultDosage || "",
+              route: row.route || def.defaultRoute || "",
+              frequency: row.frequency || def.defaultFrequency || "",
+              duration: row.duration || def.defaultDuration || "",
+              directions: row.directions || def.defaultInstructions || "",
+              isCustom: false,
+            }
+          }),
+        )
+      } else {
+        setMedicines((prev) =>
+          prev.map((row) =>
+            row.id === medicineId
+              ? {
+                  ...row,
+                  name: option.value,
+                  isCustom: true,
+                  isStrengthVerified: false,
+                }
+              : row,
+          ),
+        )
+      }
+    }
   }
 
   const handleFormulationChange = (id: number, formulation: string) => {
@@ -459,6 +699,10 @@ export function PrescriptionEditModal({
         }
       }),
     )
+    const med = medicines.find((m) => m.id === id)
+    if (med?.name?.trim()) {
+      handleMedicineSearch(id, med.name, formulation)
+    }
   }
 
   const validationResults = medicines.map((m) => validateMedicineFormulation(m))
@@ -729,6 +973,86 @@ export function PrescriptionEditModal({
                 {medicines.map((medicine, idx) => {
                   const doseConfig = getDoseConfig(medicine.formulation)
                   const validation = validationResults[idx]
+
+                  const rowSuggestions: SearchOptionItem[] = [
+                    ...mergedDefinitions
+                      .filter(
+                        (item) =>
+                          !medicine.formulation ||
+                          item.formulation.trim().toLowerCase() ===
+                            medicine.formulation.trim().toLowerCase(),
+                      )
+                      .map((item) => ({
+                        value: item.name,
+                        label: item.name,
+                        badge: "Formulary",
+                        subtitle: item.activeIngredient,
+                      })),
+                    ...(catalogueSuggestions[medicine.id] || [])
+                      .filter((cat) => {
+                        if (!medicine.formulation) return true
+                        const mapped = cat.dosageForm
+                          ? mapStockUnitToFormulation(cat.dosageForm) ||
+                            cat.dosageForm
+                          : ""
+                        if (!mapped) return true
+                        return (
+                          mapped.trim().toLowerCase() ===
+                          medicine.formulation.trim().toLowerCase()
+                        )
+                      })
+                      .map((cat) => {
+                        const isStock =
+                          cat.sourceProvenance === "LOCAL_INVENTORY"
+                        const cleanName =
+                          cat.productName || cat.brandName || cat.name
+                        const releaseBadge =
+                          cat.releaseType &&
+                          cat.releaseType !== "IMMEDIATE_RELEASE"
+                            ? cat.releaseType
+                                .replace("_RELEASE", "")
+                                .replace("GASTRO_RESISTANT", "EC")
+                                .replace("_", " ")
+                            : null
+                        const badgeText =
+                          cat.sourceProvenance === "CLINICAL_LIBRARY"
+                            ? "Clinic Library"
+                            : isStock
+                              ? "Pharmacy Stock"
+                              : releaseBadge ||
+                                (cat.isCombination ? "Combo" : cat.type)
+                        const subtitleParts = [
+                          cat.sourceProvenance === "CLINICAL_LIBRARY"
+                            ? "Custom Clinic Import"
+                            : null,
+                          isStock
+                            ? `Manufacturer: ${cat.manufacturer || "Unknown"}`
+                            : cat.manufacturer,
+                          isStock
+                            ? `In Stock: ${cat.rawStrengthSummary || ""}`
+                            : cat.productName || cat.genericName,
+                        ].filter(Boolean)
+
+                        return {
+                          value: cleanName,
+                          label: isStock ? cat.name : cleanName,
+                          badge: badgeText || undefined,
+                          subtitle: subtitleParts.join(" • ") || undefined,
+                          meta: cat,
+                        }
+                      }),
+                  ]
+
+                  const rowStrengths = [
+                    ...new Set([
+                      ...(catalogueStrengthsMap[medicine.id] || []),
+                      ...mergedStrengths,
+                      ...(["Syrup", "Suspension"].includes(medicine.formulation)
+                        ? ["125 mg/5 mL", "250 mg/5 mL"]
+                        : []),
+                    ]),
+                  ]
+
                   return (
                     <div
                       key={medicine.id}
@@ -780,13 +1104,29 @@ export function PrescriptionEditModal({
                             <SearchableOptionSelect
                               id={`edit-med-name-${medicine.id}`}
                               value={medicine.name}
-                              options={mergedMedicineNames}
+                              options={rowSuggestions}
                               onChange={(val) =>
-                                handleMedicineNameChange(medicine.id, val)
+                                handleMedicineSearch(
+                                  medicine.id,
+                                  val,
+                                  medicine.formulation,
+                                )
                               }
-                              placeholder="e.g. Paracetamol"
-                              ariaLabel="Medicine name"
-                              emptyMessage="Type custom medicine name"
+                              onSelectOption={(option) =>
+                                handleSelectMedicineOption(
+                                  medicine.id,
+                                  option,
+                                  medicine.formulation,
+                                )
+                              }
+                              placeholder="Search medicine"
+                              ariaLabel="Search and select medicine"
+                              emptyMessage={
+                                catalogueSyncStatus?.status === "SYNCING" &&
+                                (catalogueSyncStatus.downloadedCount ?? 0) === 0
+                                  ? "Syncing medicine catalogue..."
+                                  : "Type custom medicine name"
+                              }
                             />
                           </Field>
                         </div>
@@ -796,7 +1136,7 @@ export function PrescriptionEditModal({
                             <SearchableOptionSelect
                               id={`edit-med-strength-${medicine.id}`}
                               value={medicine.strength}
-                              options={mergedStrengths}
+                              options={rowStrengths}
                               onChange={(val) =>
                                 updateRow(medicine.id, "strength", val)
                               }

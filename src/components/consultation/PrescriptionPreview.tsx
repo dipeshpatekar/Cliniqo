@@ -883,6 +883,7 @@ export function PrescriptionPreview({
           customChiefComplaints={customChiefComplaints}
           customDiagnoses={customDiagnoses}
           clinicId={desktopSession?.clinic_id}
+          desktopSession={desktopSession}
           onSaveRevision={onRevisePrescription as any}
         />
       )}

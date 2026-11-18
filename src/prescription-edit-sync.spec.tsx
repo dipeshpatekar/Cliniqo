@@ -14,7 +14,8 @@ import {
 } from "./types"
 import { PrescriptionEditModal } from "./components/consultation/PrescriptionEditModal"
 import { reconstructHistoricalPrescription, executePrescriptionRevision } from "./routing/prescriptionRouting"
-import type { LocalPrescriptionRecord } from "./desktop/desktop-bridge"
+import { searchCatalogue, type LocalPrescriptionRecord } from "./desktop/desktop-bridge"
+import { SearchableOptionSelect } from "./components/common"
 
 describe("Prescription Edit Modal — Reason Removal & Medicine Data Sync Suite", () => {
   beforeEach(() => {
@@ -308,6 +309,113 @@ describe("Prescription Edit Modal — Reason Removal & Medicine Data Sync Suite"
       expect(lib.Frequencies).toContain("Every alternate day")
       expect(lib.Durations).toContain("14 days")
       expect(lib.FoodInstructions).toContain("Before sleeping")
+    })
+  })
+
+  // =========================================================================
+  // 4. MEDICINE NAME CATALOGUE SEARCH & AUTOCOMPLETE IN EDIT MODAL
+  // =========================================================================
+  describe("4. Medicine Name Catalogue Search & Autocomplete in Edit Modal", () => {
+    it("renders medicine search field with identical placeholder and search options as New Consultation", () => {
+      const html = renderToString(
+        <PrescriptionEditModal
+          isOpen={true}
+          onClose={vi.fn()}
+          prescriptionNumber="RX-854704"
+          currentRevisionNumber={1}
+          initialMedicines={mockMedicines}
+          initialVitals={mockVitals}
+          initialConsultationData={mockConsultationData}
+          patient={mockPatient}
+          onSaveRevision={vi.fn()}
+        />,
+      )
+
+      expect(html).toContain("Search medicine")
+      expect(html).toContain('aria-label="Search and select medicine"')
+      expect(html).toContain("TAKATAK MR")
+    })
+
+    it("connects to medicine catalogue search and retrieves matching medicines", async () => {
+      const searchRes = await searchCatalogue("Amox")
+      expect(searchRes).toBeDefined()
+      expect(searchRes.items.length).toBeGreaterThan(0)
+      const first = searchRes.items[0]
+      expect(first.name).toBeDefined()
+      expect(first.dosageForm).toBeDefined()
+    })
+
+    it("renders multiple medicine rows with independent search comboboxes in Edit Modal", () => {
+      const html = renderToString(
+        <PrescriptionEditModal
+          isOpen={true}
+          onClose={vi.fn()}
+          prescriptionNumber="RX-854704"
+          currentRevisionNumber={1}
+          initialMedicines={[
+            {
+              id: 1,
+              name: "Amoxicillin",
+              formulation: "Tablet",
+              strength: "500 mg",
+              dose: "1 tablet",
+              frequency: "Twice daily",
+              duration: "5 days",
+              food: "After food",
+            },
+            {
+              id: 2,
+              name: "Paracetamol",
+              formulation: "Tablet",
+              strength: "650 mg",
+              dose: "1 tablet",
+              frequency: "As needed",
+              duration: "3 days",
+              food: "After food",
+            },
+          ]}
+          initialVitals={mockVitals}
+          initialConsultationData={mockConsultationData}
+          patient={mockPatient}
+          onSaveRevision={vi.fn()}
+        />,
+      )
+
+      expect(html).toContain('id="edit-med-name-1"')
+      expect(html).toContain('id="edit-med-name-2"')
+      expect(html).toContain('value="Amoxicillin"')
+      expect(html).toContain('value="Paracetamol"')
+    })
+
+    it("renders SearchableOptionSelect with badges and subtitles for clinic library and stock definitions", () => {
+      const html = renderToString(
+        <SearchableOptionSelect
+          id="test-med-select"
+          value="Amoxicillin + Clavulanic Acid"
+          options={[
+            {
+              value: "Amoxicillin + Clavulanic Acid",
+              label: "Amoxicillin + Clavulanic Acid",
+              badge: "Clinic Library",
+              subtitle: "Tablet • 625 mg • Amoxicillin and Potassium Clavulanate",
+            },
+            {
+              value: "Amoxicillin 500mg",
+              label: "Amoxicillin 500mg",
+              badge: "Pharmacy Stock",
+              subtitle: "Capsule • 500 mg",
+            },
+          ]}
+          onChange={vi.fn()}
+          placeholder="Search medicine"
+          ariaLabel="Search and select medicine"
+        />,
+      )
+
+      expect(html).toContain('id="test-med-select"')
+      expect(html).toContain('value="Amoxicillin + Clavulanic Acid"')
+      expect(html).toContain('placeholder="Search medicine"')
+      expect(html).toContain('role="combobox"')
     })
   })
 })

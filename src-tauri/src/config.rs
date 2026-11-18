@@ -123,8 +123,15 @@ pub fn create_updater_http_client(timeout: Duration) -> Result<reqwest::Client, 
         attempt.follow()
     });
 
+    // Provide a responsive connect timeout (8 seconds) to failover multi-IP DNS endpoints quickly,
+    // and standard updater user agent to ensure reliable acceptance by GitHub Releases infrastructure.
+    let connect_timeout = std::cmp::min(Duration::from_secs(8), timeout);
+
     reqwest::Client::builder()
         .timeout(timeout)
+        .connect_timeout(connect_timeout)
+        .user_agent(concat!("Cliniqo-Desktop-Updater/", env!("CARGO_PKG_VERSION")))
+        .pool_idle_timeout(Duration::from_secs(15))
         .redirect(policy)
         .build()
         .map_err(|e| format!("Failed to create updater HTTP client: {e}"))

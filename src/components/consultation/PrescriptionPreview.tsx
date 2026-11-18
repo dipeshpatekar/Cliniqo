@@ -634,8 +634,13 @@ export function PrescriptionPreview({
               })()}
               {(data.followUpDate || data.followUpInstructions) && (
                 <div className="rx-follow-up">
-                  <span>
-                    follow up : {formatDateDDMMYYYY(data.followUpDate) || "N/A"} · adv :{" "}
+                  <strong className="rx-follow-up-label">follow up : </strong>
+                  <span className="rx-follow-up-val">
+                    {formatDateDDMMYYYY(data.followUpDate) || "N/A"}
+                  </span>
+                  <span className="rx-follow-up-sep"> · </span>
+                  <strong className="rx-adv-label">adv : </strong>
+                  <span className="rx-adv-val">
                     {data.followUpInstructions || "N/A"}
                   </span>
                 </div>

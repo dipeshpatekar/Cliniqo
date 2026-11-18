@@ -3,6 +3,7 @@ import { Button, GlobalPatientSearch, IconButton, StatusPill } from "../common"
 import { AppHeader } from "../layout"
 import {
   formatDateDDMMYYYY,
+  formatDateTimeDDMMYYYY,
   formatPatientAge,
   getPublicPatientId,
   type Page,
@@ -267,7 +268,7 @@ export function Dashboard({
                       <span className="time">
                         {isNew
                           ? "Recently added"
-                          : formatDateDDMMYYYY(patient.lastVisit) ||
+                          : formatDateTimeDDMMYYYY(patient.lastVisit, true) ||
                             patient.lastVisit}
                       </span>
                       <ChevronRight size={17} />

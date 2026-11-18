@@ -577,10 +577,17 @@ export function Consultation({
     })
     const finalizedTimestamp = finalizedDate.toISOString()
 
+    const consultDatePart = data.date || finalizedDateStr
+    const consultTimePart = data.time || finalizedTimeStr
+    const combinedConsultationDate =
+      consultDatePart.includes("T") || consultDatePart.includes(" ")
+        ? consultDatePart
+        : `${consultDatePart}T${consultTimePart}`
+
     const updatedData: ConsultationData = {
       ...data,
-      date: data.date || finalizedDateStr,
-      time: data.time || finalizedTimeStr,
+      date: consultDatePart,
+      time: consultTimePart,
     }
     onDataChange(updatedData)
 
@@ -590,11 +597,14 @@ export function Consultation({
         const consultationId = await saveLocalConsultation({
           clinic_id: desktopSession.clinic_id,
           patient_id: patient.id,
-          consultation_date: updatedData.date,
+          consultation_date: combinedConsultationDate,
           chief_complaint: data.chiefComplaint,
           diagnosis: data.diagnosis,
           clinical_snapshot_json: JSON.stringify({
             vitals,
+            time: consultTimePart,
+            consultationTime: consultTimePart,
+            consultationDate: consultDatePart,
             symptomDuration: data.symptomDuration,
             followUpDate: data.followUpDate,
             followUpInstructions: data.followUpInstructions,

@@ -1320,7 +1320,8 @@ export default function App({
               : nextPatientId)
 
         const notesObj = {
-          registeredAt: patient.registeredAt,
+          registeredAt:
+            patient.registeredAt || getIndiaDateTimeLocalString(),
           alternatePhone: patient.alternatePhone,
           address: patient.address,
           ageMonths: patient.ageMonths !== undefined ? patient.ageMonths : 0,
@@ -2008,6 +2009,24 @@ export default function App({
           )
           if (rxRecord) {
             setActiveConsultationPrescriptionRecord(rxRecord)
+          }
+          if (isTauriDesktop() && desktopSession?.clinic_id) {
+            getLocalPatients(desktopSession.clinic_id)
+              .then((fresh) => {
+                if (fresh && fresh.length > 0) {
+                  const mapped = fresh.map(mapLocalRecordToPatient)
+                  setPatientRecords(mapped)
+                  const updated = mapped.find(
+                    (p) =>
+                      p.id === selectedPatient.id ||
+                      p.displayId === selectedPatient.displayId,
+                  )
+                  if (updated) {
+                    setSelectedPatient(updated)
+                  }
+                }
+              })
+              .catch(() => {})
           }
         }}
       />

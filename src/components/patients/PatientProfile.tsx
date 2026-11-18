@@ -139,6 +139,15 @@ export function PatientProfile({
     prescriptions.length > 0 ||
     patient.lastVisit !== "No visits yet"
 
+  const effectiveLastVisit =
+    patient.lastVisit && patient.lastVisit !== "No visits yet"
+      ? patient.lastVisit
+      : consultations.length > 0
+        ? consultations[0].consultation_date || consultations[0].updated_at
+        : "No visits yet"
+
+  const effectiveRegisteredAt = patient.registeredAt || patient.createdAt
+
   const publicPatientId = getPublicPatientId(patient)
 
   const handleDelete = async () => {
@@ -278,9 +287,9 @@ export function PatientProfile({
               </p>
               <span className="last-seen">
                 <CalendarDays size={14} />{" "}
-                {patient.lastVisit === "No visits yet"
+                {effectiveLastVisit === "No visits yet"
                   ? "No consultations yet"
-                  : `Last visit ${formatDateTimeDDMMYYYY(patient.lastVisit, true) || patient.lastVisit}`}
+                  : `Last visit ${formatDateTimeDDMMYYYY(effectiveLastVisit, true) || effectiveLastVisit}`}
               </span>
             </div>
           </div>
@@ -295,11 +304,11 @@ export function PatientProfile({
               <small>Patient ID</small>
               <strong>{publicPatientId}</strong>
             </span>
-            {patient.registeredAt && (
+            {effectiveRegisteredAt && (
               <span>
                 <CalendarDays size={16} />
                 <small>Registered</small>
-                <strong>{formatIndiaDateTime(patient.registeredAt)}</strong>
+                <strong>{formatIndiaDateTime(effectiveRegisteredAt)}</strong>
               </span>
             )}
           </div>

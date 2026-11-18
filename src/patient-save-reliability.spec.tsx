@@ -576,5 +576,160 @@ describe("Cliniqo Patient Save Reliability & Diagnostic Error Reporting", () => 
       expect(pappuPatient.gender).toBe("")
     })
   })
+
+  describe("Patient Visit Tracking & Registration DateTime Separation", () => {
+    it("preserves registration date & time and keeps it distinguishable from consultation last visit", async () => {
+      const { mapLocalRecordToPatient, formatDateTimeDDMMYYYY, formatIndiaDateTime } = await import("./types")
+      const { PatientProfile } = await import("./components/patients/PatientProfile")
+
+      const regDate = "2026-11-18T09:30:00"
+      const consultDate = "2026-11-18T11:45:00"
+
+      // 1. Newly created patient record without consultations
+      const newPatientRec: import("./desktop/desktop-bridge").LocalPatientRecord = {
+        id: "pat-uuid-001",
+        server_id: null,
+        clinic_id: "clinic-test-1",
+        patient_code: "AAA-0025",
+        name: "Ramesh Sharma",
+        phone: "9876543210",
+        gender: "Male",
+        date_of_birth: "1988-02-14",
+        age: 38,
+        allergies: [],
+        conditions: [],
+        sensitive_notes: JSON.stringify({
+          registeredAt: regDate,
+          alternatePhone: "",
+          address: "Pune, Maharashtra",
+          ageMonths: 0,
+        }),
+        sync_status: "PENDING",
+        server_version: 0,
+        local_version: 1,
+        updated_at: "2026-11-18 09:30:00",
+        created_at: "2026-11-18 09:30:00",
+        last_visit: null,
+      }
+
+      const patient = mapLocalRecordToPatient(newPatientRec)
+      expect(patient.registeredAt).toBe(regDate)
+      expect(patient.lastVisit).toBe("No visits yet")
+
+      // In Patient Profile, newly created patient displays registration time and 'No consultations yet'
+      const htmlInitial = renderToString(
+        <PatientProfile
+          go={() => {}}
+          patient={patient}
+          saveFeedback={null}
+        />,
+      )
+      expect(htmlInitial).toContain("No consultations yet")
+      expect(htmlInitial).toContain("Registered")
+      expect(htmlInitial).toContain(formatIndiaDateTime(regDate))
+
+      // 2. After consultation is finalized with visit time
+      const updatedPatientRec: import("./desktop/desktop-bridge").LocalPatientRecord = {
+        ...newPatientRec,
+        last_visit: consultDate,
+      }
+      const patientAfterVisit = mapLocalRecordToPatient(updatedPatientRec)
+      expect(patientAfterVisit.lastVisit).toBe(consultDate)
+
+      const htmlAfter = renderToString(
+        <PatientProfile
+          go={() => {}}
+          patient={patientAfterVisit}
+          saveFeedback={null}
+        />,
+      )
+
+      expect(htmlAfter).toContain("Last visit")
+      expect(htmlAfter).toContain(formatDateTimeDDMMYYYY(consultDate, true))
+      expect(htmlAfter).toContain(formatIndiaDateTime(regDate))
+      // Registration date and last visit date must remain distinguishable
+      expect(patientAfterVisit.registeredAt).not.toEqual(patientAfterVisit.lastVisit)
+    })
+
+    it("verifies prescription preview follow-up and ADV labels and values use exact medicine typography (13.2px)", async () => {
+      const { PrescriptionPreview } = await import("./components/consultation/PrescriptionPreview")
+      const fs = await import("node:fs")
+
+      const testPatient: Patient = {
+        id: "AAA-0030",
+        name: "Kavita Rao",
+        initials: "KR",
+        age: 29,
+        gender: "Female",
+        phone: "9123456789",
+        lastVisit: "2026-11-18T10:00:00",
+        allergies: [],
+        conditions: [],
+      }
+
+      const testConsultation = {
+        date: "2026-11-18",
+        time: "10:00",
+        chiefComplaint: "Cough and Cold",
+        symptomDuration: "3 days",
+        diagnosis: "Upper Respiratory Tract Infection",
+        medicines: [
+          {
+            id: 1,
+            name: "Azithromycin 500",
+            formulation: "Tablet",
+            strength: "500 mg",
+            dose: "1 tab",
+            route: "Oral",
+            frequency: "OD",
+            duration: "3 days",
+            food: "After food",
+            directions: "Take once daily",
+          },
+        ],
+        followUpDate: "2026-11-21",
+        followUpInstructions: "Review if fever or breathlessness persists",
+      }
+
+      const html = renderToString(
+        <PrescriptionPreview
+          go={() => {}}
+          patient={testPatient}
+          vitals={{
+            systolic: "",
+            diastolic: "",
+            heartRate: "",
+            spo2: "",
+            temperature: "",
+            height: "",
+            weight: "",
+          }}
+          data={testConsultation}
+          bannerVisible={false}
+          bannerImage={null}
+          signatureImage={null}
+          showClinicLogo={false}
+          showClinicEmail={false}
+          showAllergyWarning={false}
+          topSpacingMm={0}
+          returnPage="consultation"
+        />,
+      )
+
+      // Verify follow up and adv elements are present with designated classes
+      expect(html).toContain("rx-follow-up")
+      expect(html).toContain("rx-follow-up-label")
+      expect(html).toContain("rx-follow-up-val")
+      expect(html).toContain("rx-adv-label")
+      expect(html).toContain("rx-adv-val")
+      expect(html).toContain("follow up :")
+      expect(html).toContain("adv :")
+
+      // Verify CSS rules enforce 13.2px matching medicine text
+      const cssContent = fs.readFileSync("src/index.css", "utf8")
+      expect(cssContent).toMatch(/\.rx-follow-up\s*\{[^}]*font-size:\s*13\.2px\s*!important/)
+      expect(cssContent).toMatch(/\.rx-medicines\s+td[^{]*\{[^}]*font-size:\s*13\.2px\s*!important/)
+    })
+  })
 })
 

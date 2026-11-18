@@ -528,6 +528,8 @@ pub struct PatientRecord {
     pub local_version: i32,
     pub updated_at: String,
     #[serde(default)]
+    pub created_at: Option<String>,
+    #[serde(default)]
     pub last_visit: Option<String>,
 }
 

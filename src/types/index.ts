@@ -1015,6 +1015,15 @@ export function mapLocalRecordToPatient(rec: LocalPatientRecord): Patient {
     }
   }
 
+  // Preserve registration date & time from SQLite created_at when not explicitly in sensitive_notes
+  if (!registeredAt) {
+    if (rec.created_at) {
+      registeredAt = rec.created_at
+    } else if (rec.updated_at) {
+      registeredAt = rec.updated_at
+    }
+  }
+
   return {
     id: rec.id,
     displayId,
@@ -1034,6 +1043,7 @@ export function mapLocalRecordToPatient(rec: LocalPatientRecord): Patient {
     registeredAt,
     syncStatus: rec.sync_status,
     updatedAt: rec.updated_at,
+    createdAt: rec.created_at || undefined,
   }
 }
 

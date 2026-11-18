@@ -21,7 +21,7 @@ pub enum UpdaterError {
     ClientInit(String),
 
     #[error("Network error while checking updates: {0}")]
-    Network(#[from] reqwest::Error),
+    Network(String),
 
     #[error("I/O error during update: {0}")]
     Io(#[from] std::io::Error),
@@ -37,6 +37,31 @@ pub enum UpdaterError {
 
     #[error("No update target found for platform: {0}")]
     UnsupportedPlatform(String),
+}
+
+fn describe_reqwest_error(err: &reqwest::Error, url: &str) -> String {
+    let mut details = if err.is_timeout() {
+        format!("Connection timed out while contacting {url}. Please verify your network connection.")
+    } else if err.is_connect() {
+        format!("Failed to connect to {url}. Please check your internet connection or firewall.")
+    } else if err.is_redirect() {
+        format!("Redirect error for {url}: {err}")
+    } else {
+        format!("Network error sending request to {url}: {err}")
+    };
+
+    let mut curr = std::error::Error::source(err);
+    while let Some(src) = curr {
+        details.push_str(&format!(" (caused by: {})", src));
+        curr = src.source();
+    }
+    details
+}
+
+impl From<reqwest::Error> for UpdaterError {
+    fn from(err: reqwest::Error) -> Self {
+        UpdaterError::Network(describe_reqwest_error(&err, "update endpoint"))
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -210,9 +235,41 @@ impl AppUpdater {
         let current_version = version_override
             .map(|s| s.to_string())
             .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string());
-        let client = create_updater_http_client(Duration::from_secs(15)).map_err(UpdaterError::ClientInit)?;
+        let client = create_updater_http_client(Duration::from_secs(35)).map_err(UpdaterError::ClientInit)?;
 
-        let resp = client.get(endpoint).send().await?;
+        // Send request with 1 retry on transient connection/timeout errors
+        let mut last_error: Option<reqwest::Error> = None;
+        let mut response: Option<reqwest::Response> = None;
+
+        for attempt in 1..=2 {
+            match client.get(endpoint).send().await {
+                Ok(resp) => {
+                    response = Some(resp);
+                    break;
+                }
+                Err(err) => {
+                    log::warn!(
+                        "Update check attempt {}/2 for {} failed: {}",
+                        attempt,
+                        endpoint,
+                        err
+                    );
+                    if attempt < 2 && (err.is_timeout() || err.is_connect()) {
+                        tokio::time::sleep(Duration::from_millis(1000)).await;
+                    }
+                    last_error = Some(err);
+                }
+            }
+        }
+
+        let resp = match response {
+            Some(r) => r,
+            None => {
+                let err = last_error.expect("last_error must be set on failure");
+                return Err(UpdaterError::Network(describe_reqwest_error(&err, endpoint)));
+            }
+        };
+
         if !resp.status().is_success() {
             log::warn!("Update check endpoint returned non-success status: {}", resp.status());
             return Err(UpdaterError::VerificationFailed(format!(
@@ -221,7 +278,12 @@ impl AppUpdater {
             )));
         }
 
-        let manifest: UpdateManifest = resp.json().await?;
+        let body_text = resp
+            .text()
+            .await
+            .map_err(|e| UpdaterError::Network(describe_reqwest_error(&e, endpoint)))?;
+
+        let manifest: UpdateManifest = serde_json::from_str(&body_text)?;
         let is_available = Self::is_newer_version(&current_version, &manifest.version);
         let platform = Self::current_platform_target();
         let platform_info = manifest.platforms.get(platform);
@@ -305,7 +367,7 @@ impl AppUpdater {
         };
 
         // 2. Download package bytes using dedicated updater HTTP client with redirect support
-        let client = create_updater_http_client(Duration::from_secs(120)).map_err(UpdaterError::ClientInit)?;
+        let client = create_updater_http_client(Duration::from_secs(180)).map_err(UpdaterError::ClientInit)?;
         let resp = client.get(download_url).send().await?;
 
         if !resp.status().is_success() {
@@ -712,5 +774,23 @@ wLMDjy9FLAuxZ3q4NlEvkgtyhrr0gtTu6KC4KBJdITbbOeAi1zBIYo0v4iTgt8jJpIidRJnp94ABQkJA
         }
 
         server_handle.abort();
+    }
+
+    #[tokio::test]
+    async fn test_check_for_updates_network_failure_diagnostics_and_never_reports_up_to_date() {
+        // Query an unreachable local port to test network failure handling
+        let unreachable_url = "http://127.0.0.1:59999/latest.json";
+        let res = AppUpdater::check_for_updates_with_version(Some(unreachable_url), Some("1.0.4")).await;
+
+        match res {
+            Err(UpdaterError::Network(err_msg)) => {
+                assert!(
+                    err_msg.contains("Failed to connect") || err_msg.contains("Network error") || err_msg.contains("connection"),
+                    "Expected diagnostic network connection failure, got: {err_msg}"
+                );
+            }
+            Ok(val) => panic!("Failed network request must never return Ok or report up-to-date, got: {:?}", val),
+            Err(other) => panic!("Expected UpdaterError::Network, got: {:?}", other),
+        }
     }
 }

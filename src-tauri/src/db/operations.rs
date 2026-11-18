@@ -478,20 +478,25 @@ impl DbOperations {
         let mut stmt = conn.prepare(
             r#"
             SELECT p.id, p.server_id, p.clinic_id, p.patient_code, p.encrypted_demographics, p.nonce,
-                   p.sync_status, p.server_version, p.local_version, p.updated_at,
+                   p.sync_status, p.server_version, p.local_version, p.updated_at, p.created_at,
                    (
-                       SELECT COALESCE(c.created_at, c.consultation_date)
+                       SELECT COALESCE(c.consultation_date, c.created_at)
                        FROM local_consultations c
                        LEFT JOIN local_prescriptions rx
                          ON (rx.consultation_id = c.id OR (c.server_id IS NOT NULL AND rx.consultation_id = c.server_id))
                         AND rx.clinic_id = c.clinic_id
-                       WHERE (c.patient_id = p.id OR (p.server_id IS NOT NULL AND c.patient_id = p.server_id))
+                       WHERE (
+                           c.patient_id = p.id
+                           OR c.patient_id = p.patient_code
+                           OR (p.server_id IS NOT NULL AND c.patient_id = p.server_id)
+                       )
                          AND c.clinic_id = p.clinic_id
                          AND (
                              rx.status = 'ACTIVE'
-                             OR (c.status IN ('FINALIZED', 'COMPLETED') AND rx.status IS NULL)
+                             OR (c.status IN ('FINALIZED', 'COMPLETED') AND (rx.status IS NULL OR rx.status = 'ACTIVE'))
+                             OR c.status = 'FINALIZED'
                          )
-                       ORDER BY c.created_at DESC, c.consultation_date DESC
+                       ORDER BY c.consultation_date DESC, c.created_at DESC
                        LIMIT 1
                    ) AS last_visit
             FROM local_patients p
@@ -511,7 +516,8 @@ impl DbOperations {
             let server_version: i32 = row.get(7)?;
             let local_version: i32 = row.get(8)?;
             let updated_at: String = row.get(9)?;
-            let last_visit: Option<String> = row.get(10)?;
+            let created_at: Option<String> = row.get(10)?;
+            let last_visit: Option<String> = row.get(11)?;
 
             Ok((
                 id,
@@ -524,6 +530,7 @@ impl DbOperations {
                 server_version,
                 local_version,
                 updated_at,
+                created_at,
                 last_visit,
             ))
         })?;
@@ -541,6 +548,7 @@ impl DbOperations {
                 server_version,
                 local_version,
                 updated_at,
+                created_at,
                 last_visit,
             ) = r?;
 
@@ -566,6 +574,7 @@ impl DbOperations {
                 server_version,
                 local_version,
                 updated_at,
+                created_at,
                 last_visit,
             });
         }
@@ -639,7 +648,7 @@ impl DbOperations {
         );
 
         if patient_id.is_some() {
-            sql.push_str(" AND (patient_id = ?2 OR patient_id IN (SELECT patient_code FROM local_patients WHERE clinic_id = ?1 AND id = ?2)) ORDER BY updated_at DESC");
+            sql.push_str(" AND (patient_id = ?2 OR patient_id IN (SELECT patient_code FROM local_patients WHERE clinic_id = ?1 AND id = ?2) OR patient_id IN (SELECT id FROM local_patients WHERE clinic_id = ?1 AND patient_code = ?2)) ORDER BY updated_at DESC");
         } else {
             sql.push_str(" ORDER BY updated_at DESC");
         }
@@ -811,7 +820,7 @@ impl DbOperations {
         );
 
         if patient_id.is_some() {
-            sql.push_str(" AND (patient_id = ?2 OR patient_id IN (SELECT patient_code FROM local_patients WHERE clinic_id = ?1 AND id = ?2)) ORDER BY created_at DESC, revision_number DESC");
+            sql.push_str(" AND (patient_id = ?2 OR patient_id IN (SELECT patient_code FROM local_patients WHERE clinic_id = ?1 AND id = ?2) OR patient_id IN (SELECT id FROM local_patients WHERE clinic_id = ?1 AND patient_code = ?2)) ORDER BY created_at DESC, revision_number DESC");
         } else {
             sql.push_str(" ORDER BY created_at DESC, revision_number DESC");
         }
@@ -7833,6 +7842,107 @@ mod tests {
         let patients_with_cloud = DbOperations::get_patients(&conn, &dek, clinic_id).unwrap();
         let cloud_patient = patients_with_cloud.iter().find(|p| p.id == pat_sync_id).unwrap();
         assert!(cloud_patient.last_visit.is_some(), "Cloud synced consultation matching via server_id must populate last_visit");
+    }
+
+    #[test]
+    fn test_save_and_start_consultation_persistence_and_registration_datetime_separation() {
+        let (mut conn, dek) = setup_test_db();
+        let clinic_id = "clinic_save_start_test";
+        let doctor_id = "doc_start_01";
+
+        // 1. Create a patient with registration date & time in sensitive notes
+        let reg_datetime = "2026-11-18T09:15:00";
+        let notes_json = format!(r#"{{"registeredAt":"{}","alternatePhone":"","address":"","ageMonths":0}}"#, reg_datetime);
+
+        let save_res = DbOperations::insert_patient_ext(
+            &mut conn,
+            &dek,
+            clinic_id,
+            "AAA-0021",
+            "Deepak Verma",
+            "9988776655",
+            "Male",
+            Some("1995-05-12"),
+            31,
+            &[],
+            &[],
+            Some(&notes_json),
+            Some("mut_save_and_start_1"),
+        ).expect("Patient creation succeeds");
+
+        let pat_id = save_res.id;
+        let pat_code = save_res.patient_code;
+        assert_eq!(pat_code, "AAA-0021");
+
+        // 2. Verify patient record initially has created_at populated and last_visit is None
+        let initial_patients = DbOperations::get_patients(&conn, &dek, clinic_id).unwrap();
+        assert_eq!(initial_patients.len(), 1);
+        let pat_initial = &initial_patients[0];
+        assert_eq!(pat_initial.id, pat_id);
+        assert!(pat_initial.created_at.is_some(), "created_at must be populated from local_patients");
+        assert_eq!(pat_initial.last_visit, None, "Patient must have no visits initially");
+
+        // 3. Save & Start Consultation: Save consultation with specific consultation date and time
+        let consult_datetime = "2026-11-18T10:45:00";
+        let c_id = DbOperations::insert_consultation(
+            &mut conn,
+            &dek,
+            clinic_id,
+            &pat_id,
+            doctor_id,
+            consult_datetime,
+            "Fever and chills",
+            "Viral Fever",
+            Some(r#"{"vitals":{"temperature":"101"},"consultationTime":"10:45 AM"}"#),
+        ).expect("Insert consultation succeeds");
+
+        // Save prescription to finalize consultation
+        let rx_id = DbOperations::insert_prescription(
+            &mut conn,
+            &dek,
+            clinic_id,
+            &c_id,
+            &pat_id,
+            doctor_id,
+            "RX-2026-0001",
+            r#"[{"id":1,"name":"Paracetamol 650","formulation":"Tablet","dose":"650 mg"}]"#,
+        ).expect("Insert prescription succeeds");
+        assert!(!rx_id.is_empty());
+
+        // 4. Verify last_visit is now the consultation date and time
+        let patients_after = DbOperations::get_patients(&conn, &dek, clinic_id).unwrap();
+        assert_eq!(patients_after.len(), 1);
+        let pat_after = &patients_after[0];
+        assert_eq!(
+            pat_after.last_visit.as_deref(),
+            Some(consult_datetime),
+            "last_visit must reflect the exact consultation date and time"
+        );
+
+        // 5. Verify registration datetime and consultation datetime are distinguishable
+        assert_ne!(
+            reg_datetime,
+            pat_after.last_visit.as_deref().unwrap(),
+            "Registration datetime and consultation visit datetime must remain distinguishable"
+        );
+
+        // 6. Verify bidirectional matching: querying consultations by patient code and by UUID
+        let consults_by_code = DbOperations::get_consultations(&conn, &dek, clinic_id, Some(&pat_code)).unwrap();
+        assert_eq!(consults_by_code.len(), 1, "Must find consultation when querying by patient_code");
+        assert_eq!(consults_by_code[0].id, c_id);
+
+        let consults_by_uuid = DbOperations::get_consultations(&conn, &dek, clinic_id, Some(&pat_id)).unwrap();
+        assert_eq!(consults_by_uuid.len(), 1, "Must find consultation when querying by patient UUID");
+        assert_eq!(consults_by_uuid[0].id, c_id);
+
+        // 7. Verify bidirectional matching for prescriptions
+        let rxs_by_code = DbOperations::get_prescriptions(&conn, &dek, clinic_id, Some(&pat_code)).unwrap();
+        assert_eq!(rxs_by_code.len(), 1, "Must find prescription when querying by patient_code");
+        assert_eq!(rxs_by_code[0].id, rx_id);
+
+        let rxs_by_uuid = DbOperations::get_prescriptions(&conn, &dek, clinic_id, Some(&pat_id)).unwrap();
+        assert_eq!(rxs_by_uuid.len(), 1, "Must find prescription when querying by patient UUID");
+        assert_eq!(rxs_by_uuid[0].id, rx_id);
     }
 
     #[test]

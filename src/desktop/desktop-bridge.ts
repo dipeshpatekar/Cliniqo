@@ -131,6 +131,7 @@ export interface LocalPatientRecord {
   server_version: number
   local_version: number
   updated_at: string
+  created_at?: string | null
   last_visit?: string | null
 }
 

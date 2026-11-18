@@ -6638,7 +6638,29 @@ tbody tr:active {
 }
 
 .rx-follow-up {
-  font-size: 10px !important;
+  font-size: 13.2px !important;
+  color: #0f172a;
+  line-height: 1.4;
+}
+
+.rx-follow-up span,
+.rx-follow-up strong,
+.rx-follow-up-label,
+.rx-follow-up-val,
+.rx-adv-label,
+.rx-adv-val {
+  font-size: 13.2px !important;
+}
+
+.rx-follow-up-label,
+.rx-adv-label {
+  font-weight: 700;
+  color: #1e293b;
+}
+
+.rx-follow-up-val,
+.rx-adv-val {
+  font-weight: 600;
   color: #0f172a;
 }
 
@@ -8761,8 +8783,18 @@ body {
   }
 
   .rx-follow-up {
-    font-size: 10px !important;
+    font-size: 13.2px !important;
     color: #0f172a !important;
+    line-height: 1.35 !important;
+  }
+
+  .rx-follow-up span,
+  .rx-follow-up strong,
+  .rx-follow-up-label,
+  .rx-follow-up-val,
+  .rx-adv-label,
+  .rx-adv-val {
+    font-size: 13.2px !important;
   }
 
   .rx-footer-right {

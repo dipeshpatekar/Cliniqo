@@ -3,6 +3,7 @@ import { cn } from "../../utils/cn"
 import { analyzeAllergies } from "../../utils/allergy"
 import {
   formatDateDDMMYYYY,
+  formatDateTimeDDMMYYYY,
   formatIndiaDateTime,
   formatPatientAge,
   formatPatientGender,
@@ -99,9 +100,9 @@ export function OverviewTab({
             <dt>Consultation status</dt>
             <dd>
               {consultations.length > 0
-                ? `Last visit: ${formatDateDDMMYYYY(consultations[0].consultation_date) || consultations[0].consultation_date || "Recorded"}`
-                : hasHistory
-                  ? formatDateDDMMYYYY(patient.lastVisit) || patient.lastVisit
+                ? `Last visit: ${formatDateTimeDDMMYYYY(consultations[0].consultation_date || consultations[0].updated_at, true) || "Recorded"}`
+                : hasHistory && patient.lastVisit !== "No visits yet"
+                  ? `Last visit: ${formatDateTimeDDMMYYYY(patient.lastVisit, true) || patient.lastVisit}`
                   : "No consultations recorded"}
             </dd>
           </div>
@@ -156,7 +157,7 @@ export function OverviewTab({
           consultations.slice(0, 3).map((entry, index) => {
             const isDraft = entry.status === "DRAFT"
             const dateStr =
-              formatDateDDMMYYYY(entry.consultation_date || entry.updated_at) ||
+              formatDateTimeDDMMYYYY(entry.consultation_date || entry.updated_at, true) ||
               "Recorded"
             return (
               <div className="timeline-row" key={entry.id}>
@@ -300,7 +301,7 @@ export function ConsultationsTab({
       ) : consultations.length > 0 ? (
         consultations.map((c) => {
           const dateStr =
-            formatDateDDMMYYYY(c.consultation_date || c.updated_at) ||
+            formatDateTimeDDMMYYYY(c.consultation_date || c.updated_at, true) ||
             "Recorded"
           const isDraft = c.status === "DRAFT"
           return (

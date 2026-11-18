@@ -930,6 +930,7 @@ impl DbOperations {
         items_json: &str,
         reason_for_revision: &str,
         verified_doctor_id: &str,
+        new_consultation_id: Option<&str>,
     ) -> Result<String, DatabaseOpError> {
         if reason_for_revision.trim().is_empty() {
             return Err(DatabaseOpError::ConflictResolution(
@@ -1045,6 +1046,8 @@ impl DbOperations {
             )));
         }
 
+        let target_consultation_id = new_consultation_id.unwrap_or(&consultation_id);
+
         // 2. Insert new immutable revision row with ACTIVE status
         tx.execute(
             r#"
@@ -1058,7 +1061,7 @@ impl DbOperations {
                 new_prescription_id,
                 server_id,
                 clinic_id,
-                consultation_id,
+                target_consultation_id,
                 patient_id,
                 verified_doctor_id,
                 prescription_number,
@@ -8060,6 +8063,7 @@ mod tests {
             rx2_items,
             "Extended antibiotic course",
             doctor_id_2,
+            None,
         );
         assert!(wrong_rev_res.is_err(), "Mismatched expected revision must fail optimistic lock");
 
@@ -8073,6 +8077,7 @@ mod tests {
             rx2_items,
             "   ",
             doctor_id_2,
+            None,
         );
         assert!(empty_reason_res.is_err(), "Empty revision reason must be rejected");
 
@@ -8086,6 +8091,7 @@ mod tests {
             rx2_items,
             "Extended antibiotic course and added antipyretic",
             doctor_id_2,
+            None,
         )
         .unwrap();
         assert_ne!(rx1_id, rx2_id, "Revision must produce a new unique row");
@@ -8142,6 +8148,7 @@ mod tests {
             rx3_items,
             "Duplicate revision attempt",
             doctor_id_2,
+            None,
         );
         assert!(second_rev1_attempt.is_err(), "Revising a SUPERSEDED prescription (Rev 1) must be rejected");
 
@@ -8164,6 +8171,100 @@ mod tests {
             )
             .unwrap();
         assert_eq!(total_revise_count, 0, "Clinical data does not enqueue REVISE outbox entries");
+    }
+
+    #[test]
+    fn test_prescription_revision_with_new_consultation_id_preserves_immutable_history() {
+        let (mut conn, dek) = setup_test_db();
+        let clinic_id = "clinic_full_rev_test";
+        let doctor_id = "doc_full_rev_1";
+
+        let pat_id = DbOperations::insert_patient(
+            &mut conn,
+            &dek,
+            clinic_id,
+            "P-REV-101",
+            "Rohit Verma",
+            "9988776655",
+            "Male",
+            None,
+            35,
+            &[],
+            &[],
+            None,
+        )
+        .unwrap();
+
+        let c1_id = DbOperations::insert_consultation(
+            &mut conn,
+            &dek,
+            clinic_id,
+            &pat_id,
+            doctor_id,
+            "2026-11-18T10:00:00",
+            "Fever and Body Ache",
+            "Viral Fever",
+            Some(r#"{"vitals":{"temperature":"101"},"followUpDate":"2026-11-21"}"#),
+        )
+        .unwrap();
+
+        let rx1_items = r#"[{"id":1,"name":"Paracetamol","formulation":"Tablet","dose":"650 mg","frequency":"TDS","duration":"3 days"}]"#;
+        let rx1_id = DbOperations::insert_prescription(
+            &mut conn,
+            &dek,
+            clinic_id,
+            &c1_id,
+            &pat_id,
+            doctor_id,
+            "RX-854704",
+            rx1_items,
+        )
+        .unwrap();
+
+        // Doctor revises prescription: creates new consultation record c2 with updated vitals & notes
+        let c2_id = DbOperations::insert_consultation(
+            &mut conn,
+            &dek,
+            clinic_id,
+            &pat_id,
+            doctor_id,
+            "2026-11-18T10:30:00",
+            "Fever subsided, persistent dry cough",
+            "Post-viral cough",
+            Some(r#"{"vitals":{"temperature":"98.6","spo2":"98"},"followUpDate":"2026-11-23"}"#),
+        )
+        .unwrap();
+
+        let rx2_items = r#"[{"id":1,"name":"Paracetamol","formulation":"Tablet","dose":"650 mg","frequency":"SOS","duration":"2 days"},{"id":2,"name":"Dextromethorphan","formulation":"Syrup","dose":"10 mL","frequency":"TDS","duration":"5 days"}]"#;
+        let rx2_id = DbOperations::revise_prescription(
+            &mut conn,
+            &dek,
+            clinic_id,
+            &rx1_id,
+            1,
+            rx2_items,
+            "Added cough syrup and reduced antipyretic to SOS",
+            doctor_id,
+            Some(&c2_id),
+        )
+        .unwrap();
+
+        let rxs = DbOperations::get_prescriptions(&conn, &dek, clinic_id, Some(&pat_id)).unwrap();
+        assert_eq!(rxs.len(), 2);
+
+        // Revision 2 is ACTIVE and links to c2_id
+        let rev2 = rxs.iter().find(|r| r.id == rx2_id).unwrap();
+        assert_eq!(rev2.revision_number, 2);
+        assert_eq!(rev2.status, "ACTIVE");
+        assert_eq!(rev2.consultation_id, c2_id);
+        assert_eq!(rev2.prescription_number, "RX-854704");
+
+        // Revision 1 is SUPERSEDED and STILL links to c1_id
+        let rev1 = rxs.iter().find(|r| r.id == rx1_id).unwrap();
+        assert_eq!(rev1.revision_number, 1);
+        assert_eq!(rev1.status, "SUPERSEDED");
+        assert_eq!(rev1.consultation_id, c1_id);
+        assert_eq!(rev1.prescription_number, "RX-854704");
     }
 
     #[test]
@@ -8225,6 +8326,7 @@ mod tests {
             rx_items,
             "Try revise discontinued",
             doctor_id,
+            None,
         );
         assert!(discon_res.is_err());
         assert!(discon_res.unwrap_err().to_string().contains("Only ACTIVE prescriptions can be revised"));
@@ -8240,6 +8342,7 @@ mod tests {
             rx_items,
             "Try revise cancelled",
             doctor_id,
+            None,
         );
         assert!(cancel_res.is_err());
         assert!(cancel_res.unwrap_err().to_string().contains("Only ACTIVE prescriptions can be revised"));
@@ -8255,6 +8358,7 @@ mod tests {
             rx_items,
             "Try revise superseded",
             doctor_id,
+            None,
         );
         assert!(super_res.is_err());
         assert!(super_res.unwrap_err().to_string().contains("Only ACTIVE prescriptions can be revised"));
@@ -8341,6 +8445,7 @@ mod tests {
             rx2_items,
             "Extended antibiotic course and added antihistamine",
             doctor_id,
+            None,
         )
         .unwrap();
 

@@ -1061,22 +1061,67 @@ export const emptyMedicine = (id: number): Medicine => ({
   activeIngredient: "",
 })
 
-export const createEmptyConsultationData = (): ConsultationData => ({
-  date: new Date().toISOString().slice(0, 10),
-  time: new Date().toLocaleTimeString([], {
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-  }),
-  chiefComplaint: "",
-  symptomDuration: "",
-  diagnosis: "",
-  medicines: [],
-  followUpDate: "",
-  followUpInstructions: "",
-  allergies: [],
-  conditions: [],
-})
+export function computeDefaultFollowUpDate(consultationDateStr?: string): string {
+  if (!consultationDateStr) {
+    const now = new Date()
+    const target = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 3)
+    return `${target.getFullYear()}-${String(target.getMonth() + 1).padStart(2, "0")}-${String(target.getDate()).padStart(2, "0")}`
+  }
+  const datePart = consultationDateStr.split("T")[0].split(" ")[0]
+  const parts = datePart.split("-")
+  if (parts.length === 3) {
+    const y = parseInt(parts[0], 10)
+    const m = parseInt(parts[1], 10) - 1
+    const d = parseInt(parts[2], 10)
+    if (!isNaN(y) && !isNaN(m) && !isNaN(d)) {
+      const target = new Date(y, m, d + 3)
+      return `${target.getFullYear()}-${String(target.getMonth() + 1).padStart(2, "0")}-${String(target.getDate()).padStart(2, "0")}`
+    }
+  }
+  const now = new Date()
+  const target = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 3)
+  return `${target.getFullYear()}-${String(target.getMonth() + 1).padStart(2, "0")}-${String(target.getDate()).padStart(2, "0")}`
+}
+
+export interface PrescriptionRevisionData {
+  medicines: Medicine[]
+  vitals: Vitals
+  chiefComplaint: string
+  symptomDuration: string
+  diagnosis: string
+  allergies: string[]
+  conditions: string[]
+  consultationDate: string
+  consultationTime: string
+  followUpDate: string
+  followUpInstructions: string
+  reasonForRevision: string
+}
+
+export const createEmptyConsultationData = (initialDate?: string): ConsultationData => {
+  const localDateStr =
+    initialDate ||
+    (() => {
+      const d = new Date()
+      return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`
+    })()
+  return {
+    date: localDateStr,
+    time: new Date().toLocaleTimeString([], {
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    }),
+    chiefComplaint: "",
+    symptomDuration: "",
+    diagnosis: "",
+    medicines: [],
+    followUpDate: computeDefaultFollowUpDate(localDateStr),
+    followUpInstructions: "",
+    allergies: [],
+    conditions: [],
+  }
+}
 
 export const getDoseConfig = (formulation: string) => {
   switch (formulation) {
@@ -1308,6 +1353,110 @@ export const diagnosisOptions = [
   "Migraine",
 ]
 
+export const DEFAULT_DIAGNOSIS_OPTIONS: readonly string[] = diagnosisOptions
+
+export const loadCustomDiagnoses = (clinicId?: string): string[] => {
+  if (typeof window === "undefined" || !window.localStorage) {
+    return []
+  }
+  try {
+    const scopedKey = clinicId
+      ? `cliniqo-custom-diagnoses_${clinicId}`
+      : "cliniqo-custom-diagnoses"
+    const raw =
+      window.localStorage.getItem(scopedKey) ||
+      window.localStorage.getItem("cliniqo-custom-diagnoses")
+    if (raw) {
+      const parsed = JSON.parse(raw)
+      if (Array.isArray(parsed)) {
+        return parsed.filter(
+          (item): item is string =>
+            typeof item === "string" && item.trim().length > 0,
+        )
+      }
+    }
+  } catch {}
+  return []
+}
+
+export const saveCustomDiagnoses = (
+  customList: string[],
+  clinicId?: string,
+): void => {
+  if (typeof window === "undefined" || !window.localStorage) return
+  try {
+    const scopedKey = clinicId
+      ? `cliniqo-custom-diagnoses_${clinicId}`
+      : "cliniqo-custom-diagnoses"
+    const cleaned: string[] = []
+    const seen = new Set<string>()
+    for (const d of customList) {
+      if (typeof d !== "string") continue
+      const trimmed = d.trim()
+      const lower = trimmed.toLowerCase()
+      if (trimmed && !seen.has(lower)) {
+        seen.add(lower)
+        cleaned.push(trimmed)
+      }
+    }
+    const raw = JSON.stringify(cleaned)
+    if (clinicId) {
+      window.localStorage.setItem(scopedKey, raw)
+    }
+    window.localStorage.setItem("cliniqo-custom-diagnoses", raw)
+  } catch {}
+}
+
+export const getDiagnosisOptions = (
+  customDiagnoses: string[] = [],
+): string[] => {
+  const result = [...diagnosisOptions]
+  const existingSet = new Set(
+    diagnosisOptions.map((d) => d.trim().toLowerCase()),
+  )
+
+  for (const custom of customDiagnoses) {
+    if (typeof custom !== "string") continue
+    const trimmed = custom.trim()
+    if (!trimmed) continue
+    const lower = trimmed.toLowerCase()
+    if (!existingSet.has(lower)) {
+      existingSet.add(lower)
+      result.push(trimmed)
+    }
+  }
+  return result
+}
+
+export const addCustomDiagnosis = (
+  diagnosis: string,
+  clinicId?: string,
+): string[] => {
+  if (typeof diagnosis !== "string") {
+    return loadCustomDiagnoses(clinicId)
+  }
+  const trimmed = diagnosis.trim()
+  if (!trimmed) {
+    return loadCustomDiagnoses(clinicId)
+  }
+
+  const existingCustom = loadCustomDiagnoses(clinicId)
+  const isDefault = diagnosisOptions.some(
+    (opt) => opt.trim().toLowerCase() === trimmed.toLowerCase(),
+  )
+  const isAlreadyCustom = existingCustom.some(
+    (d) => d.trim().toLowerCase() === trimmed.toLowerCase(),
+  )
+
+  if (!isDefault && !isAlreadyCustom) {
+    const updated = [...existingCustom, trimmed]
+    saveCustomDiagnoses(updated, clinicId)
+    return updated
+  }
+
+  return existingCustom
+}
+
 export const defaultClinicalLibrary: ClinicalLibrary = {
   Medicines: medicineOptions,
   Formulations: [
@@ -1375,11 +1524,68 @@ export const defaultClinicalLibrary: ClinicalLibrary = {
   MedicineDefinitions: [],
 }
 
-export const loadClinicalLibrary = (): ClinicalLibrary => {
+export function mergeCustomLibraryValues(
+  defaultList: readonly string[],
+  customList: string[],
+): string[] {
+  const result = [...defaultList]
+  const seen = new Set(defaultList.map((x) => x.trim().toLowerCase()))
+  for (const item of customList) {
+    if (typeof item !== "string") continue
+    const trimmed = item.trim()
+    if (!trimmed) continue
+    const lower = trimmed.toLowerCase()
+    if (!seen.has(lower)) {
+      seen.add(lower)
+      result.push(trimmed)
+    }
+  }
+  return result
+}
+
+export const saveClinicalLibrary = (
+  library: ClinicalLibrary,
+  clinicId?: string,
+): void => {
+  if (typeof window === "undefined" || !window.localStorage) return
   try {
+    const raw = JSON.stringify(library)
+    if (clinicId) {
+      window.localStorage.setItem(`cliniqo-clinical-library_${clinicId}`, raw)
+    }
+    window.localStorage.setItem("cliniqo-clinical-library", raw)
+  } catch {}
+}
+
+export function addClinicalLibraryItem(
+  library: ClinicalLibrary,
+  category: ClinicalLibraryCategory,
+  value: string,
+  clinicId?: string,
+): ClinicalLibrary {
+  const trimmed = value.trim()
+  if (!trimmed) return library
+  const existing = library[category] || []
+  if (existing.some((item) => item.toLowerCase() === trimmed.toLowerCase())) {
+    return library
+  }
+  const updated: ClinicalLibrary = {
+    ...library,
+    [category]: [...existing, trimmed],
+  }
+  saveClinicalLibrary(updated, clinicId)
+  return updated
+}
+
+export const loadClinicalLibrary = (clinicId?: string): ClinicalLibrary => {
+  try {
+    const scopedKey = clinicId
+      ? `cliniqo-clinical-library_${clinicId}`
+      : "cliniqo-clinical-library"
     const raw =
       typeof window !== "undefined" && window.localStorage
-        ? window.localStorage.getItem("cliniqo-clinical-library")
+        ? window.localStorage.getItem(scopedKey) ||
+          window.localStorage.getItem("cliniqo-clinical-library")
         : null
     if (!raw) return { ...defaultClinicalLibrary }
     const saved = JSON.parse(raw) as Partial<ClinicalLibrary>

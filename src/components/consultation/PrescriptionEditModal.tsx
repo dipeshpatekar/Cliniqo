@@ -1,11 +1,23 @@
-import React, { useState } from "react"
+import React, { useState, useMemo } from "react"
 import {
   type Medicine,
   type ClinicalLibrary,
+  type Vitals,
+  type ConsultationData,
+  type Patient,
+  type PrescriptionRevisionData,
   getDoseConfig,
   topicalFormulations,
   defaultClinicalLibrary,
   emptyMedicine,
+  mergeCustomLibraryValues,
+  getChiefComplaintOptions,
+  loadCustomChiefComplaints,
+  getDiagnosisOptions,
+  loadCustomDiagnoses,
+  symptomDurationOptions,
+  computeDefaultFollowUpDate,
+  formatDateDDMMYYYY,
 } from "../../types"
 import { validateMedicineFormulation } from "../../utils/billing"
 import {
@@ -14,9 +26,24 @@ import {
   Field,
   TextInput,
   SelectInput,
+  SearchableOptionSelect,
   Modal,
+  StatusPill,
 } from "../common"
-import { Plus, Trash2, AlertTriangle, ArrowRight, CheckCircle } from "lucide-react"
+import {
+  Plus,
+  Trash2,
+  AlertTriangle,
+  ArrowRight,
+  CheckCircle,
+  Activity,
+  Stethoscope,
+  Calendar,
+  Clock,
+  Heart,
+  ShieldAlert,
+  CalendarDays,
+} from "lucide-react"
 
 export interface PrescriptionEditModalProps {
   isOpen: boolean
@@ -24,8 +51,17 @@ export interface PrescriptionEditModalProps {
   prescriptionNumber: string
   currentRevisionNumber: number
   initialMedicines: Medicine[]
+  initialVitals?: Vitals
+  initialConsultationData?: ConsultationData
+  patient?: Patient
   clinicalLibrary?: ClinicalLibrary
-  onSaveRevision: (medicines: Medicine[], reasonForRevision: string) => Promise<void>
+  customChiefComplaints?: string[]
+  customDiagnoses?: string[]
+  clinicId?: string
+  onSaveRevision: (
+    revisionData: PrescriptionRevisionData | Medicine[],
+    reasonForRevision?: string,
+  ) => Promise<void>
 }
 
 export function PrescriptionEditModal({
@@ -34,18 +70,182 @@ export function PrescriptionEditModal({
   prescriptionNumber,
   currentRevisionNumber,
   initialMedicines,
+  initialVitals,
+  initialConsultationData,
+  patient,
   clinicalLibrary,
+  customChiefComplaints,
+  customDiagnoses,
+  clinicId,
   onSaveRevision,
 }: PrescriptionEditModalProps) {
-  const [medicines, setMedicines] = useState<Medicine[]>(() =>
-    initialMedicines.length > 0 ? JSON.parse(JSON.stringify(initialMedicines)) : [emptyMedicine(1)],
+  // --- SECTION A: Vitals State ---
+  const [vitals, setVitals] = useState<Vitals>(() => ({
+    systolic: initialVitals?.systolic || "",
+    diastolic: initialVitals?.diastolic || "",
+    heartRate: initialVitals?.heartRate || "",
+    spo2: initialVitals?.spo2 || "",
+    temperature: initialVitals?.temperature || "",
+    height: initialVitals?.height || "",
+    weight: initialVitals?.weight || "",
+  }))
+
+  // --- SECTION B: Clinical Notes State ---
+  const [chiefComplaint, setChiefComplaint] = useState(
+    () => initialConsultationData?.chiefComplaint || "",
   )
+  const [symptomDuration, setSymptomDuration] = useState(
+    () => initialConsultationData?.symptomDuration || "",
+  )
+  const [diagnosis, setDiagnosis] = useState(
+    () => initialConsultationData?.diagnosis || "",
+  )
+
+  // --- SECTION C: Medical Background State ---
+  const [allergiesStr, setAllergiesStr] = useState(() =>
+    (
+      initialConsultationData?.allergies ??
+      patient?.allergies ??
+      []
+    ).join(", "),
+  )
+  const [conditionsStr, setConditionsStr] = useState(() =>
+    (
+      initialConsultationData?.conditions ??
+      patient?.conditions ??
+      []
+    ).join(", "),
+  )
+
+  // --- SECTION D: Consultation Information State ---
+  const [consultationDate, setConsultationDate] = useState(() =>
+    initialConsultationData?.date
+      ? initialConsultationData.date.split("T")[0]
+      : new Date().toISOString().slice(0, 10),
+  )
+  const [consultationTime, setConsultationTime] = useState(() =>
+    initialConsultationData?.time
+      ? initialConsultationData.time
+      : new Date().toLocaleTimeString([], {
+          hour: "2-digit",
+          minute: "2-digit",
+          hour12: false,
+        }),
+  )
+
+  // --- SECTION E: Prescription Information State ---
+  const [medicines, setMedicines] = useState<Medicine[]>(() =>
+    initialMedicines.length > 0
+      ? JSON.parse(JSON.stringify(initialMedicines))
+      : [emptyMedicine(1)],
+  )
+  const [followUpDate, setFollowUpDate] = useState(() =>
+    initialConsultationData?.followUpDate
+      ? initialConsultationData.followUpDate
+      : computeDefaultFollowUpDate(consultationDate),
+  )
+  const [followUpInstructions, setFollowUpInstructions] = useState(
+    () => initialConsultationData?.followUpInstructions || "",
+  )
+
+  // --- Revision Meta State ---
   const [reasonForRevision, setReasonForRevision] = useState("")
   const [step, setStep] = useState<"edit" | "confirm">("edit")
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   if (!isOpen) return null
+
+  // --- Options & Suggestions (with Custom Clinical Library Values) ---
+  const lib = clinicalLibrary || defaultClinicalLibrary
+
+  const mergedFormulations = useMemo(
+    () =>
+      mergeCustomLibraryValues(
+        lib.Formulations || defaultClinicalLibrary.Formulations,
+        medicines.map((m) => m.formulation).filter(Boolean),
+      ),
+    [lib.Formulations, medicines],
+  )
+
+  const mergedMedicineNames = useMemo(
+    () =>
+      mergeCustomLibraryValues(
+        lib.Medicines || defaultClinicalLibrary.Medicines,
+        medicines.map((m) => m.name).filter(Boolean),
+      ),
+    [lib.Medicines, medicines],
+  )
+
+  const mergedStrengths = useMemo(
+    () =>
+      mergeCustomLibraryValues(
+        lib.Strengths || defaultClinicalLibrary.Strengths,
+        medicines.map((m) => m.strength).filter(Boolean),
+      ),
+    [lib.Strengths, medicines],
+  )
+
+  const mergedDoses = useMemo(
+    () =>
+      mergeCustomLibraryValues(
+        lib.Doses || defaultClinicalLibrary.Doses,
+        medicines.map((m) => m.dose).filter(Boolean),
+      ),
+    [lib.Doses, medicines],
+  )
+
+  const mergedFrequencies = useMemo(
+    () =>
+      mergeCustomLibraryValues(
+        lib.Frequencies || defaultClinicalLibrary.Frequencies,
+        medicines.map((m) => m.frequency).filter(Boolean),
+      ),
+    [lib.Frequencies, medicines],
+  )
+
+  const mergedDurations = useMemo(
+    () =>
+      mergeCustomLibraryValues(
+        lib.Durations || defaultClinicalLibrary.Durations,
+        medicines.map((m) => m.duration).filter(Boolean),
+      ),
+    [lib.Durations, medicines],
+  )
+
+  const mergedFoodInstructions = useMemo(
+    () =>
+      mergeCustomLibraryValues(
+        lib.FoodInstructions || defaultClinicalLibrary.FoodInstructions,
+        medicines.map((m) => m.food).filter(Boolean),
+      ),
+    [lib.FoodInstructions, medicines],
+  )
+
+  const mergedChiefComplaints = useMemo(
+    () =>
+      getChiefComplaintOptions(
+        customChiefComplaints !== undefined
+          ? customChiefComplaints
+          : loadCustomChiefComplaints(clinicId),
+      ),
+    [customChiefComplaints, clinicId],
+  )
+
+  const mergedDiagnoses = useMemo(
+    () =>
+      getDiagnosisOptions(
+        customDiagnoses !== undefined
+          ? customDiagnoses
+          : loadCustomDiagnoses(clinicId),
+      ),
+    [customDiagnoses, clinicId],
+  )
+
+  // --- Handlers ---
+  const updateVital = (key: keyof Vitals, val: string) => {
+    setVitals((prev) => ({ ...prev, [key]: val }))
+  }
 
   const addRow = () => {
     const nextId = Math.max(...medicines.map((m) => m.id), 0) + 1
@@ -70,7 +270,9 @@ export function PrescriptionEditModal({
           ...row,
           formulation,
           route: formulation === "Injection" ? "Intravenous (IV)" : "",
-          food: topicalFormulations.has(formulation) ? "Not applicable" : row.food,
+          food: topicalFormulations.has(formulation)
+            ? "Not applicable"
+            : row.food,
         }
       }),
     )
@@ -95,7 +297,9 @@ export function PrescriptionEditModal({
       return
     }
     if (!isReasonValid) {
-      setError("Please provide a valid reason for revision (at least 5 characters).")
+      setError(
+        "Please provide a valid reason for revision (at least 5 characters).",
+      )
       return
     }
     setStep("confirm")
@@ -105,7 +309,31 @@ export function PrescriptionEditModal({
     setError(null)
     setIsSubmitting(true)
     try {
-      await onSaveRevision(medicines, reasonForRevision.trim())
+      const parsedAllergies = allergiesStr
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean)
+      const parsedConditions = conditionsStr
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean)
+
+      const revisionData: PrescriptionRevisionData = {
+        medicines,
+        vitals,
+        chiefComplaint: chiefComplaint.trim(),
+        symptomDuration: symptomDuration.trim(),
+        diagnosis: diagnosis.trim(),
+        allergies: parsedAllergies,
+        conditions: parsedConditions,
+        consultationDate,
+        consultationTime,
+        followUpDate,
+        followUpInstructions: followUpInstructions.trim(),
+        reasonForRevision: reasonForRevision.trim(),
+      }
+
+      await onSaveRevision(revisionData, reasonForRevision.trim())
       onClose()
     } catch (err: any) {
       setError(err?.message || "Failed to save prescription revision.")
@@ -123,13 +351,13 @@ export function PrescriptionEditModal({
       }
       description={
         step === "edit"
-          ? "Modify medicines or dosing terms. Finalizing will create an immutable new revision."
-          : `Please confirm the changes for Revision ${currentRevisionNumber + 1}. Previous revisions remain unchanged.`
+          ? "Modify clinical notes, vitals, consultation details or medicines. Finalizing creates an immutable new revision."
+          : `Please confirm all changes for Revision ${currentRevisionNumber + 1}. Previous revisions remain unchanged.`
       }
       onClose={onClose}
-      width="large"
+      width="wide"
     >
-      <div className="space-y-4 max-h-[75vh] overflow-y-auto px-4 py-3">
+      <div className="space-y-5 max-h-[80vh] overflow-y-auto px-4 py-3">
         {error && (
           <div
             className="p-3 bg-red-50 dark:bg-red-950/40 border border-red-300 dark:border-red-800 text-red-700 dark:text-red-300 rounded-lg text-sm flex items-start gap-2"
@@ -142,183 +370,421 @@ export function PrescriptionEditModal({
 
         {step === "edit" ? (
           <>
-            <div className="flex items-center justify-between pb-2 border-b border-slate-200 dark:border-slate-800">
-              <span className="text-sm font-semibold text-slate-800 dark:text-slate-200">
-                Medicines list ({medicines.length})
-              </span>
-              <Button size="sm" variant="secondary" icon={Plus} onClick={addRow}>
-                Add medicine
-              </Button>
+            {/* 1. CONSULTATION DETAILS SECTION */}
+            <div className="p-4 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/60 dark:bg-slate-900/40 space-y-3">
+              <div className="flex items-center gap-2 pb-1 border-b border-slate-200/80 dark:border-slate-800">
+                <Calendar size={16} className="text-teal-600 dark:text-teal-400" />
+                <h3 className="text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-300">
+                  Consultation Information
+                </h3>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+                <Field label="Consultation Date">
+                  <TextInput
+                    type="date"
+                    value={consultationDate}
+                    onChange={(e) => setConsultationDate(e.target.value)}
+                  />
+                </Field>
+                <Field label="Consultation Time">
+                  <TextInput
+                    type="time"
+                    value={consultationTime}
+                    onChange={(e) => setConsultationTime(e.target.value)}
+                  />
+                </Field>
+              </div>
             </div>
 
-            <div className="space-y-3.5">
-              {medicines.map((medicine, idx) => {
-                const doseConfig = getDoseConfig(medicine.formulation)
-                const validation = validationResults[idx]
-                return (
-                  <div
-                    key={medicine.id}
-                    className={`p-3.5 rounded-xl border ${
-                      validation.valid
-                        ? "border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900/60"
-                        : "border-amber-300 dark:border-amber-800 bg-amber-50/30 dark:bg-amber-950/20"
-                    } shadow-xs space-y-3`}
-                  >
-                    <div className="flex items-center justify-between">
-                      <span className="text-xs font-semibold text-slate-400 dark:text-slate-500">
-                        #{idx + 1}
-                      </span>
-                      <IconButton
-                        label={`Remove medicine ${idx + 1}`}
-                        onClick={() => removeRow(medicine.id)}
-                        disabled={medicines.length <= 1}
-                        className="text-red-400 hover:text-red-600 dark:text-red-400 dark:hover:text-red-300 p-1"
-                      >
-                        <Trash2 size={16} />
-                      </IconButton>
-                    </div>
+            {/* 2. CLINICAL NOTES SECTION */}
+            <div className="p-4 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/60 dark:bg-slate-900/40 space-y-3">
+              <div className="flex items-center gap-2 pb-1 border-b border-slate-200/80 dark:border-slate-800">
+                <Stethoscope
+                  size={16}
+                  className="text-teal-600 dark:text-teal-400"
+                />
+                <h3 className="text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-300">
+                  Clinical Notes
+                </h3>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3.5">
+                <Field label="Chief Complaints">
+                  <SearchableOptionSelect
+                    id="edit-chief-complaint"
+                    value={chiefComplaint}
+                    options={mergedChiefComplaints}
+                    onChange={setChiefComplaint}
+                    placeholder="Search or enter chief complaint"
+                    ariaLabel="Search and select chief complaint"
+                    emptyMessage="Type custom complaint"
+                  />
+                </Field>
+                <Field label="Symptom Duration">
+                  <SearchableOptionSelect
+                    id="edit-symptom-duration"
+                    value={symptomDuration}
+                    options={symptomDurationOptions}
+                    onChange={setSymptomDuration}
+                    placeholder="Select or enter duration"
+                    ariaLabel="Search and select symptom duration"
+                    emptyMessage="Type custom duration"
+                  />
+                </Field>
+                <Field label="Diagnosis">
+                  <SearchableOptionSelect
+                    id="edit-diagnosis"
+                    value={diagnosis}
+                    options={mergedDiagnoses}
+                    onChange={setDiagnosis}
+                    placeholder="Search or enter diagnosis"
+                    ariaLabel="Search and select diagnosis"
+                    emptyMessage="Type custom diagnosis"
+                  />
+                </Field>
+              </div>
+            </div>
 
-                    <div className="grid grid-cols-1 sm:grid-cols-12 gap-3">
-                      <div className="sm:col-span-4">
-                        <Field label="Formulation *">
+            {/* 3. PATIENT VITALS SECTION */}
+            <div className="p-4 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/60 dark:bg-slate-900/40 space-y-3">
+              <div className="flex items-center gap-2 pb-1 border-b border-slate-200/80 dark:border-slate-800">
+                <Activity size={16} className="text-teal-600 dark:text-teal-400" />
+                <h3 className="text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-300">
+                  Patient Vitals
+                </h3>
+              </div>
+              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-3">
+                <Field label="BP (Systolic)">
+                  <TextInput
+                    placeholder="120"
+                    value={vitals.systolic}
+                    onChange={(e) => updateVital("systolic", e.target.value)}
+                  />
+                </Field>
+                <Field label="BP (Diastolic)">
+                  <TextInput
+                    placeholder="80"
+                    value={vitals.diastolic}
+                    onChange={(e) => updateVital("diastolic", e.target.value)}
+                  />
+                </Field>
+                <Field label="Heart Rate (bpm)">
+                  <TextInput
+                    placeholder="72"
+                    value={vitals.heartRate}
+                    onChange={(e) => updateVital("heartRate", e.target.value)}
+                  />
+                </Field>
+                <Field label="SpO₂ (%)">
+                  <TextInput
+                    placeholder="98"
+                    value={vitals.spo2}
+                    onChange={(e) => updateVital("spo2", e.target.value)}
+                  />
+                </Field>
+                <Field label="Temp (°F)">
+                  <TextInput
+                    placeholder="98.6"
+                    value={vitals.temperature}
+                    onChange={(e) => updateVital("temperature", e.target.value)}
+                  />
+                </Field>
+                <Field label="Weight (kg)">
+                  <TextInput
+                    placeholder="65"
+                    value={vitals.weight}
+                    onChange={(e) => updateVital("weight", e.target.value)}
+                  />
+                </Field>
+              </div>
+            </div>
+
+            {/* 4. MEDICAL BACKGROUND SECTION */}
+            <div className="p-4 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/60 dark:bg-slate-900/40 space-y-3">
+              <div className="flex items-center gap-2 pb-1 border-b border-slate-200/80 dark:border-slate-800">
+                <ShieldAlert
+                  size={16}
+                  className="text-teal-600 dark:text-teal-400"
+                />
+                <h3 className="text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-300">
+                  Medical Background
+                </h3>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+                <Field label="Known Allergies (comma-separated)">
+                  <TextInput
+                    value={allergiesStr}
+                    onChange={(e) => setAllergiesStr(e.target.value)}
+                    placeholder="e.g. Penicillin, Sulfa drugs"
+                  />
+                </Field>
+                <Field label="Medical History (comma-separated)">
+                  <TextInput
+                    value={conditionsStr}
+                    onChange={(e) => setConditionsStr(e.target.value)}
+                    placeholder="e.g. Hypertension, Type 2 diabetes"
+                  />
+                </Field>
+              </div>
+            </div>
+
+            {/* 5. MEDICINES LIST SECTION */}
+            <div className="space-y-3">
+              <div className="flex items-center justify-between pb-2 border-b border-slate-200 dark:border-slate-800">
+                <div className="flex items-center gap-2">
+                  <Heart
+                    size={16}
+                    className="text-teal-600 dark:text-teal-400"
+                  />
+                  <span className="text-sm font-semibold text-slate-800 dark:text-slate-200">
+                    Medicines List ({medicines.length})
+                  </span>
+                </div>
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  icon={Plus}
+                  onClick={addRow}
+                >
+                  Add medicine
+                </Button>
+              </div>
+
+              <div className="space-y-3.5">
+                {medicines.map((medicine, idx) => {
+                  const doseConfig = getDoseConfig(medicine.formulation)
+                  const validation = validationResults[idx]
+                  return (
+                    <div
+                      key={medicine.id}
+                      className={`p-3.5 rounded-xl border ${
+                        validation.valid
+                          ? "border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900/60"
+                          : "border-amber-300 dark:border-amber-800 bg-amber-50/30 dark:bg-amber-950/20"
+                      } shadow-xs space-y-3`}
+                    >
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs font-semibold text-slate-400 dark:text-slate-500">
+                          #{idx + 1}
+                        </span>
+                        <IconButton
+                          label={`Remove medicine ${idx + 1}`}
+                          onClick={() => removeRow(medicine.id)}
+                          disabled={medicines.length <= 1}
+                          className="text-red-400 hover:text-red-600 dark:text-red-400 dark:hover:text-red-300 p-1"
+                        >
+                          <Trash2 size={16} />
+                        </IconButton>
+                      </div>
+
+                      {/* Row 1: Formulation, Medicine Name, Strength, Dose */}
+                      <div className="grid grid-cols-1 sm:grid-cols-12 gap-3">
+                        <div className="sm:col-span-3">
+                          <Field label="Formulation *">
+                            <SelectInput
+                              value={medicine.formulation}
+                              onChange={(e) =>
+                                handleFormulationChange(
+                                  medicine.id,
+                                  e.target.value,
+                                )
+                              }
+                            >
+                              <option value="">Select formulation</option>
+                              {mergedFormulations.map((f) => (
+                                <option key={f} value={f}>
+                                  {f}
+                                </option>
+                              ))}
+                            </SelectInput>
+                          </Field>
+                        </div>
+
+                        <div className="sm:col-span-4">
+                          <Field label="Medicine Name *">
+                            <SearchableOptionSelect
+                              id={`edit-med-name-${medicine.id}`}
+                              value={medicine.name}
+                              options={mergedMedicineNames}
+                              onChange={(val) =>
+                                updateRow(medicine.id, "name", val)
+                              }
+                              placeholder="e.g. Paracetamol"
+                              ariaLabel="Medicine name"
+                              emptyMessage="Type custom medicine name"
+                            />
+                          </Field>
+                        </div>
+
+                        <div className="sm:col-span-3">
+                          <Field label="Strength *">
+                            <SearchableOptionSelect
+                              id={`edit-med-strength-${medicine.id}`}
+                              value={medicine.strength}
+                              options={mergedStrengths}
+                              onChange={(val) =>
+                                updateRow(medicine.id, "strength", val)
+                              }
+                              placeholder="e.g. 500 mg"
+                              ariaLabel="Medicine strength"
+                              emptyMessage="Type custom strength"
+                            />
+                          </Field>
+                        </div>
+
+                        <div className="sm:col-span-2">
+                          <Field
+                            label={`Dose (${doseConfig.unit || "unit"}) *`}
+                          >
+                            <SearchableOptionSelect
+                              id={`edit-med-dose-${medicine.id}`}
+                              value={medicine.dose}
+                              options={mergedDoses}
+                              onChange={(val) =>
+                                updateRow(medicine.id, "dose", val)
+                              }
+                              placeholder={doseConfig.placeholder || "1"}
+                              ariaLabel="Medicine dose"
+                              emptyMessage="Type custom dose"
+                            />
+                          </Field>
+                        </div>
+                      </div>
+
+                      {/* Row 2: Frequency, Duration, Food timing */}
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                        <Field label="Frequency *">
+                          <SearchableOptionSelect
+                            id={`edit-med-frequency-${medicine.id}`}
+                            value={medicine.frequency}
+                            options={mergedFrequencies}
+                            onChange={(val) =>
+                              updateRow(medicine.id, "frequency", val)
+                            }
+                            placeholder="Select or enter frequency"
+                            ariaLabel="Medicine frequency"
+                            emptyMessage="Type custom frequency"
+                          />
+                        </Field>
+
+                        <Field label="Duration *">
+                          <SearchableOptionSelect
+                            id={`edit-med-duration-${medicine.id}`}
+                            value={medicine.duration}
+                            options={mergedDurations}
+                            onChange={(val) =>
+                              updateRow(medicine.id, "duration", val)
+                            }
+                            placeholder="e.g. 5 days"
+                            ariaLabel="Medicine duration"
+                            emptyMessage="Type custom duration"
+                          />
+                        </Field>
+
+                        <Field label="Food Timing">
+                          <SearchableOptionSelect
+                            id={`edit-med-food-${medicine.id}`}
+                            value={medicine.food}
+                            options={mergedFoodInstructions}
+                            onChange={(val) =>
+                              updateRow(medicine.id, "food", val)
+                            }
+                            placeholder="Select or enter food timing"
+                            ariaLabel="Food timing"
+                            emptyMessage="Type custom food timing"
+                          />
+                        </Field>
+                      </div>
+
+                      {medicine.formulation === "Injection" && (
+                        <Field label="Route (Required for Injection)">
                           <SelectInput
-                            value={medicine.formulation}
+                            value={medicine.route}
                             onChange={(e) =>
-                              handleFormulationChange(medicine.id, e.target.value)
+                              updateRow(medicine.id, "route", e.target.value)
                             }
                           >
-                            <option value="">Select</option>
-                            {(clinicalLibrary?.Formulations || defaultClinicalLibrary.Formulations).map((f) => (
-                              <option key={f} value={f}>
-                                {f}
-                              </option>
-                            ))}
+                            <option value="">Select route</option>
+                            <option value="Intravenous (IV)">
+                              Intravenous (IV)
+                            </option>
+                            <option value="Intramuscular (IM)">
+                              Intramuscular (IM)
+                            </option>
+                            <option value="Subcutaneous (SC)">
+                              Subcutaneous (SC)
+                            </option>
                           </SelectInput>
                         </Field>
-                      </div>
+                      )}
 
-                      <div className="sm:col-span-5">
-                        <Field label="Medicine Name *">
+                      {topicalFormulations.has(medicine.formulation) && (
+                        <Field label="Directions (Required for Topical)">
                           <TextInput
-                            value={medicine.name}
+                            value={medicine.directions}
                             onChange={(e) =>
-                              updateRow(medicine.id, "name", e.target.value)
+                              updateRow(
+                                medicine.id,
+                                "directions",
+                                e.target.value,
+                              )
                             }
-                            placeholder="e.g. Paracetamol"
+                            placeholder="Apply to affected area twice daily"
                           />
                         </Field>
-                      </div>
+                      )}
 
-                      <div className="sm:col-span-3">
-                        <Field label="Strength *">
-                          <TextInput
-                            value={medicine.strength}
-                            onChange={(e) =>
-                              updateRow(medicine.id, "strength", e.target.value)
-                            }
-                            placeholder="e.g. 500 mg"
-                          />
-                        </Field>
-                      </div>
+                      {!validation.valid && (
+                        <p className="text-xs text-amber-600 dark:text-amber-400 font-medium">
+                          ⚠️ {validation.error}
+                        </p>
+                      )}
                     </div>
+                  )
+                })}
+              </div>
 
-                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-                      <Field label={`Dose (${doseConfig.unit || "unit"}) *`}>
-                        <TextInput
-                          value={medicine.dose}
-                          onChange={(e) =>
-                            updateRow(medicine.id, "dose", e.target.value)
-                          }
-                          placeholder={doseConfig.placeholder || "1"}
-                        />
-                      </Field>
-
-                      <Field label="Frequency *">
-                        <SelectInput
-                          value={medicine.frequency}
-                          onChange={(e) =>
-                            updateRow(medicine.id, "frequency", e.target.value)
-                          }
-                        >
-                          <option value="">Select</option>
-                          <option value="Once daily">Once daily</option>
-                          <option value="Twice daily">Twice daily</option>
-                          <option value="Three times daily">Three times</option>
-                          <option value="Four times daily">Four times</option>
-                          <option value="As needed">As needed (SOS)</option>
-                        </SelectInput>
-                      </Field>
-
-                      <Field label="Duration *">
-                        <TextInput
-                          value={medicine.duration}
-                          onChange={(e) =>
-                            updateRow(medicine.id, "duration", e.target.value)
-                          }
-                          placeholder="e.g. 5 days"
-                        />
-                      </Field>
-
-                      <Field label="Food timing">
-                        <SelectInput
-                          value={medicine.food}
-                          onChange={(e) =>
-                            updateRow(medicine.id, "food", e.target.value)
-                          }
-                        >
-                          <option value="">Select</option>
-                          <option value="After food">After food</option>
-                          <option value="Before food">Before food</option>
-                          <option value="With food">With food</option>
-                          <option value="Not applicable">Not applicable</option>
-                        </SelectInput>
-                      </Field>
-                    </div>
-
-                    {medicine.formulation === "Injection" && (
-                      <Field label="Route (Required for Injection)">
-                        <SelectInput
-                          value={medicine.route}
-                          onChange={(e) =>
-                            updateRow(medicine.id, "route", e.target.value)
-                          }
-                        >
-                          <option value="">Select route</option>
-                          <option value="Intravenous (IV)">Intravenous (IV)</option>
-                          <option value="Intramuscular (IM)">Intramuscular (IM)</option>
-                          <option value="Subcutaneous (SC)">Subcutaneous (SC)</option>
-                        </SelectInput>
-                      </Field>
-                    )}
-
-                    {topicalFormulations.has(medicine.formulation) && (
-                      <Field label="Directions (Required for Topical)">
-                        <TextInput
-                          value={medicine.directions}
-                          onChange={(e) =>
-                            updateRow(medicine.id, "directions", e.target.value)
-                          }
-                          placeholder="Apply to affected area twice daily"
-                        />
-                      </Field>
-                    )}
-
-                    {!validation.valid && (
-                      <p className="text-xs text-amber-600 dark:text-amber-400 font-medium">
-                        ⚠️ {validation.error}
-                      </p>
-                    )}
-                  </div>
-                )
-              })}
+              <div className="flex justify-center pt-1">
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  icon={Plus}
+                  onClick={addRow}
+                >
+                  Add medicine
+                </Button>
+              </div>
             </div>
 
-            <div className="flex justify-center pt-1">
-              <Button size="sm" variant="secondary" icon={Plus} onClick={addRow}>
-                Add medicine
-              </Button>
+            {/* 6. FOLLOW-UP & ADDITIONAL ADVICE (ADV) SECTION */}
+            <div className="p-4 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/60 dark:bg-slate-900/40 space-y-3">
+              <div className="flex items-center gap-2 pb-1 border-b border-slate-200/80 dark:border-slate-800">
+                <CalendarDays
+                  size={16}
+                  className="text-teal-600 dark:text-teal-400"
+                />
+                <h3 className="text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-300">
+                  Follow-up & Additional Advice
+                </h3>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+                <Field label="Follow-up Date">
+                  <TextInput
+                    type="date"
+                    value={followUpDate}
+                    onChange={(e) => setFollowUpDate(e.target.value)}
+                  />
+                </Field>
+                <Field label="Additional Advice (ADV)">
+                  <TextInput
+                    value={followUpInstructions}
+                    onChange={(e) => setFollowUpInstructions(e.target.value)}
+                    placeholder="e.g. Review in clinic after 3 days with reports"
+                  />
+                </Field>
+              </div>
             </div>
 
+            {/* 7. REVISION REASON SECTION */}
             <div className="pt-2">
               <Field
                 label="Reason for revision (Required, min 5 characters) *"
@@ -327,13 +793,14 @@ export function PrescriptionEditModal({
                 <TextInput
                   value={reasonForRevision}
                   onChange={(e) => setReasonForRevision(e.target.value)}
-                  placeholder="e.g. Adjusted antibiotic duration due to persistent cough"
+                  placeholder="e.g. Adjusted antibiotic duration and updated vitals"
                   className="w-full"
                 />
               </Field>
             </div>
 
-            <div className="flex justify-end items-center gap-3 pt-3 border-t border-slate-200 dark:border-slate-800">
+            {/* STICKY ACCESSIBLE FOOTER */}
+            <div className="sticky -bottom-3 bg-white dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800 pt-3 pb-2 flex justify-end items-center gap-3 z-10">
               <Button variant="ghost" onClick={onClose}>
                 Cancel
               </Button>
@@ -349,26 +816,70 @@ export function PrescriptionEditModal({
           </>
         ) : (
           <div className="space-y-4">
-            <div className="p-3 rounded-lg bg-teal-50 dark:bg-teal-950/40 border border-teal-200 dark:border-teal-800 text-sm">
+            <div className="p-3.5 rounded-lg bg-teal-50 dark:bg-teal-950/40 border border-teal-200 dark:border-teal-800 text-sm space-y-1.5">
               <p className="font-semibold text-teal-900 dark:text-teal-200">
                 Revision Details
               </p>
-              <p className="text-teal-800 dark:text-teal-300 text-xs mt-1">
-                Prescription: <strong>{prescriptionNumber}</strong> · Target Revision:{" "}
+              <p className="text-teal-800 dark:text-teal-300 text-xs">
+                Prescription: <strong>{prescriptionNumber}</strong> · Target:{" "}
                 <strong>Revision {currentRevisionNumber + 1}</strong>
               </p>
-              <p className="text-teal-800 dark:text-teal-300 text-xs mt-1">
+              <p className="text-teal-800 dark:text-teal-300 text-xs">
                 Reason: <em>"{reasonForRevision}"</em>
               </p>
             </div>
 
+            {/* Revision Summary Grid */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+              <div className="p-3 rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900 space-y-1">
+                <span className="font-bold uppercase tracking-wider text-slate-500">
+                  Consultation Info
+                </span>
+                <p>
+                  Date: {formatDateDDMMYYYY(consultationDate) || "N/A"} · Time:{" "}
+                  {consultationTime || "N/A"}
+                </p>
+                <p>
+                  Complaint: {chiefComplaint || "None"}
+                  {symptomDuration ? ` (${symptomDuration})` : ""}
+                </p>
+                <p>Diagnosis: {diagnosis || "None"}</p>
+              </div>
+
+              <div className="p-3 rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900 space-y-1">
+                <span className="font-bold uppercase tracking-wider text-slate-500">
+                  Vitals & Follow-up
+                </span>
+                <p>
+                  BP:{" "}
+                  {vitals.systolic && vitals.diastolic
+                    ? `${vitals.systolic}/${vitals.diastolic} mmHg`
+                    : "—"}{" "}
+                  · HR: {vitals.heartRate ? `${vitals.heartRate} bpm` : "—"} ·
+                  SpO₂: {vitals.spo2 ? `${vitals.spo2}%` : "—"}
+                </p>
+                <p>
+                  Follow-up: {formatDateDDMMYYYY(followUpDate) || "N/A"} · ADV:{" "}
+                  {followUpInstructions || "None"}
+                </p>
+                <p>
+                  Allergies: {allergiesStr || "None"} · History:{" "}
+                  {conditionsStr || "None"}
+                </p>
+              </div>
+            </div>
+
             <div>
               <p className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">
-                Medicines in Revision {currentRevisionNumber + 1} ({medicines.length})
+                Medicines in Revision {currentRevisionNumber + 1} (
+                {medicines.length})
               </p>
               <ul className="divide-y divide-slate-200 dark:divide-slate-800 border rounded-lg border-slate-200 dark:border-slate-800">
                 {medicines.map((m, idx) => (
-                  <li key={m.id} className="p-2.5 text-xs flex justify-between items-center">
+                  <li
+                    key={m.id}
+                    className="p-2.5 text-xs flex justify-between items-center"
+                  >
                     <div>
                       <strong className="text-slate-800 dark:text-slate-200">
                         {idx + 1}. {m.name} ({m.formulation}) {m.strength}
@@ -377,15 +888,20 @@ export function PrescriptionEditModal({
                         Dose: {m.dose} · {m.frequency} · {m.duration}
                         {m.food ? ` · ${m.food}` : ""}
                         {m.route ? ` · ${m.route}` : ""}
+                        {m.directions ? ` · ${m.directions}` : ""}
                       </p>
                     </div>
-                    <CheckCircle size={16} className="text-teal-600 shrink-0" />
+                    <CheckCircle
+                      size={16}
+                      className="text-teal-600 shrink-0"
+                    />
                   </li>
                 ))}
               </ul>
             </div>
 
-            <div className="flex justify-end gap-2 pt-3 border-t border-slate-200 dark:border-slate-800">
+            {/* STICKY ACCESSIBLE CONFIRM FOOTER */}
+            <div className="sticky -bottom-3 bg-white dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800 pt-3 pb-2 flex justify-end gap-2 z-10">
               <Button
                 variant="ghost"
                 onClick={() => setStep("edit")}

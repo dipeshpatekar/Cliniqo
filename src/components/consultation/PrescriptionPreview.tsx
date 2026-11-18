@@ -24,6 +24,7 @@ import {
   type Vitals,
   type ConsultationData,
   type Medicine,
+  type ClinicalLibrary,
 } from "../../types"
 import { cn } from "../../utils/cn"
 import { getGenuineAllergies } from "../../utils/allergy"
@@ -54,12 +55,15 @@ export interface PrescriptionPreviewProps {
   desktopSession?: DesktopSessionContext | null
   prescriptionRecord?: LocalPrescriptionRecord | null
   onRevisePrescription?: (
-    medicines: Medicine[],
-    reasonForRevision: string,
+    medicinesOrData: any,
+    reasonForRevision?: string,
   ) => Promise<void>
   itemsError?: string | null
   topSpacingMm?: number
   onAddPatient?: () => void
+  clinicalLibrary?: ClinicalLibrary
+  customChiefComplaints?: string[]
+  customDiagnoses?: string[]
 }
 
 export function PrescriptionPreview({
@@ -80,6 +84,9 @@ export function PrescriptionPreview({
   itemsError,
   topSpacingMm = 0,
   onAddPatient,
+  clinicalLibrary,
+  customChiefComplaints,
+  customDiagnoses,
 }: PrescriptionPreviewProps) {
   const [whatsapp, setWhatsapp] = useState(false)
   const [delivery, setDelivery] =
@@ -409,7 +416,7 @@ export function PrescriptionPreview({
             <div>
               <span>PATIENT NAME · AGE · GENDER</span>
               <strong>
-                {patient.name}
+                <span className="rx-patient-name-val">{patient.name}</span>
                 {formatPatientAgeGender(patient.age, patient.gender, "yrs", patient.ageMonths) &&
                 formatPatientAgeGender(patient.age, patient.gender, "yrs", patient.ageMonths) !== "— · —"
                   ? ` (${formatPatientAgeGender(patient.age, patient.gender, "yrs", patient.ageMonths)})`
@@ -793,7 +800,14 @@ export function PrescriptionPreview({
           prescriptionNumber={prescriptionRecord.prescription_number}
           currentRevisionNumber={prescriptionRecord.revision_number}
           initialMedicines={data.medicines}
-          onSaveRevision={onRevisePrescription}
+          initialVitals={vitals}
+          initialConsultationData={data}
+          patient={patient}
+          clinicalLibrary={clinicalLibrary}
+          customChiefComplaints={customChiefComplaints}
+          customDiagnoses={customDiagnoses}
+          clinicId={desktopSession?.clinic_id}
+          onSaveRevision={onRevisePrescription as any}
         />
       )}
     </>

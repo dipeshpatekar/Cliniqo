@@ -313,7 +313,9 @@ export function BillPreview({
           <section className="rx-patient">
             <div>
               <span>Billed to</span>
-              <strong>{patient.name}</strong>
+              <strong className="bill-patient-name">
+                <span className="rx-patient-name-val">{patient.name}</span>
+              </strong>
               <small>
                 {formatPatientAgeGender(
                   patient.age,
@@ -480,7 +482,9 @@ export function BillPreview({
                 <span className="avatar">{patient.initials}</span>
                 <div>
                   <small>Patient</small>
-                  <strong>{patient.name}</strong>
+                  <strong className="bill-patient-name">
+                <span className="rx-patient-name-val">{patient.name}</span>
+              </strong>
                   <span>{patient.phone}</span>
                 </div>
               </div>

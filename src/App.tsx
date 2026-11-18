@@ -24,10 +24,13 @@ import type {
   BillItem,
   BillLayoutPreferences,
   PatientFormFieldPreferences,
+  PrescriptionRevisionData,
 } from "./types"
 import {
   createEmptyConsultationData,
   loadClinicalLibrary,
+  saveClinicalLibrary,
+  addClinicalLibraryItem,
   loadPatientFormFieldPreferences,
   savePatientFormFieldPreferences,
   loadPrescriptionLayoutPreferences,
@@ -41,6 +44,9 @@ import {
   loadCustomChiefComplaints,
   saveCustomChiefComplaints,
   addCustomChiefComplaint,
+  loadCustomDiagnoses,
+  saveCustomDiagnoses,
+  addCustomDiagnosis,
   complaintOptions,
 } from "./types"
 import { cn } from "./utils/cn"
@@ -328,6 +334,9 @@ export default function App({
   const [customChiefComplaints, setCustomChiefComplaints] = useState<string[]>(
     () => loadCustomChiefComplaints(desktopSession?.clinic_id),
   )
+  const [customDiagnoses, setCustomDiagnoses] = useState<string[]>(() =>
+    loadCustomDiagnoses(desktopSession?.clinic_id),
+  )
 
   const handleAddCustomChiefComplaint = (complaint: string) => {
     const updated = addCustomChiefComplaint(
@@ -335,6 +344,14 @@ export default function App({
       desktopSession?.clinic_id,
     )
     setCustomChiefComplaints(updated)
+  }
+
+  const handleAddCustomDiagnosis = (diagnosis: string) => {
+    const updated = addCustomDiagnosis(
+      diagnosis,
+      desktopSession?.clinic_id,
+    )
+    setCustomDiagnoses(updated)
   }
 
   useEffect(() => {
@@ -356,6 +373,8 @@ export default function App({
     setPatientFormFieldPreferences(clinicPatientFormPrefs)
 
     setCustomChiefComplaints(loadCustomChiefComplaints(clinicId))
+    setCustomDiagnoses(loadCustomDiagnoses(clinicId))
+    setClinicalLibrary(loadClinicalLibrary(clinicId))
   }, [desktopSession?.clinic_id])
 
   useEffect(() => {
@@ -1134,8 +1153,8 @@ export default function App({
   }
 
   const handleRevisePrescription = async (
-    medicines: Medicine[],
-    reasonForRevision: string,
+    medicinesOrData: Medicine[] | PrescriptionRevisionData,
+    reasonForRevision?: string,
   ) => {
     if (!viewingHistoricalPrescription?.record) {
       throw new Error("No active historical prescription selected.")
@@ -1146,22 +1165,159 @@ export default function App({
       )
     }
 
+    const isFullData = !Array.isArray(medicinesOrData)
+    const medicines: Medicine[] = isFullData
+      ? medicinesOrData.medicines
+      : medicinesOrData
+    const effectiveReason: string = isFullData
+      ? medicinesOrData.reasonForRevision
+      : reasonForRevision || "Prescription revision"
+
+    let newConsultationId: string | null = null
+
+    const updatedVitals: Vitals = isFullData
+      ? medicinesOrData.vitals
+      : viewingHistoricalPrescription.vitals
+
+    const updatedConsultationData: ConsultationData = isFullData
+      ? {
+          date: medicinesOrData.consultationDate,
+          time: medicinesOrData.consultationTime,
+          chiefComplaint: medicinesOrData.chiefComplaint,
+          symptomDuration: medicinesOrData.symptomDuration,
+          diagnosis: medicinesOrData.diagnosis,
+          medicines,
+          followUpDate: medicinesOrData.followUpDate,
+          followUpInstructions: medicinesOrData.followUpInstructions,
+          allergies: medicinesOrData.allergies,
+          conditions: medicinesOrData.conditions,
+        }
+      : {
+          ...viewingHistoricalPrescription.consultationData,
+          medicines,
+        }
+
+    // If full data was provided, persist a new consultation record for this revision
+    if (isFullData) {
+      const consultDatePart = medicinesOrData.consultationDate
+      const consultTimePart = medicinesOrData.consultationTime
+      const combinedConsultationDate =
+        consultDatePart.includes("T") || consultDatePart.includes(" ")
+          ? consultDatePart
+          : `${consultDatePart}T${consultTimePart}`
+
+      newConsultationId = await saveLocalConsultation({
+        clinic_id: desktopSession.clinic_id,
+        patient_id: selectedPatient.id,
+        consultation_date: combinedConsultationDate,
+        chief_complaint: medicinesOrData.chiefComplaint,
+        diagnosis: medicinesOrData.diagnosis,
+        clinical_snapshot_json: JSON.stringify({
+          vitals: medicinesOrData.vitals,
+          time: consultTimePart,
+          consultationTime: consultTimePart,
+          consultationDate: consultDatePart,
+          symptomDuration: medicinesOrData.symptomDuration,
+          followUpDate: medicinesOrData.followUpDate,
+          followUpInstructions: medicinesOrData.followUpInstructions,
+          allergies: medicinesOrData.allergies,
+          conditions: medicinesOrData.conditions,
+        }),
+      })
+
+      // Persist any new custom complaints & diagnoses
+      if (medicinesOrData.chiefComplaint?.trim()) {
+        handleAddCustomChiefComplaint(medicinesOrData.chiefComplaint.trim())
+      }
+      if (medicinesOrData.diagnosis?.trim()) {
+        handleAddCustomDiagnosis(medicinesOrData.diagnosis.trim())
+      }
+
+      // Persist new custom clinical library values
+      let currentLib = clinicalLibrary
+      for (const m of medicines) {
+        if (m.name?.trim()) {
+          currentLib = addClinicalLibraryItem(
+            currentLib,
+            "Medicines",
+            m.name.trim(),
+            desktopSession.clinic_id,
+          )
+        }
+        if (m.formulation?.trim()) {
+          currentLib = addClinicalLibraryItem(
+            currentLib,
+            "Formulations",
+            m.formulation.trim(),
+            desktopSession.clinic_id,
+          )
+        }
+        if (m.strength?.trim()) {
+          currentLib = addClinicalLibraryItem(
+            currentLib,
+            "Strengths",
+            m.strength.trim(),
+            desktopSession.clinic_id,
+          )
+        }
+        if (m.dose?.trim()) {
+          currentLib = addClinicalLibraryItem(
+            currentLib,
+            "Doses",
+            m.dose.trim(),
+            desktopSession.clinic_id,
+          )
+        }
+        if (m.frequency?.trim()) {
+          currentLib = addClinicalLibraryItem(
+            currentLib,
+            "Frequencies",
+            m.frequency.trim(),
+            desktopSession.clinic_id,
+          )
+        }
+        if (m.duration?.trim()) {
+          currentLib = addClinicalLibraryItem(
+            currentLib,
+            "Durations",
+            m.duration.trim(),
+            desktopSession.clinic_id,
+          )
+        }
+        if (m.food?.trim()) {
+          currentLib = addClinicalLibraryItem(
+            currentLib,
+            "FoodInstructions",
+            m.food.trim(),
+            desktopSession.clinic_id,
+          )
+        }
+      }
+      setClinicalLibrary(currentLib)
+
+      // If medical background changed, update patient record
+      if (medicinesOrData.allergies || medicinesOrData.conditions) {
+        updatePatientMedicalInfo(
+          medicinesOrData.allergies || selectedPatient.allergies,
+          medicinesOrData.conditions || selectedPatient.conditions,
+        )
+      }
+    }
+
     const newRecord = await executePrescriptionRevision({
       currentRecord: viewingHistoricalPrescription.record,
       clinicId: desktopSession.clinic_id,
       patientId: selectedPatient.id,
       medicines,
-      reasonForRevision,
+      reasonForRevision: effectiveReason,
+      newConsultationId,
     })
 
     // Update the active historical viewing prescription state without touching global consultationData draft
     setViewingHistoricalPrescription({
       record: newRecord,
-      consultationData: {
-        ...viewingHistoricalPrescription.consultationData,
-        medicines,
-      },
-      vitals: viewingHistoricalPrescription.vitals,
+      consultationData: updatedConsultationData,
+      vitals: updatedVitals,
       itemsError: null,
     })
   }
@@ -1490,6 +1646,8 @@ export default function App({
         err,
       )
     }
+    setCustomDiagnoses(loadCustomDiagnoses(session.clinic_id))
+    setClinicalLibrary(loadClinicalLibrary(session.clinic_id))
     loadAndMergeLocalFormulary(session.clinic_id).catch(() => {})
     loadAndMergeChiefComplaints(session.clinic_id).catch(() => {})
     startCatalogueSync().catch(() => {})
@@ -1991,9 +2149,14 @@ export default function App({
         onUpdatePatientMedicalInfo={updatePatientMedicalInfo}
         customChiefComplaints={customChiefComplaints}
         onAddCustomChiefComplaint={handleAddCustomChiefComplaint}
+        customDiagnoses={customDiagnoses}
+        onAddCustomDiagnosis={handleAddCustomDiagnosis}
         onFinalized={(_consultationId, finalizedTimestamp, rxRecord) => {
           if (consultationData.chiefComplaint?.trim()) {
             handleAddCustomChiefComplaint(consultationData.chiefComplaint)
+          }
+          if (consultationData.diagnosis?.trim()) {
+            handleAddCustomDiagnosis(consultationData.diagnosis)
           }
           const visitTimestamp = finalizedTimestamp || new Date().toISOString()
           setSelectedPatient((prev) => ({
@@ -2079,6 +2242,9 @@ export default function App({
           setNewPatientFormKey((k) => k + 1)
           go("patient-form")
         }}
+        clinicalLibrary={clinicalLibrary}
+        customChiefComplaints={customChiefComplaints}
+        customDiagnoses={customDiagnoses}
       />
     )
   } else if (page === "bill-form") {

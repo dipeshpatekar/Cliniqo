@@ -136,6 +136,10 @@ export function reconstructHistoricalPrescription(
   let followUpDate = ""
   let followUpInstructions = ""
   let symptomDuration = ""
+  let allergies: string[] = []
+  let conditions: string[] = []
+  let consultationDate = ""
+  let consultationTime = ""
 
   if (matchedConsultation?.clinical_snapshot_json) {
     try {
@@ -146,26 +150,46 @@ export function reconstructHistoricalPrescription(
       if (snapshot.followUpDate) followUpDate = snapshot.followUpDate
       if (snapshot.followUpInstructions) followUpInstructions = snapshot.followUpInstructions
       if (snapshot.symptomDuration) symptomDuration = snapshot.symptomDuration
+      if (Array.isArray(snapshot.allergies)) allergies = snapshot.allergies
+      if (Array.isArray(snapshot.conditions)) conditions = snapshot.conditions
+      if (snapshot.consultationDate) consultationDate = snapshot.consultationDate
+      if (snapshot.consultationTime || snapshot.time) {
+        consultationTime = snapshot.consultationTime || snapshot.time
+      }
     } catch {}
   }
 
+  const effectiveDate =
+    consultationDate ||
+    (matchedConsultation?.consultation_date
+      ? matchedConsultation.consultation_date.split("T")[0]
+      : rx.created_at
+        ? rx.created_at.slice(0, 10)
+        : new Date().toISOString().slice(0, 10))
+
+  const effectiveTime =
+    consultationTime ||
+    (matchedConsultation?.consultation_date && matchedConsultation.consultation_date.includes("T")
+      ? matchedConsultation.consultation_date.split("T")[1].slice(0, 5)
+      : rx.created_at
+        ? new Date(rx.created_at).toLocaleTimeString([], {
+            hour: "2-digit",
+            minute: "2-digit",
+            hour12: true,
+          })
+        : "")
+
   const reconstructedConsultation: ConsultationData = {
-    date: rx.created_at
-      ? rx.created_at.slice(0, 10)
-      : matchedConsultation?.consultation_date || new Date().toISOString().slice(0, 10),
-    time: rx.created_at
-      ? new Date(rx.created_at).toLocaleTimeString([], {
-          hour: "2-digit",
-          minute: "2-digit",
-          hour12: true,
-        })
-      : "",
+    date: effectiveDate,
+    time: effectiveTime,
     chiefComplaint: matchedConsultation?.chief_complaint || "",
     symptomDuration,
     diagnosis: matchedConsultation?.diagnosis || "",
     medicines: parsedMedicines,
     followUpDate,
     followUpInstructions,
+    allergies,
+    conditions,
   }
 
   return {
@@ -200,6 +224,7 @@ export async function executePrescriptionRevision({
   patientId,
   medicines,
   reasonForRevision,
+  newConsultationId,
   reviseBridge = reviseLocalPrescription,
   fetchPrescriptionsBridge = getLocalPrescriptions,
 }: {
@@ -208,6 +233,7 @@ export async function executePrescriptionRevision({
   patientId: string
   medicines: Medicine[]
   reasonForRevision: string
+  newConsultationId?: string | null
   reviseBridge?: typeof reviseLocalPrescription
   fetchPrescriptionsBridge?: typeof getLocalPrescriptions
 }): Promise<LocalPrescriptionRecord> {
@@ -229,6 +255,7 @@ export async function executePrescriptionRevision({
     expected_revision_number: currentRecord.revision_number,
     items_json: JSON.stringify(medicines),
     reason_for_revision: reasonForRevision,
+    ...(newConsultationId ? { new_consultation_id: newConsultationId } : {}),
   })
 
   if (!newPrescriptionId) {
@@ -243,6 +270,7 @@ export async function executePrescriptionRevision({
       id: newPrescriptionId,
       revision_number: currentRecord.revision_number + 1,
       status: "ACTIVE" as const,
+      consultation_id: newConsultationId || currentRecord.consultation_id,
       items_json: JSON.stringify(medicines),
     } as LocalPrescriptionRecord)
 

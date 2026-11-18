@@ -6424,6 +6424,12 @@ tbody tr:active {
   margin: 0;
 }
 
+/* Patient Name Value: 15% increase relative to 13.2px (13.2 * 1.15 = 15.18px) */
+.rx-patient-name-val,
+.bill-patient-name .rx-patient-name-val {
+  font-size: 15.18px !important;
+}
+
 .rx-patient small {
   color: #334155;
   font-size: 12px;
@@ -8651,6 +8657,12 @@ body {
     font-weight: 600 !important;
     color: #0f172a !important;
     margin: 0 !important;
+  }
+
+  /* Patient Name Value: 15% increase relative to 13.2px in print / PDF */
+  .rx-patient-name-val,
+  .bill-patient-name .rx-patient-name-val {
+    font-size: 15.18px !important;
   }
 
   .rx-vitals {

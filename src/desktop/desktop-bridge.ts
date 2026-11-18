@@ -175,6 +175,7 @@ export interface ReviseLocalPrescriptionArgs {
   expected_revision_number: number
   items_json: string
   reason_for_revision: string
+  new_consultation_id?: string | null
 }
 
 export interface LocalPrescriptionRecord {

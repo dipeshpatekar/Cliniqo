@@ -35,6 +35,10 @@ import {
   addCustomChiefComplaint,
   symptomDurationOptions,
   diagnosisOptions,
+  loadCustomDiagnoses,
+  getDiagnosisOptions,
+  addCustomDiagnosis,
+  computeDefaultFollowUpDate,
   formatPatientAgeGender,
   getPublicPatientId,
   FORMULATION_SHORTCUTS,
@@ -94,6 +98,8 @@ export interface ConsultationProps {
   ) => void
   customChiefComplaints?: string[]
   onAddCustomChiefComplaint?: (complaint: string) => void
+  customDiagnoses?: string[]
+  onAddCustomDiagnosis?: (diagnosis: string) => void
 }
 
 export function Consultation({
@@ -110,6 +116,8 @@ export function Consultation({
   onUpdatePatientMedicalInfo,
   customChiefComplaints,
   onAddCustomChiefComplaint,
+  customDiagnoses,
+  onAddCustomDiagnosis,
 }: ConsultationProps) {
   const [saved, setSaved] = useState(false)
   const [hasAttemptedSubmit, setHasAttemptedSubmit] = useState(false)
@@ -149,6 +157,31 @@ export function Consultation({
   const mergedComplaintOptions = useMemo(
     () => getChiefComplaintOptions(effectiveCustomComplaints),
     [effectiveCustomComplaints],
+  )
+
+  const [internalCustomDiagnoses, setInternalCustomDiagnoses] =
+    useState<string[]>(() =>
+      customDiagnoses !== undefined
+        ? customDiagnoses
+        : loadCustomDiagnoses(clinicId),
+    )
+
+  useEffect(() => {
+    if (customDiagnoses !== undefined) {
+      setInternalCustomDiagnoses(customDiagnoses)
+    } else {
+      setInternalCustomDiagnoses(loadCustomDiagnoses(clinicId))
+    }
+  }, [clinicId, customDiagnoses])
+
+  const effectiveCustomDiagnoses =
+    customDiagnoses !== undefined
+      ? customDiagnoses
+      : internalCustomDiagnoses
+
+  const mergedDiagnosisOptions = useMemo(
+    () => getDiagnosisOptions(effectiveCustomDiagnoses),
+    [effectiveCustomDiagnoses],
   )
 
   const initialAllergies = useMemo(
@@ -485,6 +518,15 @@ export function Consultation({
   const updateData = (updates: Partial<ConsultationData>) =>
     onDataChange({ ...data, ...updates })
 
+  useEffect(() => {
+    if (!data.followUpDate) {
+      onDataChange({
+        ...data,
+        followUpDate: computeDefaultFollowUpDate(data.date),
+      })
+    }
+  }, [data.date])
+
   const medicinesValid = data.medicines.every(
     (m) => validateMedicineFormulation(m).valid,
   )
@@ -721,6 +763,16 @@ export function Consultation({
             setInternalCustomComplaints(updated)
             onAddCustomChiefComplaint?.(data.chiefComplaint.trim())
           }
+
+          // Auto-save valid custom diagnoses to dropdown suggestions
+          if (data.diagnosis?.trim()) {
+            const updated = addCustomDiagnosis(
+              data.diagnosis,
+              desktopSession.clinic_id,
+            )
+            setInternalCustomDiagnoses(updated)
+            onAddCustomDiagnosis?.(data.diagnosis.trim())
+          }
         }
         onFinalized?.(consultationId, finalizedTimestamp, savedRxRecord)
         go("preview")
@@ -746,6 +798,16 @@ export function Consultation({
         )
         setInternalCustomComplaints(updated)
         onAddCustomChiefComplaint?.(data.chiefComplaint.trim())
+      }
+
+      // Auto-save valid custom diagnoses to dropdown suggestions in web/preview
+      if (data.diagnosis?.trim()) {
+        const updated = addCustomDiagnosis(
+          data.diagnosis,
+          desktopSession?.clinic_id,
+        )
+        setInternalCustomDiagnoses(updated)
+        onAddCustomDiagnosis?.(data.diagnosis.trim())
       }
       const rxNumber = `RX-${Date.now().toString().slice(-6)}`
       const mockRxRecord: LocalPrescriptionRecord = {
@@ -1090,7 +1152,7 @@ export function Consultation({
                 <SearchableOptionSelect
                   id="diagnosis"
                   value={data.diagnosis}
-                  options={diagnosisOptions}
+                  options={mergedDiagnosisOptions}
                   onChange={(value) => updateData({ diagnosis: value })}
                   placeholder="Select or search a diagnosis"
                   ariaLabel="Search and select diagnosis"

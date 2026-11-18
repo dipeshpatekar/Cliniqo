@@ -2061,6 +2061,7 @@ pub struct RevisePrescriptionArgs {
     pub expected_revision_number: i32,
     pub items_json: String,
     pub reason_for_revision: String,
+    pub new_consultation_id: Option<String>,
 }
 
 #[tauri::command]
@@ -2087,6 +2088,7 @@ pub fn revise_local_prescription(
         &args.items_json,
         &args.reason_for_revision,
         &verified_doctor_id,
+        args.new_consultation_id.as_deref(),
     )
     .map_err(|e| e.to_string())
 }

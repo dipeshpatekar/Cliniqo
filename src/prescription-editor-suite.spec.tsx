@@ -152,17 +152,17 @@ describe("CLINIQUO — Prescription Editor, Clinical Library & UI Enhancements (
       expect(html).toContain("Follow-up Date")
       expect(html).toContain("Additional Advice (ADV)")
 
-      expect(html).toContain("Reason for revision")
+      expect(html).not.toContain("Reason for revision")
       expect(html).toContain("Review changes")
     })
 
-    it("requires reason for revision (min 5 characters) and at least one medicine", () => {
+    it("allows direct revision without requiring any reason for revision", () => {
       let savedData: any = null
       const handleSave = vi.fn(async (data: any) => {
         savedData = data
       })
 
-      // Modal rendered in edit step
+      // Modal rendered in edit step without mandatory revision reason
       const html = renderToString(
         <PrescriptionEditModal
           isOpen={true}
@@ -177,7 +177,9 @@ describe("CLINIQUO — Prescription Editor, Clinical Library & UI Enhancements (
         />,
       )
 
-      expect(html).toContain("Reason for revision (Required, min 5 characters) *")
+      expect(html).not.toContain("Reason for revision")
+      expect(html).not.toContain("min 5 characters")
+      expect(html).toContain("Review changes")
     })
   })
 

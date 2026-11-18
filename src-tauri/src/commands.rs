@@ -2060,7 +2060,8 @@ pub struct RevisePrescriptionArgs {
     pub prescription_id: String,
     pub expected_revision_number: i32,
     pub items_json: String,
-    pub reason_for_revision: String,
+    #[serde(default)]
+    pub reason_for_revision: Option<String>,
     pub new_consultation_id: Option<String>,
 }
 
@@ -2079,6 +2080,11 @@ pub fn revise_local_prescription(
     let mut conn = state.db.get_connection();
     let dek = state.db.get_dek();
 
+    let reason = args
+        .reason_for_revision
+        .as_deref()
+        .unwrap_or("Prescription revision");
+
     DbOperations::revise_prescription(
         &mut conn,
         dek,
@@ -2086,7 +2092,7 @@ pub fn revise_local_prescription(
         &args.prescription_id,
         args.expected_revision_number,
         &args.items_json,
-        &args.reason_for_revision,
+        reason,
         &verified_doctor_id,
         args.new_consultation_id.as_deref(),
     )

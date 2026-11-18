@@ -1095,7 +1095,257 @@ export interface PrescriptionRevisionData {
   consultationTime: string
   followUpDate: string
   followUpInstructions: string
-  reasonForRevision: string
+  reasonForRevision?: string
+}
+
+export const FORMULATION_NORM_MAP: Record<string, string> = {
+  TABLET: "Tablet",
+  CAPSULE: "Capsule",
+  SYRUP: "Syrup",
+  SUSPENSION: "Suspension",
+  INJECTION: "Injection",
+  INHALER: "Inhaler",
+  DROPS: "Drops",
+  CREAM: "Cream",
+  OINTMENT: "Ointment",
+  GEL: "Gel",
+  LOTION: "Lotion",
+  PATCH: "Patch",
+  POWDER: "Powder",
+  SPRAY: "Spray",
+  SUPPOSITORY: "Suppository",
+}
+
+export const FREQUENCY_NORM_MAP: Record<string, string> = {
+  OD: "Once daily",
+  BD: "Twice daily",
+  TID: "Three times daily",
+  QID: "Four times daily",
+  Q4H: "Every 4 hours",
+  Q6H: "Every 6 hours",
+  Q8H: "Every 8 hours",
+  Q12H: "Every 12 hours",
+  BEDTIME: "At bedtime",
+  WEEKLY: "Once weekly",
+}
+
+export const FOOD_NORM_MAP: Record<string, string> = {
+  AFTER_MEALS: "After food",
+  BEFORE_MEALS: "Before food",
+  WITH_MEALS: "With food",
+  EMPTY_STOMACH: "Empty stomach",
+  AS_DIRECTED: "As directed",
+  IRRELEVANT: "Any time",
+  NOT_APPLICABLE: "Not applicable",
+}
+
+export const ROUTE_NORM_MAP: Record<string, string> = {
+  ORAL: "Oral",
+  TOPICAL: "Topical",
+  INHALATION: "Inhalation",
+  INTRAVENOUS: "Intravenous (IV)",
+  INTRAMUSCULAR: "Intramuscular (IM)",
+  SUBCUTANEOUS: "Subcutaneous (SC)",
+  OPHTHALMIC: "Ophthalmic",
+  OTIC: "Otic",
+  NASAL: "Nasal",
+  RECTAL: "Rectal",
+  SUBLINGUAL: "Sublingual",
+  TRANSDERMAL: "Transdermal",
+}
+
+export function normalizeMedicineItem(raw: any, index: number = 0): Medicine {
+  if (!raw || typeof raw !== "object") {
+    return emptyMedicine(index + 1)
+  }
+
+  // 1. Name
+  let name = ""
+  if (typeof raw.name === "string" && raw.name.trim()) {
+    name = raw.name.trim()
+  } else if (typeof raw.medicineName === "string" && raw.medicineName.trim()) {
+    name = raw.medicineName.trim()
+  } else if (typeof raw.medicine_name === "string" && raw.medicine_name.trim()) {
+    name = raw.medicine_name.trim()
+  } else if (typeof raw.productName === "string" && raw.productName.trim()) {
+    name = raw.productName.trim()
+  } else if (typeof raw.brandName === "string" && raw.brandName.trim()) {
+    name = raw.brandName.trim()
+  }
+
+  // 2. Formulation
+  let formulation = ""
+  const rawForm = raw.formulation || raw.dosageForm || raw.dosage_form || ""
+  if (typeof rawForm === "string" && rawForm.trim()) {
+    const trimmed = rawForm.trim()
+    const upper = trimmed.toUpperCase()
+    formulation = FORMULATION_NORM_MAP[upper] || trimmed
+  }
+
+  // 3. Strength
+  let strength = ""
+  if (typeof raw.strength === "string") {
+    strength = raw.strength.trim()
+  } else if (typeof raw.strength === "number") {
+    strength = String(raw.strength)
+  } else if (raw.strength && typeof raw.strength === "object") {
+    if (typeof raw.strength.display === "string" && raw.strength.display.trim()) {
+      strength = raw.strength.display.trim()
+    } else if (typeof raw.strength.rawStrength === "string" && raw.strength.rawStrength.trim()) {
+      strength = raw.strength.rawStrength.trim()
+    } else if (raw.strength.value !== undefined && raw.strength.value !== null) {
+      strength = `${raw.strength.value} ${raw.strength.unit || ""}`.trim()
+    } else if (Array.isArray(raw.strength.components) && raw.strength.components.length > 0) {
+      strength = raw.strength.components
+        .map((c: any) => `${c.ingredientName || ""} ${c.amount ?? ""} ${c.unit || ""}`.trim())
+        .filter(Boolean)
+        .join(" + ")
+    }
+  } else if (typeof raw.rawStrength === "string" && raw.rawStrength.trim()) {
+    strength = raw.rawStrength.trim()
+  } else if (typeof raw.productStrength === "string" && raw.productStrength.trim()) {
+    strength = raw.productStrength.trim()
+  }
+
+  // 4. Dose
+  let dose = ""
+  if (typeof raw.dose === "string") {
+    dose = raw.dose.trim()
+  } else if (typeof raw.dose === "number") {
+    dose = String(raw.dose)
+  } else if (raw.dose && typeof raw.dose === "object") {
+    const mag = raw.dose.magnitude ?? ""
+    const unit = raw.dose.unit ?? ""
+    dose = `${mag} ${unit}`.trim()
+  } else if (raw.administeredDose && typeof raw.administeredDose === "object") {
+    const mag = raw.administeredDose.magnitude ?? ""
+    const unit = (raw.administeredDose.unit ?? "").toLowerCase()
+    dose = `${mag} ${unit}`.trim()
+  } else if (typeof raw.dosage === "string" && raw.dosage.trim()) {
+    dose = raw.dosage.trim()
+  } else if (typeof raw.defaultDosage === "string" && raw.defaultDosage.trim()) {
+    dose = raw.defaultDosage.trim()
+  } else if (typeof raw.default_dosage === "string" && raw.default_dosage.trim()) {
+    dose = raw.default_dosage.trim()
+  }
+
+  // 5. Route
+  let route = ""
+  const rawRoute = raw.route || raw.medicineRoute || raw.medicine_route || raw.defaultRoute || ""
+  if (typeof rawRoute === "string" && rawRoute.trim()) {
+    const trimmed = rawRoute.trim()
+    const upper = trimmed.toUpperCase()
+    route = ROUTE_NORM_MAP[upper] || trimmed
+  }
+
+  // 6. Frequency
+  let frequency = ""
+  if (typeof raw.frequency === "string") {
+    const trimmed = raw.frequency.trim()
+    const upper = trimmed.toUpperCase()
+    frequency = FREQUENCY_NORM_MAP[upper] || trimmed
+  } else if (raw.frequency && typeof raw.frequency === "object") {
+    const code = (raw.frequency.frequencyCode || raw.frequency.code || "").toUpperCase()
+    if (code && FREQUENCY_NORM_MAP[code]) {
+      frequency = FREQUENCY_NORM_MAP[code]
+    } else if (raw.frequency.intervalHours) {
+      frequency = `Every ${raw.frequency.intervalHours} hours`
+    } else if (raw.frequency.prnIndication) {
+      frequency = `As needed (${raw.frequency.prnIndication})`
+    } else if (typeof raw.frequency.description === "string") {
+      frequency = raw.frequency.description.trim()
+    }
+  } else if (typeof raw.defaultFrequency === "string" && raw.defaultFrequency.trim()) {
+    const trimmed = raw.defaultFrequency.trim()
+    frequency = FREQUENCY_NORM_MAP[trimmed.toUpperCase()] || trimmed
+  }
+
+  // 7. Duration
+  let duration = ""
+  if (typeof raw.duration === "string") {
+    duration = raw.duration.trim()
+  } else if (typeof raw.duration === "number") {
+    duration = `${raw.duration} days`
+  } else if (raw.duration && typeof raw.duration === "object") {
+    const mag = raw.duration.magnitude ?? ""
+    const unit = (raw.duration.unit ?? "days").toLowerCase()
+    duration = `${mag} ${unit}`.trim()
+  } else if (typeof raw.defaultDuration === "string" && raw.defaultDuration.trim()) {
+    duration = raw.defaultDuration.trim()
+  }
+
+  // 8. Food Timing
+  let food = ""
+  const rawFood =
+    raw.food ||
+    raw.foodInstruction ||
+    raw.food_instruction ||
+    raw.foodTiming ||
+    raw.food_timing ||
+    ""
+  if (typeof rawFood === "string" && rawFood.trim()) {
+    const trimmed = rawFood.trim()
+    const upper = trimmed.toUpperCase().replace(/\s+/g, "_")
+    food = FOOD_NORM_MAP[upper] || trimmed
+  }
+
+  // 9. Directions / Instructions
+  let directions = ""
+  const rawDir =
+    raw.directions ||
+    raw.specialInstructions ||
+    raw.special_instructions ||
+    raw.instructions ||
+    raw.applicationInstructions ||
+    raw.defaultInstructions ||
+    ""
+  if (typeof rawDir === "string" && rawDir.trim()) {
+    directions = rawDir.trim()
+  }
+
+  const id = typeof raw.id === "number" && !isNaN(raw.id) ? raw.id : index + 1
+
+  return {
+    id,
+    name,
+    formulation,
+    strength,
+    dose,
+    route,
+    frequency,
+    duration,
+    food,
+    directions,
+    activeIngredient: raw.activeIngredient || raw.active_ingredient,
+    sourceIdentifier: raw.sourceIdentifier || raw.source_identifier,
+    sourceProvenance: raw.sourceProvenance,
+    isCombination: raw.isCombination,
+    isStrengthVerified: raw.isStrengthVerified,
+    isCustom: raw.isCustom,
+    brandName: raw.brandName,
+    genericName: raw.genericName,
+    productName: raw.productName,
+    releaseType: raw.releaseType,
+    manufacturer: raw.manufacturer,
+  }
+}
+
+export function normalizeMedicineList(rawList: any): Medicine[] {
+  if (!rawList) return []
+  let arr: any[] = []
+  if (Array.isArray(rawList)) {
+    arr = rawList
+  } else if (typeof rawList === "object" && Array.isArray((rawList as any).items)) {
+    arr = (rawList as any).items
+  } else if (typeof rawList === "string") {
+    try {
+      const parsed = JSON.parse(rawList)
+      return normalizeMedicineList(parsed)
+    } catch {
+      return []
+    }
+  }
+  return arr.map((item, idx) => normalizeMedicineItem(item, idx))
 }
 
 export const createEmptyConsultationData = (initialDate?: string): ConsultationData => {

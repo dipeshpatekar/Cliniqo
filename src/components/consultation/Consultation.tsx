@@ -43,6 +43,7 @@ import {
   getPublicPatientId,
   FORMULATION_SHORTCUTS,
   FORMULATION_LETTER_MAP,
+  addClinicalLibraryItem,
 } from "../../types"
 import { validateMedicineFormulation } from "../../utils/billing"
 import { analyzeAllergies } from "../../utils/allergy"
@@ -770,6 +771,67 @@ export function Consultation({
               .catch(() => {})
           }
 
+          // Sync all medicine fields to clinic's clinical library
+          let updatedLib = clinicalLibrary
+          for (const m of data.medicines) {
+            if (m.name?.trim()) {
+              updatedLib = addClinicalLibraryItem(
+                updatedLib,
+                "Medicines",
+                m.name.trim(),
+                desktopSession.clinic_id,
+              )
+            }
+            if (m.formulation?.trim()) {
+              updatedLib = addClinicalLibraryItem(
+                updatedLib,
+                "Formulations",
+                m.formulation.trim(),
+                desktopSession.clinic_id,
+              )
+            }
+            if (m.strength?.trim()) {
+              updatedLib = addClinicalLibraryItem(
+                updatedLib,
+                "Strengths",
+                m.strength.trim(),
+                desktopSession.clinic_id,
+              )
+            }
+            if (m.dose?.trim()) {
+              updatedLib = addClinicalLibraryItem(
+                updatedLib,
+                "Doses",
+                m.dose.trim(),
+                desktopSession.clinic_id,
+              )
+            }
+            if (m.frequency?.trim()) {
+              updatedLib = addClinicalLibraryItem(
+                updatedLib,
+                "Frequencies",
+                m.frequency.trim(),
+                desktopSession.clinic_id,
+              )
+            }
+            if (m.duration?.trim()) {
+              updatedLib = addClinicalLibraryItem(
+                updatedLib,
+                "Durations",
+                m.duration.trim(),
+                desktopSession.clinic_id,
+              )
+            }
+            if (m.food?.trim()) {
+              updatedLib = addClinicalLibraryItem(
+                updatedLib,
+                "FoodInstructions",
+                m.food.trim(),
+                desktopSession.clinic_id,
+              )
+            }
+          }
+
           // Auto-save valid custom chief complaints to dropdown suggestions
           if (data.chiefComplaint?.trim()) {
             const updated = addCustomChiefComplaint(
@@ -815,6 +877,68 @@ export function Consultation({
           )
           setInternalCustomDiagnoses(updated)
           onAddCustomDiagnosis?.(data.diagnosis.trim())
+        }
+
+        // Sync all medicine fields to clinic's clinical library in web/preview
+        let updatedLib = clinicalLibrary
+        const activeClinicId = desktopSession?.clinic_id
+        for (const m of data.medicines) {
+          if (m.name?.trim()) {
+            updatedLib = addClinicalLibraryItem(
+              updatedLib,
+              "Medicines",
+              m.name.trim(),
+              activeClinicId,
+            )
+          }
+          if (m.formulation?.trim()) {
+            updatedLib = addClinicalLibraryItem(
+              updatedLib,
+              "Formulations",
+              m.formulation.trim(),
+              activeClinicId,
+            )
+          }
+          if (m.strength?.trim()) {
+            updatedLib = addClinicalLibraryItem(
+              updatedLib,
+              "Strengths",
+              m.strength.trim(),
+              activeClinicId,
+            )
+          }
+          if (m.dose?.trim()) {
+            updatedLib = addClinicalLibraryItem(
+              updatedLib,
+              "Doses",
+              m.dose.trim(),
+              activeClinicId,
+            )
+          }
+          if (m.frequency?.trim()) {
+            updatedLib = addClinicalLibraryItem(
+              updatedLib,
+              "Frequencies",
+              m.frequency.trim(),
+              activeClinicId,
+            )
+          }
+          if (m.duration?.trim()) {
+            updatedLib = addClinicalLibraryItem(
+              updatedLib,
+              "Durations",
+              m.duration.trim(),
+              activeClinicId,
+            )
+          }
+          if (m.food?.trim()) {
+            updatedLib = addClinicalLibraryItem(
+              updatedLib,
+              "FoodInstructions",
+              m.food.trim(),
+              activeClinicId,
+            )
+          }
         }
         const rxNumber = `RX-${Date.now().toString().slice(-6)}`
         const mockRxRecord: LocalPrescriptionRecord = {

@@ -174,7 +174,7 @@ export interface ReviseLocalPrescriptionArgs {
   prescription_id: string
   expected_revision_number: number
   items_json: string
-  reason_for_revision: string
+  reason_for_revision?: string
   new_consultation_id?: string | null
 }
 
@@ -898,7 +898,11 @@ export async function saveLocalPrescription(
 export async function reviseLocalPrescription(
   args: ReviseLocalPrescriptionArgs,
 ): Promise<string | null> {
-  return invokeTauri<string>("revise_local_prescription", { args })
+  const sanitizedArgs = {
+    ...args,
+    reason_for_revision: args.reason_for_revision?.trim() || "Prescription revision",
+  }
+  return invokeTauri<string>("revise_local_prescription", { args: sanitizedArgs })
 }
 
 export async function getLocalPrescriptions(

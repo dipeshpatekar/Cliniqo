@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from "react"
+import React, { useState, useMemo, useEffect } from "react"
 import {
   type Medicine,
   type ClinicalLibrary,
@@ -18,7 +18,14 @@ import {
   symptomDurationOptions,
   computeDefaultFollowUpDate,
   formatDateDDMMYYYY,
+  normalizeMedicineList,
+  loadClinicalLibrary,
 } from "../../types"
+import {
+  getLocalFormulary,
+  type LocalFormularyItemRecord,
+  isTauriDesktop,
+} from "../../desktop/desktop-bridge"
 import { validateMedicineFormulation } from "../../utils/billing"
 import {
   Button,
@@ -136,7 +143,7 @@ export function PrescriptionEditModal({
   // --- SECTION E: Prescription Information State ---
   const [medicines, setMedicines] = useState<Medicine[]>(() =>
     initialMedicines.length > 0
-      ? JSON.parse(JSON.stringify(initialMedicines))
+      ? normalizeMedicineList(initialMedicines)
       : [emptyMedicine(1)],
   )
   const [followUpDate, setFollowUpDate] = useState(() =>
@@ -149,78 +156,203 @@ export function PrescriptionEditModal({
   )
 
   // --- Revision Meta State ---
-  const [reasonForRevision, setReasonForRevision] = useState("")
   const [step, setStep] = useState<"edit" | "confirm">("edit")
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
+  // --- SQLite Local Formulary Items (Desktop) ---
+  const [localFormulary, setLocalFormulary] = useState<LocalFormularyItemRecord[]>([])
+
+  useEffect(() => {
+    let mounted = true
+    if (isTauriDesktop() && clinicId) {
+      getLocalFormulary(clinicId)
+        .then((items) => {
+          if (mounted && items) {
+            setLocalFormulary(items)
+          }
+        })
+        .catch(() => {})
+    }
+    return () => {
+      mounted = false
+    }
+  }, [clinicId])
+
   if (!isOpen) return null
 
   // --- Options & Suggestions (with Custom Clinical Library Values) ---
-  const lib = clinicalLibrary || defaultClinicalLibrary
+  const lib = useMemo(() => {
+    return (
+      clinicalLibrary ||
+      (clinicId ? loadClinicalLibrary(clinicId) : loadClinicalLibrary()) ||
+      defaultClinicalLibrary
+    )
+  }, [clinicalLibrary, clinicId])
 
-  const mergedFormulations = useMemo(
-    () =>
-      mergeCustomLibraryValues(
-        lib.Formulations || defaultClinicalLibrary.Formulations,
-        medicines.map((m) => m.formulation).filter(Boolean),
-      ),
-    [lib.Formulations, medicines],
-  )
+  // Backfill missing fields in medicines if matched with local formulary or definitions
+  useEffect(() => {
+    if (
+      localFormulary.length > 0 ||
+      (lib.MedicineDefinitions && lib.MedicineDefinitions.length > 0)
+    ) {
+      setMedicines((prev) =>
+        prev.map((m) => {
+          if (!m.name?.trim()) return m
+          const match =
+            localFormulary.find(
+              (f) => f.name.toLowerCase() === m.name.trim().toLowerCase(),
+            ) ||
+            lib.MedicineDefinitions?.find(
+              (d) => d.name.toLowerCase() === m.name.trim().toLowerCase(),
+            )
+          if (!match) return m
 
-  const mergedMedicineNames = useMemo(
-    () =>
-      mergeCustomLibraryValues(
-        lib.Medicines || defaultClinicalLibrary.Medicines,
-        medicines.map((m) => m.name).filter(Boolean),
-      ),
-    [lib.Medicines, medicines],
-  )
+          const strength =
+            m.strength ||
+            ("strength" in match ? match.strength : undefined) ||
+            ""
+          const dose =
+            m.dose ||
+            ("default_dosage" in match
+              ? match.default_dosage
+              : (match as any).defaultDosage) ||
+            ""
+          const route =
+            m.route ||
+            ("default_route" in match
+              ? match.default_route
+              : (match as any).defaultRoute) ||
+            ""
+          const frequency =
+            m.frequency ||
+            ("default_frequency" in match
+              ? match.default_frequency
+              : (match as any).defaultFrequency) ||
+            ""
+          const duration =
+            m.duration ||
+            ("default_duration" in match
+              ? match.default_duration
+              : (match as any).defaultDuration) ||
+            ""
 
-  const mergedStrengths = useMemo(
-    () =>
-      mergeCustomLibraryValues(
-        lib.Strengths || defaultClinicalLibrary.Strengths,
-        medicines.map((m) => m.strength).filter(Boolean),
-      ),
-    [lib.Strengths, medicines],
-  )
+          if (
+            (!m.strength && strength) ||
+            (!m.dose && dose) ||
+            (!m.route && route) ||
+            (!m.frequency && frequency) ||
+            (!m.duration && duration)
+          ) {
+            return {
+              ...m,
+              strength: m.strength || strength,
+              dose: m.dose || dose,
+              route: m.route || route,
+              frequency: m.frequency || frequency,
+              duration: m.duration || duration,
+            }
+          }
+          return m
+        }),
+      )
+    }
+  }, [localFormulary, lib.MedicineDefinitions])
 
-  const mergedDoses = useMemo(
-    () =>
-      mergeCustomLibraryValues(
-        lib.Doses || defaultClinicalLibrary.Doses,
-        medicines.map((m) => m.dose).filter(Boolean),
-      ),
-    [lib.Doses, medicines],
-  )
+  const mergedFormulations = useMemo(() => {
+    const fromMeds = medicines.map((m) => m.formulation).filter(Boolean)
+    const fromInit = (initialMedicines || []).map((m) => m.formulation).filter(Boolean)
+    const fromFormulary = localFormulary.map((f) => f.formulation).filter(Boolean)
+    const fromDefs = (lib.MedicineDefinitions || [])
+      .map((d) => d.formulation)
+      .filter(Boolean)
+    return mergeCustomLibraryValues(
+      lib.Formulations || defaultClinicalLibrary.Formulations,
+      [...fromMeds, ...fromInit, ...fromFormulary, ...fromDefs],
+    )
+  }, [lib.Formulations, lib.MedicineDefinitions, medicines, initialMedicines, localFormulary])
 
-  const mergedFrequencies = useMemo(
-    () =>
-      mergeCustomLibraryValues(
-        lib.Frequencies || defaultClinicalLibrary.Frequencies,
-        medicines.map((m) => m.frequency).filter(Boolean),
-      ),
-    [lib.Frequencies, medicines],
-  )
+  const mergedMedicineNames = useMemo(() => {
+    const fromMeds = medicines.map((m) => m.name).filter(Boolean)
+    const fromInit = (initialMedicines || []).map((m) => m.name).filter(Boolean)
+    const fromFormulary = localFormulary.map((f) => f.name).filter(Boolean)
+    const fromDefs = (lib.MedicineDefinitions || [])
+      .map((d) => d.name)
+      .filter(Boolean)
+    return mergeCustomLibraryValues(
+      lib.Medicines || defaultClinicalLibrary.Medicines,
+      [...fromMeds, ...fromInit, ...fromFormulary, ...fromDefs],
+    )
+  }, [lib.Medicines, lib.MedicineDefinitions, medicines, initialMedicines, localFormulary])
 
-  const mergedDurations = useMemo(
-    () =>
-      mergeCustomLibraryValues(
-        lib.Durations || defaultClinicalLibrary.Durations,
-        medicines.map((m) => m.duration).filter(Boolean),
-      ),
-    [lib.Durations, medicines],
-  )
+  const mergedStrengths = useMemo(() => {
+    const fromMeds = medicines.map((m) => m.strength).filter(Boolean)
+    const fromInit = (initialMedicines || []).map((m) => m.strength).filter(Boolean)
+    const fromFormulary = localFormulary
+      .map((f) => f.strength)
+      .filter(Boolean) as string[]
+    const fromDefs = (lib.MedicineDefinitions || [])
+      .map((d) => d.strength)
+      .filter(Boolean) as string[]
+    return mergeCustomLibraryValues(
+      lib.Strengths || defaultClinicalLibrary.Strengths,
+      [...fromMeds, ...fromInit, ...fromFormulary, ...fromDefs],
+    )
+  }, [lib.Strengths, lib.MedicineDefinitions, medicines, initialMedicines, localFormulary])
 
-  const mergedFoodInstructions = useMemo(
-    () =>
-      mergeCustomLibraryValues(
-        lib.FoodInstructions || defaultClinicalLibrary.FoodInstructions,
-        medicines.map((m) => m.food).filter(Boolean),
-      ),
-    [lib.FoodInstructions, medicines],
-  )
+  const mergedDoses = useMemo(() => {
+    const fromMeds = medicines.map((m) => m.dose).filter(Boolean)
+    const fromInit = (initialMedicines || []).map((m) => m.dose).filter(Boolean)
+    const fromFormulary = localFormulary
+      .map((f) => f.default_dosage)
+      .filter(Boolean) as string[]
+    const fromDefs = (lib.MedicineDefinitions || [])
+      .map((d) => d.defaultDosage)
+      .filter(Boolean) as string[]
+    return mergeCustomLibraryValues(
+      lib.Doses || defaultClinicalLibrary.Doses,
+      [...fromMeds, ...fromInit, ...fromFormulary, ...fromDefs],
+    )
+  }, [lib.Doses, lib.MedicineDefinitions, medicines, initialMedicines, localFormulary])
+
+  const mergedFrequencies = useMemo(() => {
+    const fromMeds = medicines.map((m) => m.frequency).filter(Boolean)
+    const fromInit = (initialMedicines || []).map((m) => m.frequency).filter(Boolean)
+    const fromFormulary = localFormulary
+      .map((f) => f.default_frequency)
+      .filter(Boolean) as string[]
+    const fromDefs = (lib.MedicineDefinitions || [])
+      .map((d) => d.defaultFrequency)
+      .filter(Boolean) as string[]
+    return mergeCustomLibraryValues(
+      lib.Frequencies || defaultClinicalLibrary.Frequencies,
+      [...fromMeds, ...fromInit, ...fromFormulary, ...fromDefs],
+    )
+  }, [lib.Frequencies, lib.MedicineDefinitions, medicines, initialMedicines, localFormulary])
+
+  const mergedDurations = useMemo(() => {
+    const fromMeds = medicines.map((m) => m.duration).filter(Boolean)
+    const fromInit = (initialMedicines || []).map((m) => m.duration).filter(Boolean)
+    const fromFormulary = localFormulary
+      .map((f) => f.default_duration)
+      .filter(Boolean) as string[]
+    const fromDefs = (lib.MedicineDefinitions || [])
+      .map((d) => d.defaultDuration)
+      .filter(Boolean) as string[]
+    return mergeCustomLibraryValues(
+      lib.Durations || defaultClinicalLibrary.Durations,
+      [...fromMeds, ...fromInit, ...fromFormulary, ...fromDefs],
+    )
+  }, [lib.Durations, lib.MedicineDefinitions, medicines, initialMedicines, localFormulary])
+
+  const mergedFoodInstructions = useMemo(() => {
+    const fromMeds = medicines.map((m) => m.food).filter(Boolean)
+    const fromInit = (initialMedicines || []).map((m) => m.food).filter(Boolean)
+    return mergeCustomLibraryValues(
+      lib.FoodInstructions || defaultClinicalLibrary.FoodInstructions,
+      [...fromMeds, ...fromInit],
+    )
+  }, [lib.FoodInstructions, medicines, initialMedicines])
 
   const mergedChiefComplaints = useMemo(
     () =>
@@ -262,6 +394,57 @@ export function PrescriptionEditModal({
     )
   }
 
+  const handleMedicineNameChange = (id: number, name: string) => {
+    const trimmed = name.trim()
+    const def =
+      localFormulary.find(
+        (f) => f.name.toLowerCase() === trimmed.toLowerCase(),
+      ) ||
+      lib.MedicineDefinitions?.find(
+        (d) => d.name.toLowerCase() === trimmed.toLowerCase(),
+      )
+
+    setMedicines((prev) =>
+      prev.map((row) => {
+        if (row.id !== id) return row
+        if (!def) return { ...row, name }
+
+        const doseVal =
+          ("default_dosage" in def
+            ? def.default_dosage
+            : (def as any).defaultDosage) || ""
+        const freqVal =
+          ("default_frequency" in def
+            ? def.default_frequency
+            : (def as any).defaultFrequency) || ""
+        const durVal =
+          ("default_duration" in def
+            ? def.default_duration
+            : (def as any).defaultDuration) || ""
+        const dirVal =
+          ("default_instructions" in def
+            ? def.default_instructions
+            : (def as any).defaultInstructions) || ""
+        const routeVal =
+          ("default_route" in def
+            ? def.default_route
+            : (def as any).defaultRoute) || ""
+
+        return {
+          ...row,
+          name,
+          formulation: row.formulation || def.formulation || "Tablet",
+          strength: row.strength || def.strength || "",
+          dose: row.dose || doseVal || "",
+          frequency: row.frequency || freqVal || "",
+          duration: row.duration || durVal || "",
+          route: row.route || routeVal || "",
+          directions: row.directions || dirVal || "",
+        }
+      }),
+    )
+  }
+
   const handleFormulationChange = (id: number, formulation: string) => {
     setMedicines((prev) =>
       prev.map((row) => {
@@ -281,7 +464,6 @@ export function PrescriptionEditModal({
   const validationResults = medicines.map((m) => validateMedicineFormulation(m))
   const allMedicinesValid =
     medicines.length > 0 && validationResults.every((v) => v.valid)
-  const isReasonValid = reasonForRevision.trim().length >= 5
 
   const handleProceedToConfirm = () => {
     setError(null)
@@ -293,12 +475,6 @@ export function PrescriptionEditModal({
     if (invalidIndex !== -1) {
       setError(
         `Medicine #${invalidIndex + 1} (${medicines[invalidIndex].name || "Unnamed"}): ${validationResults[invalidIndex].error}`,
-      )
-      return
-    }
-    if (!isReasonValid) {
-      setError(
-        "Please provide a valid reason for revision (at least 5 characters).",
       )
       return
     }
@@ -330,10 +506,10 @@ export function PrescriptionEditModal({
         consultationTime,
         followUpDate,
         followUpInstructions: followUpInstructions.trim(),
-        reasonForRevision: reasonForRevision.trim(),
+        reasonForRevision: "Prescription revision",
       }
 
-      await onSaveRevision(revisionData, reasonForRevision.trim())
+      await onSaveRevision(revisionData, "Prescription revision")
       onClose()
     } catch (err: any) {
       setError(err?.message || "Failed to save prescription revision.")
@@ -606,7 +782,7 @@ export function PrescriptionEditModal({
                               value={medicine.name}
                               options={mergedMedicineNames}
                               onChange={(val) =>
-                                updateRow(medicine.id, "name", val)
+                                handleMedicineNameChange(medicine.id, val)
                               }
                               placeholder="e.g. Paracetamol"
                               ariaLabel="Medicine name"
@@ -784,21 +960,6 @@ export function PrescriptionEditModal({
               </div>
             </div>
 
-            {/* 7. REVISION REASON SECTION */}
-            <div className="pt-2">
-              <Field
-                label="Reason for revision (Required, min 5 characters) *"
-                className="w-full"
-              >
-                <TextInput
-                  value={reasonForRevision}
-                  onChange={(e) => setReasonForRevision(e.target.value)}
-                  placeholder="e.g. Adjusted antibiotic duration and updated vitals"
-                  className="w-full"
-                />
-              </Field>
-            </div>
-
             {/* STICKY ACCESSIBLE FOOTER */}
             <div className="sticky -bottom-3 bg-white dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800 pt-3 pb-2 flex justify-end items-center gap-3 z-10">
               <Button variant="ghost" onClick={onClose}>
@@ -808,7 +969,7 @@ export function PrescriptionEditModal({
                 variant="primary"
                 icon={ArrowRight}
                 onClick={handleProceedToConfirm}
-                disabled={!allMedicinesValid || !isReasonValid}
+                disabled={!allMedicinesValid}
               >
                 Review changes
               </Button>
@@ -823,9 +984,6 @@ export function PrescriptionEditModal({
               <p className="text-teal-800 dark:text-teal-300 text-xs">
                 Prescription: <strong>{prescriptionNumber}</strong> · Target:{" "}
                 <strong>Revision {currentRevisionNumber + 1}</strong>
-              </p>
-              <p className="text-teal-800 dark:text-teal-300 text-xs">
-                Reason: <em>"{reasonForRevision}"</em>
               </p>
             </div>
 

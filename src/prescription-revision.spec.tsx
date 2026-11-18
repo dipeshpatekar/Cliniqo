@@ -229,7 +229,7 @@ describe("Prescription History Viewing and Revision Workflow", () => {
     expect(modalHtml).toContain("RX-2026-0001")
     expect(modalHtml).toContain("Amoxicillin")
     expect(modalHtml).toContain("Paracetamol")
-    expect(modalHtml).toContain("Reason for revision")
+    expect(modalHtml).not.toContain("Reason for revision")
   })
 
   it("4. Superceded prescription records are read-only and hide the edit action", () => {

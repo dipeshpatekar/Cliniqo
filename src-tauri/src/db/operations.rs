@@ -928,16 +928,10 @@ impl DbOperations {
         prescription_id: &str,
         expected_revision_number: i32,
         items_json: &str,
-        reason_for_revision: &str,
+        _reason_for_revision: &str,
         verified_doctor_id: &str,
         new_consultation_id: Option<&str>,
     ) -> Result<String, DatabaseOpError> {
-        if reason_for_revision.trim().is_empty() {
-            return Err(DatabaseOpError::ConflictResolution(
-                "Reason for revision is required".to_string(),
-            ));
-        }
-
         // Validate items JSON format and at least 1 item
         let parsed_items: serde_json::Value = serde_json::from_str(items_json)
             .map_err(|e| DatabaseOpError::ConflictResolution(format!("Invalid items JSON: {e}")))?;
@@ -8067,21 +8061,7 @@ mod tests {
         );
         assert!(wrong_rev_res.is_err(), "Mismatched expected revision must fail optimistic lock");
 
-        // 4. Attempt revision without reason -> must fail
-        let empty_reason_res = DbOperations::revise_prescription(
-            &mut conn,
-            &dek,
-            clinic_id,
-            &rx1_id,
-            1,
-            rx2_items,
-            "   ",
-            doctor_id_2,
-            None,
-        );
-        assert!(empty_reason_res.is_err(), "Empty revision reason must be rejected");
-
-        // 5. Successful revision to Revision 2
+        // 4. Successful revision to Revision 2 without requiring a reason (empty reason permitted)
         let rx2_id = DbOperations::revise_prescription(
             &mut conn,
             &dek,
@@ -8089,7 +8069,7 @@ mod tests {
             &rx1_id,
             1,
             rx2_items,
-            "Extended antibiotic course and added antipyretic",
+            "   ",
             doctor_id_2,
             None,
         )

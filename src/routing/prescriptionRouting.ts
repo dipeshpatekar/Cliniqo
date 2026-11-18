@@ -1,6 +1,7 @@
 import type { LocalPrescriptionRecord, LocalConsultationRecord } from "../desktop/desktop-bridge"
 import { reviseLocalPrescription, getLocalPrescriptions } from "../desktop/desktop-bridge"
 import type { Page, Patient, Vitals, ConsultationData, Medicine } from "../types"
+import { normalizeMedicineList } from "../types"
 
 export type PrescriptionPreviewReturnPage = "consultation" | "settings" | "patient-profile"
 export type BillPreviewReturnPage = "bill-form" | "settings" | "patient-profile"
@@ -112,7 +113,12 @@ export function reconstructHistoricalPrescription(
   try {
     if (rx.items_json && rx.items_json.trim().length > 0) {
       const parsed = JSON.parse(rx.items_json)
-      if (Array.isArray(parsed)) {
+      const list = normalizeMedicineList(parsed)
+      if (list.length > 0) {
+        parsedMedicines = list
+      } else if (Array.isArray(parsed) && parsed.length === 0) {
+        parsedMedicines = []
+      } else if (Array.isArray(parsed)) {
         parsedMedicines = parsed
       } else {
         itemsError = `Prescription record ${rx.prescription_number || rx.id} contains invalid medicine structure (expected a list).`
@@ -232,7 +238,7 @@ export async function executePrescriptionRevision({
   clinicId: string
   patientId: string
   medicines: Medicine[]
-  reasonForRevision: string
+  reasonForRevision?: string
   newConsultationId?: string | null
   reviseBridge?: typeof reviseLocalPrescription
   fetchPrescriptionsBridge?: typeof getLocalPrescriptions
@@ -254,7 +260,7 @@ export async function executePrescriptionRevision({
     prescription_id: currentRecord.id,
     expected_revision_number: currentRecord.revision_number,
     items_json: JSON.stringify(medicines),
-    reason_for_revision: reasonForRevision,
+    reason_for_revision: reasonForRevision?.trim() || "Prescription revision",
     ...(newConsultationId ? { new_consultation_id: newConsultationId } : {}),
   })
 

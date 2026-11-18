@@ -21,13 +21,10 @@ export class RevisePrescriptionDto {
   @Min(1, { message: "expectedVersion must be at least 1" })
   expectedVersion: number
 
+  @IsOptional()
   @IsString()
-  @IsNotEmpty({ message: "Reason for revision is required" })
-  @MinLength(5, {
-    message: "Reason for revision must be at least 5 characters long",
-  })
   @MaxLength(500)
-  reasonForRevision: string
+  reasonForRevision?: string
 
   @ValidateNested({ each: true })
   @Type(() => PrescriptionItemDto)

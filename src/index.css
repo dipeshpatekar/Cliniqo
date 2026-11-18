@@ -6424,8 +6424,17 @@ tbody tr:active {
   margin: 0;
 }
 
-/* Patient Name Value: 15% increase relative to 13.2px (13.2 * 1.15 = 15.18px) */
-.rx-patient-name-val,
+/* Prescription Patient Name Value: exactly 10% larger than Age & Gender (13.2px * 1.1 = 14.52px) */
+.rx-patient-name-val {
+  font-size: 14.52px !important;
+  font-weight: 600 !important;
+  font-family: inherit !important;
+}
+
+.prescription-paper .rx-patient-name-val {
+  text-transform: uppercase !important;
+}
+
 .bill-patient-name .rx-patient-name-val {
   font-size: 15.18px !important;
 }
@@ -8659,8 +8668,17 @@ body {
     margin: 0 !important;
   }
 
-  /* Patient Name Value: 15% increase relative to 13.2px in print / PDF */
-  .rx-patient-name-val,
+  /* Prescription Patient Name Value: exactly 10% larger than Age & Gender (13.2px * 1.1 = 14.52px) in print / PDF */
+  .rx-patient-name-val {
+    font-size: 14.52px !important;
+    font-weight: 600 !important;
+    font-family: inherit !important;
+  }
+
+  .prescription-paper .rx-patient-name-val {
+    text-transform: uppercase !important;
+  }
+
   .bill-patient-name .rx-patient-name-val {
     font-size: 15.18px !important;
   }

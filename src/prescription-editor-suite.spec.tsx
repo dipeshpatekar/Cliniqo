@@ -347,9 +347,9 @@ describe("CLINIQUO — Prescription Editor, Clinical Library & UI Enhancements (
   })
 
   // =========================================================================
-  // ISSUE 6: Increase Patient Name Font Size by 15%
+  // ISSUE 6: Prescription Patient Name Typography (10% Larger & UPPERCASE)
   // =========================================================================
-  describe("ISSUE 6 — Increase Patient Name Font Size by 15%", () => {
+  describe("ISSUE 6 — Prescription Patient Name Typography", () => {
     it("wraps patient name with .rx-patient-name-val in Prescription Preview", () => {
       const html = renderToString(
         <PrescriptionPreview
@@ -367,10 +367,10 @@ describe("CLINIQUO — Prescription Editor, Clinical Library & UI Enhancements (
         />,
       )
 
-      // Patient name value is wrapped with rx-patient-name-val (which has font-size: 15.18px, 1.15x of 13.2px)
+      // Patient name value is wrapped with rx-patient-name-val (which has font-size: 14.52px, 1.1x of 13.2px, uppercase in CSS)
       expect(html).toContain('<span class="rx-patient-name-val">krishna</span>')
-      // Demographics remain in strong at base font-size
-      expect(html).toContain("21 yrs · Female")
+      // Demographics remain in original formatting at base font-size
+      expect(html).toContain("(21 yrs · Female)")
       // Patient ID remains unchanged
       expect(html).toContain("<strong>AAA-0007</strong>")
     })

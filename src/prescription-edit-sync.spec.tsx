@@ -11,10 +11,19 @@ import {
   normalizeMedicineList,
   normalizeMedicineItem,
   addClinicalLibraryItem,
+  formatTime12Hour,
+  getCurrentDeviceTime24,
+  formatPrescriptionDateWithTime,
 } from "./types"
 import { PrescriptionEditModal } from "./components/consultation/PrescriptionEditModal"
 import { reconstructHistoricalPrescription, executePrescriptionRevision } from "./routing/prescriptionRouting"
-import { searchCatalogue, type LocalPrescriptionRecord } from "./desktop/desktop-bridge"
+import {
+  searchCatalogue,
+  saveLocalConsultation,
+  reviseLocalPrescription,
+  type LocalPrescriptionRecord,
+  type LocalConsultationRecord,
+} from "./desktop/desktop-bridge"
 import { SearchableOptionSelect } from "./components/common"
 
 describe("Prescription Edit Modal — Reason Removal & Medicine Data Sync Suite", () => {
@@ -416,6 +425,179 @@ describe("Prescription Edit Modal — Reason Removal & Medicine Data Sync Suite"
       expect(html).toContain('value="Amoxicillin + Clavulanic Acid"')
       expect(html).toContain('placeholder="Search medicine"')
       expect(html).toContain('role="combobox"')
+    })
+  })
+
+  // =========================================================================
+  // 5. LOCAL CONSULTATION PERSISTENCE & CURRENT DEVICE TIME IN EDIT MODAL
+  // =========================================================================
+  describe("5. Local Consultation Persistence & Current Device Time in Edit Modal", () => {
+    it("ensures saveLocalConsultation is defined, callable, and exports from desktop-bridge", () => {
+      expect(saveLocalConsultation).toBeDefined()
+      expect(typeof saveLocalConsultation).toBe("function")
+    })
+
+    it("initializes Consultation Time with current local device time while preserving original consultation date", () => {
+      const pastConsultationData: ConsultationData = {
+        ...mockConsultationData,
+        date: "2026-11-10",
+        time: "09:15", // Old consultation time from days ago
+      }
+
+      const expectedCurrentTime = getCurrentDeviceTime24()
+      expect(expectedCurrentTime).toMatch(/^\d{2}:\d{2}$/)
+
+      const html = renderToString(
+        <PrescriptionEditModal
+          isOpen={true}
+          onClose={vi.fn()}
+          prescriptionNumber="RX-854704"
+          currentRevisionNumber={1}
+          initialMedicines={mockMedicines}
+          initialVitals={mockVitals}
+          initialConsultationData={pastConsultationData}
+          patient={mockPatient}
+          onSaveRevision={vi.fn()}
+        />,
+      )
+
+      // Retains original consultation date (does not arbitrarily change the date)
+      expect(html).toContain('value="2026-11-10"')
+
+      // Displays the current local device time rather than stale 09:15
+      expect(html).toContain(`value="${expectedCurrentTime}"`)
+    })
+
+    it("formatTime12Hour formats both 24-hour and 12-hour timestamps accurately with AM/PM", () => {
+      expect(formatTime12Hour("10:31")).toBe("10:31 AM")
+      expect(formatTime12Hour("14:45")).toBe("02:45 PM")
+      expect(formatTime12Hour("00:05")).toBe("12:05 AM")
+      expect(formatTime12Hour("12:00")).toBe("12:00 PM")
+      expect(formatTime12Hour("10:31 AM")).toBe("10:31 AM")
+      expect(formatTime12Hour("02:45 pm")).toBe("02:45 PM")
+      expect(formatTime12Hour("")).toBe("")
+      expect(formatTime12Hour(null)).toBe("")
+    })
+
+    it("formatPrescriptionDateWithTime integrates 12-hour AM/PM format for preview and printing", () => {
+      expect(formatPrescriptionDateWithTime("2026-11-19", "10:31")).toBe("19/11/2026, 10:31 AM")
+      expect(formatPrescriptionDateWithTime("2026-11-19", "15:20")).toBe("19/11/2026, 03:20 PM")
+    })
+
+    it("persists revision with updated consultation time and links new consultation ID in SQLite", async () => {
+      const mockConsultationId = "cons-new-rev-2"
+      const mockReviseId = "rx-rev-2-id"
+
+      const mockReviseBridge = vi.fn().mockResolvedValue(mockReviseId)
+      const mockFetchPrescriptionsBridge = vi.fn().mockResolvedValue([
+        {
+          id: mockReviseId,
+          clinic_id: "clinic-test",
+          prescription_number: "RX-733323",
+          revision_number: 2,
+          status: "ACTIVE",
+          consultation_id: mockConsultationId,
+          items_json: JSON.stringify(mockMedicines),
+          created_at: "2026-11-19T10:35:00Z",
+        },
+      ])
+
+      const currentRecord: LocalPrescriptionRecord = {
+        id: "rx-orig-id",
+        server_id: null,
+        clinic_id: "clinic-test",
+        consultation_id: "cons-orig-id",
+        patient_id: "pat-123",
+        doctor_id: "doc-1",
+        prescription_number: "RX-733323",
+        revision_number: 1,
+        status: "ACTIVE",
+        items_json: JSON.stringify(mockMedicines),
+        reason_for_revision: null,
+        sync_status: "PENDING",
+        server_version: 1,
+        local_version: 1,
+        created_at: "2026-11-18T10:31:00Z",
+        updated_at: "2026-11-18T10:31:00Z",
+      }
+
+      const revisedRecord = await executePrescriptionRevision({
+        currentRecord,
+        clinicId: "clinic-test",
+        patientId: "pat-123",
+        medicines: mockMedicines,
+        reasonForRevision: "Updated clinical notes and time",
+        newConsultationId: mockConsultationId,
+        reviseBridge: mockReviseBridge as any,
+        fetchPrescriptionsBridge: mockFetchPrescriptionsBridge as any,
+      })
+
+      expect(mockReviseBridge).toHaveBeenCalledWith({
+        clinic_id: "clinic-test",
+        prescription_id: "rx-orig-id",
+        expected_revision_number: 1,
+        items_json: JSON.stringify(mockMedicines),
+        reason_for_revision: "Updated clinical notes and time",
+        new_consultation_id: mockConsultationId,
+      })
+
+      expect(revisedRecord.id).toBe(mockReviseId)
+      expect(revisedRecord.revision_number).toBe(2)
+      expect(revisedRecord.consultation_id).toBe(mockConsultationId)
+    })
+
+    it("reconstructHistoricalPrescription reconstructs revised consultation details while preserving immutability", () => {
+      const rxRecord: LocalPrescriptionRecord = {
+        id: "rx-rev-2-id",
+        server_id: null,
+        clinic_id: "clinic-test",
+        consultation_id: "cons-rev-2",
+        patient_id: "pat-123",
+        doctor_id: "doc-1",
+        prescription_number: "RX-733323",
+        revision_number: 2,
+        status: "ACTIVE",
+        items_json: JSON.stringify(mockMedicines),
+        reason_for_revision: "Prescription revision",
+        sync_status: "PENDING",
+        server_version: 1,
+        local_version: 1,
+        created_at: "2026-11-19T10:35:00Z",
+        updated_at: "2026-11-19T10:35:00Z",
+      }
+
+      const matchedConsultation: LocalConsultationRecord = {
+        id: "cons-rev-2",
+        server_id: null,
+        clinic_id: "clinic-test",
+        patient_id: "pat-123",
+        doctor_id: "doc-1",
+        consultation_date: "2026-11-19T10:35",
+        status: "ACTIVE",
+        chief_complaint: "fever (5 days)",
+        diagnosis: "Viral fever",
+        clinical_snapshot_json: JSON.stringify({
+          vitals: mockVitals,
+          time: "10:35",
+          consultationTime: "10:35",
+          consultationDate: "2026-11-19",
+          symptomDuration: "5 days",
+        }),
+        sync_status: "PENDING",
+        server_version: 1,
+        local_version: 1,
+        updated_at: "2026-11-19T10:35:00Z",
+      }
+
+      const reconstructed = reconstructHistoricalPrescription(
+        rxRecord,
+        matchedConsultation,
+      )
+
+      expect(reconstructed.consultationData.date).toBe("2026-11-19")
+      expect(reconstructed.consultationData.time).toBe("10:35")
+      expect(reconstructed.consultationData.chiefComplaint).toBe("fever (5 days)")
+      expect(reconstructed.consultationData.diagnosis).toBe("Viral fever")
     })
   })
 })

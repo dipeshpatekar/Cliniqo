@@ -715,6 +715,38 @@ export function formatIndiaDateTime(
   return formatDateTimeDDMMYYYY(input, true)
 }
 
+export function formatTime12Hour(time?: string | null): string {
+  if (!time || !time.trim()) return ""
+  const trimmedTime = time.trim()
+  const ampmMatch = trimmedTime.match(/^(\d{1,2}):(\d{2})(?::\d{2})?\s*(AM|PM)$/i)
+  if (ampmMatch) {
+    const hh = ampmMatch[1].padStart(2, "0")
+    const mm = ampmMatch[2]
+    const period = ampmMatch[3].toUpperCase()
+    return `${hh}:${mm} ${period}`
+  }
+
+  const time24Match = trimmedTime.match(/^(\d{1,2}):(\d{2})(?::\d{2})?$/)
+  if (time24Match) {
+    let hours = parseInt(time24Match[1], 10)
+    const minutes = time24Match[2]
+    const period = hours >= 12 ? "PM" : "AM"
+    hours = hours % 12
+    if (hours === 0) hours = 12
+    const hh = String(hours).padStart(2, "0")
+    return `${hh}:${minutes} ${period}`
+  }
+
+  return trimmedTime
+}
+
+export function getCurrentDeviceTime24(): string {
+  const now = new Date()
+  const hh = String(now.getHours()).padStart(2, "0")
+  const mm = String(now.getMinutes()).padStart(2, "0")
+  return `${hh}:${mm}`
+}
+
 export function formatPrescriptionDateWithTime(
   date?: string | null,
   time?: string | null,
@@ -731,30 +763,8 @@ export function formatPrescriptionDateWithTime(
     return datePart || "—"
   }
 
-  const trimmedTime = time.trim()
-
-  const ampmMatch = trimmedTime.match(/^(\d{1,2}):(\d{2})(?::\d{2})?\s*(AM|PM)$/i)
-  if (ampmMatch) {
-    const hh = ampmMatch[1].padStart(2, "0")
-    const mm = ampmMatch[2]
-    const period = ampmMatch[3].toUpperCase()
-    const formattedTime = `${hh}:${mm} ${period}`
-    return datePart ? `${datePart}, ${formattedTime}` : formattedTime
-  }
-
-  const time24Match = trimmedTime.match(/^(\d{1,2}):(\d{2})(?::\d{2})?$/)
-  if (time24Match) {
-    let hours = parseInt(time24Match[1], 10)
-    const minutes = time24Match[2]
-    const period = hours >= 12 ? "PM" : "AM"
-    hours = hours % 12
-    if (hours === 0) hours = 12
-    const hh = String(hours).padStart(2, "0")
-    const formattedTime = `${hh}:${minutes} ${period}`
-    return datePart ? `${datePart}, ${formattedTime}` : formattedTime
-  }
-
-  return datePart ? `${datePart}, ${trimmedTime}` : trimmedTime
+  const formattedTime = formatTime12Hour(time)
+  return datePart ? (formattedTime ? `${datePart}, ${formattedTime}` : datePart) : formattedTime
 }
 
 export function isMissingAge(

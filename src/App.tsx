@@ -25,6 +25,7 @@ import type {
   BillLayoutPreferences,
   PatientFormFieldPreferences,
   PrescriptionRevisionData,
+  Medicine,
 } from "./types"
 import {
   createEmptyConsultationData,
@@ -48,6 +49,7 @@ import {
   saveCustomDiagnoses,
   addCustomDiagnosis,
   complaintOptions,
+  getIndiaDateTimeLocalString,
 } from "./types"
 import { cn } from "./utils/cn"
 
@@ -86,6 +88,7 @@ import {
   getInventoryStockSummary,
   importInventoryStock,
   getLocalConsultations,
+  saveLocalConsultation,
   reviseLocalPrescription,
   getNextInvoiceNumber,
   type DesktopSessionContext,
@@ -445,7 +448,7 @@ export default function App({
   }
 
   const updatePrescriptionBannerImage = (
-    image: { src: string name: string } | null,
+    image: { src: string; name: string } | null,
   ) => {
     setPrescriptionBannerImage(image)
     savePrescriptionLayoutPreferences(
@@ -463,7 +466,7 @@ export default function App({
   }
 
   const updateDoctorSignatureImage = (
-    image: { src: string name: string } | null,
+    image: { src: string; name: string } | null,
   ) => {
     setDoctorSignatureImage(image)
     savePrescriptionLayoutPreferences(

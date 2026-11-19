@@ -46,8 +46,8 @@ export interface PrescriptionPreviewProps {
   vitals: Vitals
   data: ConsultationData
   bannerVisible: boolean
-  bannerImage: { src: string name: string } | null
-  signatureImage: { src: string name: string } | null
+  bannerImage: { src: string; name: string } | null
+  signatureImage: { src: string; name: string } | null
   showClinicLogo: boolean
   showClinicEmail: boolean
   showAllergyWarning: boolean
@@ -567,7 +567,7 @@ export function PrescriptionPreview({
             const medicalHistoryText =
               medicalHistoryList.length > 0
                 ? medicalHistoryList.join(", ")
-                : patient.medical_conditions?.trim() || null
+                : (patient as any).medical_conditions?.trim() || null
             const diagnosisText = data.diagnosis?.trim() || null
 
             if (!chiefComplaintText && !medicalHistoryText && !diagnosisText) {

@@ -22,6 +22,7 @@ import {
   saveClinicalLibrary,
   loadClinicalLibrary,
   addClinicalLibraryItem,
+  getCurrentDeviceTime24,
 } from "./types"
 import type { LocalPrescriptionRecord } from "./desktop/desktop-bridge"
 
@@ -123,7 +124,7 @@ describe("CLINIQUO — Prescription Editor, Clinical Library & UI Enhancements (
       // Section Headers & Content
       expect(html).toContain("Consultation Information")
       expect(html).toContain("2026-11-18")
-      expect(html).toContain("10:00")
+      expect(html).toContain(getCurrentDeviceTime24())
 
       expect(html).toContain("Clinical Notes")
       expect(html).toContain("Chief Complaints")

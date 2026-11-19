@@ -19,8 +19,11 @@ import {
   symptomDurationOptions,
   computeDefaultFollowUpDate,
   formatDateDDMMYYYY,
+  formatTime12Hour,
+  getCurrentDeviceTime24,
   normalizeMedicineList,
   loadClinicalLibrary,
+  type CatalogueItem,
 } from "../../types"
 import {
   getLocalFormulary,
@@ -30,7 +33,6 @@ import {
   getCatalogueStrengths,
   getCatalogueSyncStatus,
   type CatalogueSyncStatus,
-  type CatalogueItem,
   mapStockUnitToFormulation,
   type DesktopSessionContext,
 } from "../../desktop/desktop-bridge"
@@ -141,15 +143,16 @@ export function PrescriptionEditModal({
       ? initialConsultationData.date.split("T")[0]
       : new Date().toISOString().slice(0, 10),
   )
-  const [consultationTime, setConsultationTime] = useState(() =>
-    initialConsultationData?.time
-      ? initialConsultationData.time
-      : new Date().toLocaleTimeString([], {
-          hour: "2-digit",
-          minute: "2-digit",
-          hour12: false,
-        }),
+  const [consultationTime, setConsultationTime] = useState<string>(() =>
+    getCurrentDeviceTime24(),
   )
+
+  useEffect(() => {
+    if (isOpen) {
+      setError(null)
+      setConsultationTime(getCurrentDeviceTime24())
+    }
+  }, [isOpen])
 
   // --- SECTION E: Prescription Information State ---
   const [medicines, setMedicines] = useState<Medicine[]>(() =>
@@ -537,7 +540,7 @@ export function PrescriptionEditModal({
 
     searchDebounceTimers.current[medicineId] = setTimeout(() => {
       // 2. Fetch catalogue suggestions (SQLite offline cache, stock items, or online catalogue)
-      searchCatalogue(trimmed, desktopSession?.access_token, 20, formulation)
+      searchCatalogue(trimmed, desktopSession?.doctor_id, 20, formulation)
         .then((res) => {
           setCatalogueSuggestions((prev) => ({
             ...prev,
@@ -1335,7 +1338,7 @@ export function PrescriptionEditModal({
                 </span>
                 <p>
                   Date: {formatDateDDMMYYYY(consultationDate) || "N/A"} · Time:{" "}
-                  {consultationTime || "N/A"}
+                  {formatTime12Hour(consultationTime) || "N/A"}
                 </p>
                 <p>
                   Complaint: {chiefComplaint || "None"}
@@ -1402,7 +1405,10 @@ export function PrescriptionEditModal({
             <div className="sticky -bottom-3 bg-white dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800 pt-3 pb-2 flex justify-end gap-2 z-10">
               <Button
                 variant="ghost"
-                onClick={() => setStep("edit")}
+                onClick={() => {
+                  setError(null)
+                  setStep("edit")
+                }}
                 disabled={isSubmitting}
               >
                 Back to edit
@@ -1410,7 +1416,7 @@ export function PrescriptionEditModal({
               <Button
                 variant="primary"
                 onClick={handleFinalSave}
-                isLoading={isSubmitting}
+                loading={isSubmitting}
               >
                 Finalize Revision {currentRevisionNumber + 1}
               </Button>

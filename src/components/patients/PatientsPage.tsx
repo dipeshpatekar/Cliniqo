@@ -35,6 +35,18 @@ export interface PatientsPageProps {
   onDeletePatient?: (patientId: string) => void
 }
 
+function parsePatientCreationDate(patient: Patient): number {
+  if (patient.createdAt) {
+    const parsed = Date.parse(patient.createdAt)
+    if (!isNaN(parsed)) return parsed
+  }
+  if (patient.registeredAt) {
+    const parsed = Date.parse(patient.registeredAt)
+    if (!isNaN(parsed)) return parsed
+  }
+  return 0
+}
+
 function parsePatientDate(patient: Patient): number {
   const lastVisit = patient.lastVisit
   if (lastVisit && lastVisit !== "No visits yet") {
@@ -89,7 +101,7 @@ export function PatientsPage({
 }: PatientsPageProps) {
   const [query, setQuery] = useState("")
   const [gender, setGender] = useState("All patients")
-  const [sort, setSort] = useState("Recent visit")
+  const [sort, setSort] = useState("Created Date (newest first)")
   const [startDate, setStartDate] = useState("")
   const [endDate, setEndDate] = useState("")
   const [showDateFilter, setShowDateFilter] = useState(false)
@@ -131,18 +143,35 @@ export function PatientsPage({
 
       return matchesQuery && matchesGender && matchesDate
     })
+    if (
+      sort === "Created Date (newest first)" ||
+      sort === "Newest added" ||
+      sort === "Created Date → Newest to Oldest (DESC)"
+    ) {
+      return [...matches].sort((a, b) => {
+        const timeA = parsePatientCreationDate(a)
+        const timeB = parsePatientCreationDate(b)
+        if (timeA !== timeB) return timeB - timeA
+        const numA = Number(getPublicPatientId(a).replace(/\D/g, "")) || 0
+        const numB = Number(getPublicPatientId(b).replace(/\D/g, "")) || 0
+        return numB - numA
+      })
+    }
+    if (sort === "Created Date (oldest first)") {
+      return [...matches].sort((a, b) => {
+        const timeA = parsePatientCreationDate(a)
+        const timeB = parsePatientCreationDate(b)
+        if (timeA !== timeB) return timeA - timeB
+        const numA = Number(getPublicPatientId(a).replace(/\D/g, "")) || 0
+        const numB = Number(getPublicPatientId(b).replace(/\D/g, "")) || 0
+        return numA - numB
+      })
+    }
     if (sort === "Name A–Z") {
       return [...matches].sort((a, b) => a.name.localeCompare(b.name))
     }
     if (sort === "Name Z–A") {
       return [...matches].sort((a, b) => b.name.localeCompare(a.name))
-    }
-    if (sort === "Newest added") {
-      return [...matches].sort((a, b) => {
-        const numA = Number(getPublicPatientId(a).replace(/\D/g, "")) || 0
-        const numB = Number(getPublicPatientId(b).replace(/\D/g, "")) || 0
-        return numB - numA
-      })
     }
     if (
       sort === "Sort by date" ||
@@ -309,6 +338,8 @@ export function PatientsPage({
             value={sort}
             onChange={(e) => setSort(e.target.value)}
           >
+            <option>Created Date (newest first)</option>
+            <option>Created Date (oldest first)</option>
             <option>Recent visit</option>
             <option>Sort by date</option>
             <option>Date (newest first)</option>

@@ -1132,9 +1132,15 @@ export default function App({
         } catch {}
       }
 
+      // Clear any left-behind draft so starting a new consultation starts completely fresh
+      try {
+        const draftKey = `cliniqo_draft_consultation_${desktopSession?.clinic_id || "default"}_${patient.id}`
+        window.localStorage.removeItem(draftKey)
+      } catch {}
+
       const emptyData = createEmptyConsultationData()
       emptyData.conditions = initialConditions
-      emptyData.allergies = patient.allergies || []
+      emptyData.allergies = []
       setConsultationData(emptyData)
       setVitals({
         systolic: "",
@@ -2400,6 +2406,14 @@ export default function App({
         onEditPatient={editPatient}
         activeTab={patientProfileTab}
         onTabChange={setPatientProfileTab}
+        initialPrescriptions={
+          activeConsultationPrescriptionRecord &&
+          (activeConsultationPrescriptionRecord.patient_id === selectedPatient.id ||
+            activeConsultationPrescriptionRecord.patient_id === selectedPatient.displayId ||
+            activeConsultationPrescriptionRecord.patient_id === selectedPatient.patientCode)
+            ? [activeConsultationPrescriptionRecord]
+            : undefined
+        }
       />
     )
   } else if (page === "consultation") {

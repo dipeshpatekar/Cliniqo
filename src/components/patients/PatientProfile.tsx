@@ -115,8 +115,18 @@ export function PatientProfile({
             r.patient_id === patient.displayId ||
             r.patient_id === patient.patientCode,
         )
+        // Deduplicate prescriptions by unique record ID, or prescription number and revision number
+        const seenKeys = new Set<string>()
+        const dedupedRx: LocalPrescriptionRecord[] = []
+        for (const r of matchedRx) {
+          const key = r.id || `${r.prescription_number}_rev${r.revision_number}`
+          if (!seenKeys.has(key)) {
+            seenKeys.add(key)
+            dedupedRx.push(r)
+          }
+        }
         setConsultations(matchedC)
-        setPrescriptions(matchedRx)
+        setPrescriptions(dedupedRx)
       } catch (err) {
         console.error("Failed to load patient history:", err)
       } finally {
@@ -352,6 +362,7 @@ export function PatientProfile({
             consultations={consultations}
             prescriptions={prescriptions}
             onEditPatient={onEditPatient}
+            onStartConsultation={onStartConsultation}
           />
         )}
         {tab === "Medical History" && <HistoryTab patient={patient} />}
@@ -363,6 +374,7 @@ export function PatientProfile({
             consultations={consultations}
             loading={loadingHistory}
             desktopSession={desktopSession}
+            onStartConsultation={onStartConsultation}
           />
         )}
         {tab === "Prescriptions" && (

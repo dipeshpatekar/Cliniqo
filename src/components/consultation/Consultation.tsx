@@ -218,6 +218,11 @@ export function Consultation({
   const draftStorageKey = `cliniqo_draft_consultation_${desktopSession?.clinic_id || "default"}_${patient.id}`
   const [autoSaveStatus, setAutoSaveStatus] = useState<"idle" | "saving" | "saved" | "error">("idle")
   const draftConsultationIdRef = useRef<string>(`draft_consult_${patient.id}`)
+  const finalizedSessionRef = useRef<{
+    consultationId: string | null
+    rxRecord: LocalPrescriptionRecord | null
+    dateStr: string
+  } | null>(null)
   const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const isInitialDraftLoadedRef = useRef(false)
 
@@ -258,7 +263,7 @@ export function Consultation({
             setConditionsInput(history.join(", "))
             updateData({ conditions: history })
             onUpdatePatientMedicalInfo?.(
-              data.allergies ?? patient.allergies ?? [],
+              data.allergies ?? [],
               history,
             )
           } else if (patient.conditions && patient.conditions.length > 0) {
@@ -348,7 +353,8 @@ export function Consultation({
   useEffect(() => {
     if (patientIdRef.current !== patient.id) {
       patientIdRef.current = patient.id
-      setAllergiesInput((data.allergies ?? patient.allergies ?? []).join(", "))
+      finalizedSessionRef.current = null
+      setAllergiesInput((data.allergies ?? []).join(", "))
       setConditionsInput(
         (data.conditions ?? patient.conditions ?? []).join(", "),
       )
@@ -357,7 +363,6 @@ export function Consultation({
     patient.id,
     data.allergies,
     data.conditions,
-    patient.allergies,
     patient.conditions,
   ])
 
@@ -761,6 +766,20 @@ export function Consultation({
     isFinalizingRef.current = true
     setIsFinalizing(true)
     setFinalizeError(null)
+
+    // Idempotency: If this consultation was already finalized in this session, reuse the existing record
+    if (finalizedSessionRef.current?.rxRecord) {
+      const existing = finalizedSessionRef.current
+      onFinalized?.(
+        existing.consultationId,
+        existing.dateStr,
+        existing.rxRecord,
+      )
+      go("preview")
+      isFinalizingRef.current = false
+      setIsFinalizing(false)
+      return
+    }
     const finalizedDate = new Date()
     const finalizedDateStr = finalizedDate.toISOString().slice(0, 10)
     const finalizedTimeStr = finalizedDate.toLocaleTimeString([], {
@@ -1031,6 +1050,11 @@ export function Consultation({
         try {
           window.localStorage.removeItem(draftStorageKey)
         } catch {}
+        finalizedSessionRef.current = {
+          consultationId,
+          rxRecord: savedRxRecord,
+          dateStr: combinedConsultationDate || finalizedTimestamp,
+        }
         onFinalized?.(
           consultationId,
           combinedConsultationDate || finalizedTimestamp,
@@ -1141,8 +1165,13 @@ export function Consultation({
         try {
           window.localStorage.removeItem(draftStorageKey)
         } catch {}
+        finalizedSessionRef.current = {
+          consultationId: mockRxRecord.consultation_id,
+          rxRecord: mockRxRecord,
+          dateStr: combinedConsultationDate || finalizedTimestamp,
+        }
         onFinalized?.(
-          null,
+          mockRxRecord.consultation_id,
           combinedConsultationDate || finalizedTimestamp,
           mockRxRecord,
         )

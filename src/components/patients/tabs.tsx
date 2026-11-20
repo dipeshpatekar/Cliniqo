@@ -31,6 +31,7 @@ export function OverviewTab({
   consultations = [],
   prescriptions = [],
   onEditPatient,
+  onStartConsultation,
 }: {
   go: (page: Page) => void
   patient: Patient
@@ -38,6 +39,7 @@ export function OverviewTab({
   consultations?: LocalConsultationRecord[]
   prescriptions?: LocalPrescriptionRecord[]
   onEditPatient?: (patient: Patient) => void
+  onStartConsultation?: (patient: Patient) => void
 }) {
   return (
     <div className="profile-grid">
@@ -149,7 +151,14 @@ export function OverviewTab({
           <div>
             <h2>Recent clinical activity</h2>
           </div>
-          <button className="text-btn" onClick={() => go("consultation")}>
+          <button
+            className="text-btn"
+            onClick={() =>
+              onStartConsultation
+                ? onStartConsultation(patient)
+                : go("consultation")
+            }
+          >
             New consultation
           </button>
         </div>
@@ -185,54 +194,19 @@ export function OverviewTab({
               </div>
             )
           })
-        ) : hasHistory ? (
-          [
-            [
-              "Today",
-              "Consultation draft",
-              "Clinical notes saved · Not finalized",
-            ],
-            [
-              "12/03/2025",
-              "Consultation finalized",
-              "Prescription revision 1 · Delivered",
-            ],
-            ["18/11/2024", "Consultation finalized", "Printed at clinic"],
-          ].map((entry, index) => (
-            <div className="timeline-row" key={entry[0]}>
-              <span className={cn("timeline-icon", index === 0 && "draft")}>
-                <FileText size={16} />
-              </span>
-              <div>
-                <strong>{entry[1]}</strong>
-                <p>{entry[2]}</p>
-              </div>
-              <time>{entry[0]}</time>
-              {index === 0 ? (
-                <Button
-                  size="sm"
-                  variant="secondary"
-                  onClick={() => go("consultation")}
-                >
-                  Resume
-                </Button>
-              ) : (
-                <Button
-                  size="sm"
-                  variant="secondary"
-                  onClick={() => go("preview")}
-                >
-                  Review
-                </Button>
-              )}
-            </div>
-          ))
         ) : (
           <div className="empty-state compact">
             <ClipboardList size={25} />
             <h2>No clinical activity yet</h2>
             <p>Start the first consultation when the patient is ready.</p>
-            <Button icon={Stethoscope} onClick={() => go("consultation")}>
+            <Button
+              icon={Stethoscope}
+              onClick={() =>
+                onStartConsultation
+                  ? onStartConsultation(patient)
+                  : go("consultation")
+              }
+            >
               Start consultation
             </Button>
           </div>
@@ -276,6 +250,7 @@ export function ConsultationsTab({
   consultations = [],
   loading = false,
   desktopSession,
+  onStartConsultation,
 }: {
   go: (page: Page) => void
   patient?: Patient
@@ -283,6 +258,7 @@ export function ConsultationsTab({
   consultations?: LocalConsultationRecord[]
   loading?: boolean
   desktopSession?: DesktopSessionContext | null
+  onStartConsultation?: (patient: Patient) => void
 }) {
   return (
     <section className="panel record-list">
@@ -290,7 +266,15 @@ export function ConsultationsTab({
         <div>
           <h2>Consultation history</h2>
         </div>
-        <Button size="sm" onClick={() => go("consultation")} icon={Plus}>
+        <Button
+          size="sm"
+          onClick={() =>
+            patient && onStartConsultation
+              ? onStartConsultation(patient)
+              : go("consultation")
+          }
+          icon={Plus}
+        >
           New consultation
         </Button>
       </div>
@@ -327,31 +311,6 @@ export function ConsultationsTab({
             </button>
           )
         })
-      ) : hasHistory ? (
-        [
-          ["Today", "Draft", "Follow-up visit"],
-          ["12/03/2025", "Finalized", "New consultation"],
-          ["18/11/2024", "Routine consultation", "Routine consultation"],
-        ].map((r) => (
-          <button
-            key={r[0]}
-            onClick={() => go(r[1] === "Draft" ? "consultation" : "preview")}
-          >
-            <span className="record-icon">
-              <ClipboardList size={18} />
-            </span>
-            <span>
-              <strong>{r[2]}</strong>
-              <small>
-                {desktopSession?.doctor_name || "Doctor"} · {r[0]}
-              </small>
-            </span>
-            <StatusPill tone={r[1] === "Draft" ? "warning" : "success"}>
-              {r[1]}
-            </StatusPill>
-            <ChevronRight size={17} />
-          </button>
-        ))
       ) : (
         <div className="empty-state compact">
           <ClipboardList size={25} />
@@ -447,24 +406,6 @@ export function PrescriptionsTab({
             </button>
           )
         })
-      ) : hasHistory ? (
-        [
-          ["12/03/2025", "Revision 1", "Delivered"],
-          ["18/11/2024", "Original", "Printed"],
-          ["03/07/2024", "Original", "Delivered"],
-        ].map((r) => (
-          <button key={r[0]} onClick={() => go("preview")}>
-            <span className="record-icon">
-              <FileText size={18} />
-            </span>
-            <span>
-              <strong>Prescription · {r[1]}</strong>
-              <small>Finalized {r[0]}</small>
-            </span>
-            <StatusPill tone="success">{r[2]}</StatusPill>
-            <ChevronRight size={17} />
-          </button>
-        ))
       ) : (
         <div className="empty-state compact">
           <FileText size={25} />

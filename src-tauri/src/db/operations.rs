@@ -501,7 +501,7 @@ impl DbOperations {
                    ) AS last_visit
             FROM local_patients p
             WHERE p.clinic_id = ?1
-            ORDER BY p.updated_at DESC
+            ORDER BY p.created_at DESC, p.id DESC
             "#,
         )?;
 
@@ -886,6 +886,19 @@ impl DbOperations {
             .optional()?;
 
         if let Some(existing_id) = existing_rx_id {
+            return Ok(existing_id);
+        }
+
+        // Idempotency: Prevent duplicate prescriptions with identical prescription number in the same clinic
+        let existing_by_number: Option<String> = conn
+            .query_row(
+                "SELECT id FROM local_prescriptions WHERE clinic_id = ?1 AND prescription_number = ?2 LIMIT 1",
+                params![clinic_id, prescription_number],
+                |row| row.get(0),
+            )
+            .optional()?;
+
+        if let Some(existing_id) = existing_by_number {
             return Ok(existing_id);
         }
 

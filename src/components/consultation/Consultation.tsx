@@ -224,7 +224,18 @@ export function Consultation({
   const draftStorageKey = `cliniqo_draft_consultation_${desktopSession?.clinic_id || "default"}_${patient.id}`
   const [autoSaveStatus, setAutoSaveStatus] = useState<"idle" | "saving" | "saved" | "error">("idle")
   const draftConsultationIdRef = useRef<string>(
-    activeDraftConsultationId || `draft_consult_${patient.id}`,
+    activeDraftConsultationId || (() => {
+      try {
+        const saved = window.localStorage.getItem(draftStorageKey)
+        if (saved) {
+          const parsed = JSON.parse(saved)
+          if (parsed?.consultationId && typeof parsed.consultationId === "string" && !parsed.consultationId.startsWith("finalized_")) {
+            return parsed.consultationId
+          }
+        }
+      } catch {}
+      return `c-draft-${patient.id}-${Date.now()}`
+    })(),
   )
 
   useEffect(() => {
@@ -239,6 +250,7 @@ export function Consultation({
   } | null>(null)
   const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const isInitialDraftLoadedRef = useRef(false)
+  const saveSeqRef = useRef(0)
 
   // Initial draft restoration or medical history carry-forward
   useEffect(() => {
@@ -250,6 +262,9 @@ export function Consultation({
         const parsed = JSON.parse(savedDraft)
         if (parsed && typeof parsed === "object") {
           hasDraft = true
+          if (parsed.consultationId && typeof parsed.consultationId === "string") {
+            draftConsultationIdRef.current = parsed.consultationId
+          }
           if (parsed.data) {
             onDataChange(parsed.data)
             if (parsed.data.conditions) {
@@ -294,10 +309,13 @@ export function Consultation({
     return () => clearTimeout(timer)
   }, [patient.id, draftStorageKey])
 
-  // Debounced auto-save (700 ms)
+  // Debounced auto-save (700 ms) with retry and sequence protection
   const executeAutoSave = async () => {
     if (isFinalizingRef.current) return
+    const currentSeq = ++saveSeqRef.current
     setAutoSaveStatus("saving")
+
+    // 1. Always persist to localStorage first so input is immediately safe offline
     try {
       const draftPayload = {
         patientId: patient.id,
@@ -308,39 +326,99 @@ export function Consultation({
         savedAt: new Date().toISOString(),
       }
       window.localStorage.setItem(draftStorageKey, JSON.stringify(draftPayload))
+    } catch (lsErr) {
+      console.warn("[Cliniqo] Failed to write consultation draft to localStorage:", lsErr)
+    }
 
-      if (isTauriDesktop() && desktopSession?.clinic_id && patient.id && patient.id !== "PT-INIT") {
-        const consultDatePart = data.date || new Date().toISOString().slice(0, 10)
-        const consultTimePart = data.time || "00:00"
-        const combinedDate = `${consultDatePart}T${consultTimePart}`
-        await saveLocalConsultationDraft({
-          clinic_id: desktopSession.clinic_id,
-          consultation_id: draftConsultationIdRef.current,
-          patient_id: patient.id,
-          consultation_date: combinedDate,
-          chief_complaint: data.chiefComplaint || "",
-          diagnosis: data.diagnosis || "",
-          clinical_snapshot_json: JSON.stringify({
-            vitals,
-            time: consultTimePart,
-            consultationTime: consultTimePart,
-            consultationDate: consultDatePart,
-            chiefComplaint: data.chiefComplaint,
-            symptomDuration: data.symptomDuration,
-            diagnosis: data.diagnosis,
-            followUpDate: data.followUpDate,
-            followUpInstructions: data.followUpInstructions,
-            allergies: data.allergies ?? patient.allergies ?? [],
-            conditions: data.conditions ?? patient.conditions ?? [],
-            medicines: data.medicines,
-            savedAt: new Date().toISOString(),
-          }),
-        })
+    // 2. Persist to local SQLite when running on desktop
+    if (isTauriDesktop() && desktopSession?.clinic_id && patient.id && patient.id !== "PT-INIT") {
+      const consultDatePart = data.date || new Date().toISOString().slice(0, 10)
+      const consultTimePart = data.time || "00:00"
+      const combinedDate = `${consultDatePart}T${consultTimePart}`
+      const snapshot = JSON.stringify({
+        vitals,
+        time: consultTimePart,
+        consultationTime: consultTimePart,
+        consultationDate: consultDatePart,
+        chiefComplaint: data.chiefComplaint,
+        symptomDuration: data.symptomDuration,
+        diagnosis: data.diagnosis,
+        followUpDate: data.followUpDate,
+        followUpInstructions: data.followUpInstructions,
+        allergies: data.allergies ?? patient.allergies ?? [],
+        conditions: data.conditions ?? patient.conditions ?? [],
+        medicines: data.medicines,
+        savedAt: new Date().toISOString(),
+      })
+
+      let attempts = 0
+      const maxAttempts = 3
+      let saveSuccess = false
+      let lastSaveErr: any = null
+
+      while (attempts < maxAttempts && !saveSuccess) {
+        attempts++
+        try {
+          if (currentSeq < saveSeqRef.current) {
+            return
+          }
+
+          if (desktopSession.expires_at) {
+            const nowSec = Math.floor(Date.now() / 1000)
+            if (desktopSession.expires_at <= nowSec + 60) {
+              try {
+                await refreshDesktopSession()
+              } catch {}
+            }
+          }
+
+          const savedId = await saveLocalConsultationDraft({
+            clinic_id: desktopSession.clinic_id,
+            consultation_id: draftConsultationIdRef.current,
+            patient_id: patient.id,
+            consultation_date: combinedDate,
+            chief_complaint: data.chiefComplaint || "",
+            diagnosis: data.diagnosis || "",
+            clinical_snapshot_json: snapshot,
+          })
+
+          if (savedId && savedId !== draftConsultationIdRef.current) {
+            draftConsultationIdRef.current = savedId
+            try {
+              const updatedPayload = {
+                patientId: patient.id,
+                clinicId: desktopSession.clinic_id,
+                consultationId: savedId,
+                data,
+                vitals,
+                savedAt: new Date().toISOString(),
+              }
+              window.localStorage.setItem(draftStorageKey, JSON.stringify(updatedPayload))
+            } catch {}
+          }
+          saveSuccess = true
+        } catch (err: any) {
+          lastSaveErr = err
+          if (attempts < maxAttempts) {
+            await new Promise((resolve) => setTimeout(resolve, attempts * 400))
+          }
+        }
       }
-      setAutoSaveStatus("saved")
-    } catch (err) {
-      console.warn("[Cliniqo] Auto-save draft error:", err)
-      setAutoSaveStatus("error")
+
+      if (currentSeq < saveSeqRef.current) {
+        return
+      }
+
+      if (saveSuccess) {
+        setAutoSaveStatus("saved")
+      } else {
+        console.warn("[Cliniqo] Auto-save draft failed after retries:", lastSaveErr)
+        setAutoSaveStatus("error")
+      }
+    } else {
+      if (currentSeq === saveSeqRef.current) {
+        setAutoSaveStatus("saved")
+      }
     }
   }
 

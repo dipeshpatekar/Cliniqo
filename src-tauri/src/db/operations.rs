@@ -229,6 +229,94 @@ impl DbOperations {
             }
         }
 
+        // 1b. Check duplicate prevention by phone number:
+        // If an existing patient in this clinic has the exact same 10-digit phone number, reuse and update that patient record
+        let clean_phone: String = phone.chars().filter(|c| c.is_ascii_digit()).collect();
+        if clean_phone.len() >= 10 {
+            let norm_phone = &clean_phone[clean_phone.len() - 10..];
+            let mut stmt = tx.prepare(
+                "SELECT id, patient_code, encrypted_demographics, nonce FROM local_patients WHERE clinic_id = ?1",
+            )?;
+            let rows = stmt.query_map(params![clinic_id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Vec<u8>>(2)?,
+                    row.get::<_, Vec<u8>>(3)?,
+                ))
+            })?;
+
+            let mut matched_patient: Option<(String, String)> = None;
+            for row in rows {
+                if let Ok((pid, pcode, enc_demo, nonce_bytes)) = row {
+                    if let Ok(dec) = decrypt_payload(&dek.key, &enc_demo, &nonce_bytes) {
+                        if let Ok(demo) = serde_json::from_slice::<PatientDemographics>(&dec) {
+                            let existing_clean: String = demo.phone.chars().filter(|c| c.is_ascii_digit()).collect();
+                            if existing_clean.ends_with(norm_phone) {
+                                matched_patient = Some((pid, pcode));
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            drop(stmt);
+
+            if let Some((existing_id, existing_code)) = matched_patient {
+                log::info!(
+                    "Duplicate patient prevention matched existing record by phone (id: {}, code: {})",
+                    existing_id,
+                    existing_code
+                );
+                let demographics = PatientDemographics {
+                    name: name.to_string(),
+                    phone: phone.to_string(),
+                    gender: gender.to_string(),
+                    date_of_birth: date_of_birth.map(|s| s.to_string()),
+                    age,
+                    allergies: allergies.to_vec(),
+                    conditions: conditions.to_vec(),
+                    sensitive_notes: sensitive_notes.map(|s| s.to_string()),
+                };
+                let demo_bytes = serde_json::to_vec(&demographics)?;
+                let (encrypted_demographics, demo_nonce) = encrypt_payload(&dek.key, &demo_bytes)?;
+
+                tx.execute(
+                    r#"
+                    UPDATE local_patients
+                    SET encrypted_demographics = ?1,
+                        nonce = ?2,
+                        local_version = local_version + 1,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE clinic_id = ?3 AND id = ?4
+                    "#,
+                    params![encrypted_demographics, demo_nonce, clinic_id, existing_id],
+                )?;
+
+                if let Some(ref cid) = _client_mutation_id {
+                    let trimmed = cid.trim();
+                    if !trimmed.is_empty() {
+                        let _ = tx.execute(
+                            r#"
+                            INSERT INTO local_mutation_idempotency (clinic_id, idempotency_key, entity_id, patient_code)
+                            VALUES (?1, ?2, ?3, ?4)
+                            ON CONFLICT(clinic_id, idempotency_key) DO UPDATE SET
+                                entity_id = excluded.entity_id,
+                                patient_code = excluded.patient_code
+                            "#,
+                            params![clinic_id, trimmed, existing_id, existing_code],
+                        );
+                    }
+                }
+
+                tx.commit()?;
+                return Ok(SavePatientResult {
+                    id: existing_id,
+                    patient_code: existing_code,
+                });
+            }
+        }
+
         // 2. Resolve canonical patient code:
         // A placeholder or already-in-use candidate code must safely allocate next sequential code.
         let is_placeholder = candidate.is_empty() || candidate == "PT-INIT";

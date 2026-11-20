@@ -2012,32 +2012,98 @@ pub struct SaveConsultationDraftArgs {
 }
 
 #[tauri::command]
-pub fn save_local_consultation_draft(
+pub async fn save_local_consultation_draft(
     state: State<'_, AppState>,
     args: SaveConsultationDraftArgs,
 ) -> Result<String, String> {
-    let session = state
-        .session_mgr
-        .validate_session(Some(&args.clinic_id))
-        .map_err(|e| e.to_string())?;
+    let session_check = state.session_mgr.validate_session(Some(&args.clinic_id));
+    let session = match session_check {
+        Ok(s) => s,
+        Err(crate::auth::AuthError::SessionExpired) => {
+            log::info!("Session expired during save_local_consultation_draft. Attempting auto-refresh...");
+            match execute_refresh_session_with_db(
+                &state.key_mgr,
+                &state.session_mgr,
+                &state.refresh_coordinator,
+                None,
+                Some(&state.db),
+            )
+            .await
+            {
+                Ok(refreshed) => {
+                    if refreshed.session.clinic_id != args.clinic_id {
+                        return Err("CLINIC_MISMATCH".to_string());
+                    }
+                    refreshed.session
+                }
+                Err(refresh_err) => {
+                    log::warn!("Auto-refresh during save_local_consultation_draft failed: {refresh_err}");
+                    return Err("SESSION_EXPIRED".to_string());
+                }
+            }
+        }
+        Err(e) => return Err(e.to_string()),
+    };
 
     let verified_doctor_id = session.doctor_id;
-    let mut conn = state.db.get_connection();
     let dek = state.db.get_dek();
 
-    DbOperations::upsert_consultation_draft(
-        &mut conn,
-        dek,
-        &args.clinic_id,
-        &args.consultation_id,
-        &args.patient_id,
-        &verified_doctor_id,
-        &args.consultation_date,
-        &args.chief_complaint,
-        &args.diagnosis,
-        args.clinical_snapshot_json.as_deref(),
-    )
-    .map_err(|e| e.to_string())
+    let mut retries = 0;
+    const MAX_BUSY_RETRIES: u32 = 5;
+    let mut effective_consultation_id = args.consultation_id.clone();
+
+    loop {
+        let op_result = {
+            let mut conn = state.db.get_connection();
+            if !conn.is_autocommit() {
+                let _ = conn.execute_batch("ROLLBACK;");
+            }
+            let res = DbOperations::upsert_consultation_draft(
+                &mut conn,
+                dek,
+                &args.clinic_id,
+                &effective_consultation_id,
+                &args.patient_id,
+                &verified_doctor_id,
+                &args.consultation_date,
+                &args.chief_complaint,
+                &args.diagnosis,
+                args.clinical_snapshot_json.as_deref(),
+            );
+            match res {
+                Err(crate::db::operations::DatabaseOpError::ConflictResolution(_)) => {
+                    log::info!("Auto-save draft ID collided with finalized consultation; allocating fresh draft ID");
+                    effective_consultation_id = format!("c-draft-{}-{}", args.patient_id, uuid::Uuid::new_v4());
+                    DbOperations::upsert_consultation_draft(
+                        &mut conn,
+                        dek,
+                        &args.clinic_id,
+                        &effective_consultation_id,
+                        &args.patient_id,
+                        &verified_doctor_id,
+                        &args.consultation_date,
+                        &args.chief_complaint,
+                        &args.diagnosis,
+                        args.clinical_snapshot_json.as_deref(),
+                    )
+                }
+                other => other,
+            }
+        };
+
+        match op_result {
+            Ok(saved_id) => return Ok(saved_id),
+            Err(ref db_err) if is_sqlite_busy_error(db_err) && retries < MAX_BUSY_RETRIES => {
+                retries += 1;
+                let backoff_ms = retries * 50;
+                log::warn!(
+                    "save_local_consultation_draft SQLite busy contention (attempt {retries}/{MAX_BUSY_RETRIES}), backing off {backoff_ms}ms..."
+                );
+                tokio::time::sleep(tokio::time::Duration::from_millis(backoff_ms as u64)).await;
+            }
+            Err(e) => return Err(e.to_string()),
+        }
+    }
 }
 
 #[derive(Deserialize)]

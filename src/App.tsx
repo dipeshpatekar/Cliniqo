@@ -1040,6 +1040,15 @@ export default function App({
       return
     }
 
+    if (next === "patient-form" && !editingPatient) {
+      const clinicId = effectiveSession?.clinic_id || "default"
+      try {
+        window.localStorage.removeItem(`cliniqo_draft_patient_${clinicId}`)
+        window.localStorage.removeItem("cliniqo_draft_patient_default")
+      } catch {}
+      setNewPatientFormKey((k) => k + 1)
+    }
+
     if (next === "preview") {
       const { returnPage, clearHistorical, settingsTab } =
         resolvePrescriptionPreviewNavigation(
@@ -1818,6 +1827,17 @@ export default function App({
     go("bill-form")
   }
 
+  const openNewPatientForm = () => {
+    const clinicId = desktopSession?.clinic_id || "default"
+    try {
+      window.localStorage.removeItem(`cliniqo_draft_patient_${clinicId}`)
+      window.localStorage.removeItem("cliniqo_draft_patient_default")
+    } catch {}
+    setEditingPatient(null)
+    setNewPatientFormKey((k) => k + 1)
+    go("patient-form")
+  }
+
   const savePatient = async (
     patient: Patient,
     startConsultation = false,
@@ -1827,15 +1847,45 @@ export default function App({
     if (isSavingPatientRef.current) return null
     isSavingPatientRef.current = true
     try {
+      const normalizedPhone = (patient.phone || "").replace(/\D/g, "").slice(-10)
+      const existingByPhone =
+        normalizedPhone.length === 10
+          ? patientRecords.find(
+              (p) =>
+                p.id !== patient.id &&
+                (p.phone || "").replace(/\D/g, "").slice(-10) === normalizedPhone,
+            )
+          : null
+
       const wasEditing =
         Boolean(editingPatient) ||
+        Boolean(existingByPhone) ||
         patientRecords.some(
           (p) =>
             p.id === patient.id ||
             (patient.displayId && p.displayId === patient.displayId) ||
             (patient.patientCode && p.patientCode === patient.patientCode),
         )
+
       let effectivePatient = patient
+      if (
+        existingByPhone &&
+        !editingPatient &&
+        (!patient.id || patient.id.startsWith("PT-") || /^[A-Z]{3}-\d{4}$/.test(patient.id))
+      ) {
+        effectivePatient = {
+          ...patient,
+          id: existingByPhone.id,
+          displayId: existingByPhone.displayId || existingByPhone.patientCode,
+          patientCode: existingByPhone.patientCode || existingByPhone.displayId,
+        }
+      }
+
+      const targetId =
+        editingPatient?.id ||
+        (existingByPhone ? existingByPhone.id : null) ||
+        (wasEditing && effectivePatient.id !== "PT-INIT" && !effectivePatient.id.startsWith("PT-") ? effectivePatient.id : null) ||
+        (patientRecords.find((p) => p.id === effectivePatient.id)?.id ?? null)
 
       if (isTauriDesktop() && desktopSession?.clinic_id) {
         // Proactive token refresh if session is expired or within 60s of expiring
@@ -1856,12 +1906,12 @@ export default function App({
         }
 
         const publicCode =
-          patient.displayId ||
-          patient.patientCode ||
+          effectivePatient.displayId ||
+          effectivePatient.patientCode ||
           (wasEditing
-            ? patient.id
-            : /^[A-Z]{3}-\d{4}$/.test(patient.id)
-              ? patient.id
+            ? (targetId || effectivePatient.id)
+            : /^[A-Z]{3}-\d{4}$/.test(effectivePatient.id)
+              ? effectivePatient.id
               : nextPatientId)
 
         const notesObj = {
@@ -1872,16 +1922,16 @@ export default function App({
         }
 
         const saveRes = await saveLocalPatient({
-          id: wasEditing ? (editingPatient?.id || patient.id) : null,
+          id: wasEditing ? targetId : null,
           clinic_id: desktopSession.clinic_id,
           patient_code: publicCode,
-          name: patient.name,
-          phone: patient.phone,
-          gender: patient.gender,
-          date_of_birth: patient.dateOfBirth || null,
-          age: patient.age,
-          allergies: patient.allergies,
-          conditions: patient.conditions,
+          name: effectivePatient.name,
+          phone: effectivePatient.phone,
+          gender: effectivePatient.gender,
+          date_of_birth: effectivePatient.dateOfBirth || null,
+          age: effectivePatient.age,
+          allergies: effectivePatient.allergies,
+          conditions: effectivePatient.conditions,
           sensitive_notes: JSON.stringify(notesObj),
           client_mutation_id: clientMutationId || null,
         })
@@ -1891,7 +1941,7 @@ export default function App({
           const canonicalCode = saveRes.patient_code
           effectivePatient = {
             ...patient,
-            id: wasEditing ? patient.id : canonicalId,
+            id: wasEditing ? (targetId || patient.id) : canonicalId,
             displayId: canonicalCode,
             patientCode: canonicalCode,
             ageMonths: patient.ageMonths !== undefined ? patient.ageMonths : 0,
@@ -1934,7 +1984,12 @@ export default function App({
         effectivePatient,
         ...records.filter(
           (record) =>
-            record.id !== patient.id && record.id !== effectivePatient.id,
+            record.id !== patient.id &&
+            record.id !== effectivePatient.id &&
+            !(
+              normalizedPhone.length === 10 &&
+              (record.phone || "").replace(/\D/g, "").slice(-10) === normalizedPhone
+            ),
         ),
       ])
       if (!wasEditing) {
@@ -2189,8 +2244,7 @@ export default function App({
               go("patient-profile")
               break
             case 8:
-              setEditingPatient(null)
-              go("patient-form")
+              openNewPatientForm()
               break
           }
           return
@@ -2262,9 +2316,7 @@ export default function App({
         // Ctrl + N — Add patient
         if (key === "n" && !e.shiftKey) {
           e.preventDefault()
-          setEditingPatient(null)
-          setNewPatientFormKey((k) => k + 1)
-          go("patient-form")
+          openNewPatientForm()
           return
         }
 
@@ -2718,11 +2770,7 @@ export default function App({
         itemsError={
           isHistorical ? viewingHistoricalPrescription!.itemsError : null
         }
-        onAddPatient={() => {
-          setEditingPatient(null)
-          setNewPatientFormKey((k) => k + 1)
-          go("patient-form")
-        }}
+        onAddPatient={openNewPatientForm}
         clinicalLibrary={clinicalLibrary}
         customChiefComplaints={customChiefComplaints}
         customDiagnoses={customDiagnoses}

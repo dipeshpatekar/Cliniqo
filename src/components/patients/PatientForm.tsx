@@ -77,6 +77,18 @@ export function PatientForm({
       if (saved) {
         const parsed = JSON.parse(saved)
         if (parsed && typeof parsed === "object") {
+          // If this draft belongs to a patient who has already been registered in patients list, discard the stale draft!
+          const draftCleanPhone = (parsed.phone || "").replace(/\D/g, "").slice(-10)
+          const isAlreadySaved =
+            draftCleanPhone.length === 10 &&
+            patients.some(
+              (p) => (p.phone || "").replace(/\D/g, "").slice(-10) === draftCleanPhone,
+            )
+          if (isAlreadySaved) {
+            window.localStorage.removeItem(draftPatientKey)
+            return
+          }
+
           if (parsed.name && !name) setName(parsed.name)
           if (parsed.phone && !phone) setPhone(parsed.phone)
           if (formRef.current) {
@@ -112,7 +124,7 @@ export function PatientForm({
       isInitialDraftLoadedRef.current = true
     }, 300)
     return () => clearTimeout(timer)
-  }, [patient, draftPatientKey])
+  }, [patient, draftPatientKey, patients])
 
   const executePatientAutoSave = async () => {
     if (isSavingRef.current) return
@@ -136,7 +148,7 @@ export function PatientForm({
         ? Math.min(11, Math.max(0, parseInt(String(data.get("ageMonths")), 10) || 0))
         : (patient?.ageMonths ?? 0)
 
-    // Also persist draft to localStorage for recovery
+    // Also persist draft to localStorage for temporary crash recovery
     try {
       const payload = {
         name: currentName,
@@ -160,7 +172,26 @@ export function PatientForm({
 
     setAutoSaveStatus("saving")
     try {
-      const targetId = patient?.id || createdPatientIdRef.current || nextPatientId
+      const normPhone = currentPhone.replace(/\D/g, "").slice(-10)
+      const matchingExistingPatient =
+        normPhone.length === 10
+          ? patients.find(
+              (record) =>
+                record.id !== patient?.id &&
+                (record.phone || "").replace(/\D/g, "").slice(-10) === normPhone,
+            )
+          : undefined
+
+      if (matchingExistingPatient && !createdPatientIdRef.current && !patient) {
+        createdPatientIdRef.current = matchingExistingPatient.id
+      }
+
+      const targetId =
+        patient?.id ||
+        createdPatientIdRef.current ||
+        matchingExistingPatient?.id ||
+        nextPatientId
+
       const candidatePatient: Patient = {
         id: targetId,
         name: currentName || "Unnamed Patient",
@@ -201,6 +232,11 @@ export function PatientForm({
       }
       setAutoSaveStatus("saved")
       setDirty(false)
+
+      // Once the patient is safely registered in SQLite / patientRecords, clear unpersisted form draft
+      try {
+        window.localStorage.removeItem(draftPatientKey)
+      } catch {}
     } catch (err) {
       console.warn("[Cliniqo] Patient auto-save failed:", err)
       setAutoSaveStatus("error")

@@ -13,6 +13,7 @@ import {
   AlertCircle,
   HelpCircle,
   RefreshCw,
+  Loader2,
 } from "lucide-react"
 import type {
   Page,
@@ -66,6 +67,10 @@ import {
   getLocalFormulary,
   saveLocalFormularyItem,
   saveLocalConsultation,
+  saveLocalConsultationDraft,
+  updateLocalConsultation,
+  updateLocalPrescription,
+  getLatestPatientMedicalHistory,
   saveLocalPrescription,
   getLocalPrescriptions,
   searchCatalogue,
@@ -88,6 +93,7 @@ export interface ConsultationProps {
   onDataChange: (data: ConsultationData) => void
   onAddMedicine?: (medicine: ClinicalMedicineDefinition) => void
   desktopSession?: DesktopSessionContext | null
+  activePrescriptionRecord?: LocalPrescriptionRecord | null
   onFinalized?: (
     consultationId?: string | null,
     finalizedTimestamp?: string,
@@ -113,6 +119,7 @@ export function Consultation({
   onDataChange,
   onAddMedicine,
   desktopSession,
+  activePrescriptionRecord,
   onFinalized,
   onUpdatePatientMedicalInfo,
   customChiefComplaints,
@@ -207,6 +214,135 @@ export function Consultation({
     () => analyzeAllergies(allergiesInput),
     [allergiesInput],
   )
+
+  const draftStorageKey = `cliniqo_draft_consultation_${desktopSession?.clinic_id || "default"}_${patient.id}`
+  const [autoSaveStatus, setAutoSaveStatus] = useState<"idle" | "saving" | "saved" | "error">("idle")
+  const draftConsultationIdRef = useRef<string>(`draft_consult_${patient.id}`)
+  const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const isInitialDraftLoadedRef = useRef(false)
+
+  // Initial draft restoration or medical history carry-forward
+  useEffect(() => {
+    isInitialDraftLoadedRef.current = false
+    let hasDraft = false
+    try {
+      const savedDraft = window.localStorage.getItem(draftStorageKey)
+      if (savedDraft) {
+        const parsed = JSON.parse(savedDraft)
+        if (parsed && typeof parsed === "object") {
+          hasDraft = true
+          if (parsed.data) {
+            onDataChange(parsed.data)
+            if (parsed.data.conditions) {
+              setConditionsInput(parsed.data.conditions.join(", "))
+            }
+            if (parsed.data.allergies) {
+              setAllergiesInput(parsed.data.allergies.join(", "))
+            }
+          }
+          if (parsed.vitals) {
+            Object.entries(parsed.vitals).forEach(([k, v]) => {
+              onVitalsChange(k as keyof Vitals, String(v))
+            })
+          }
+          setAutoSaveStatus("saved")
+        }
+      }
+    } catch {}
+
+    // If no draft exists, carry forward medical history from latest consultation
+    if (!hasDraft && isTauriDesktop() && desktopSession?.clinic_id && patient.id && patient.id !== "PT-INIT") {
+      getLatestPatientMedicalHistory(desktopSession.clinic_id, patient.id)
+        .then((history) => {
+          if (history.length > 0) {
+            setConditionsInput(history.join(", "))
+            updateData({ conditions: history })
+            onUpdatePatientMedicalInfo?.(
+              data.allergies ?? patient.allergies ?? [],
+              history,
+            )
+          } else if (patient.conditions && patient.conditions.length > 0) {
+            setConditionsInput(patient.conditions.join(", "))
+            updateData({ conditions: patient.conditions })
+          }
+        })
+        .catch(() => {})
+    }
+
+    const timer = setTimeout(() => {
+      isInitialDraftLoadedRef.current = true
+    }, 300)
+    return () => clearTimeout(timer)
+  }, [patient.id, draftStorageKey])
+
+  // Debounced auto-save (700 ms)
+  const executeAutoSave = async () => {
+    if (isFinalizingRef.current) return
+    setAutoSaveStatus("saving")
+    try {
+      const draftPayload = {
+        patientId: patient.id,
+        clinicId: desktopSession?.clinic_id,
+        data,
+        vitals,
+        savedAt: new Date().toISOString(),
+      }
+      window.localStorage.setItem(draftStorageKey, JSON.stringify(draftPayload))
+
+      if (isTauriDesktop() && desktopSession?.clinic_id && patient.id && patient.id !== "PT-INIT") {
+        const consultDatePart = data.date || new Date().toISOString().slice(0, 10)
+        const consultTimePart = data.time || "00:00"
+        const combinedDate = `${consultDatePart}T${consultTimePart}`
+        await saveLocalConsultationDraft({
+          clinic_id: desktopSession.clinic_id,
+          consultation_id: draftConsultationIdRef.current,
+          patient_id: patient.id,
+          consultation_date: combinedDate,
+          chief_complaint: data.chiefComplaint || "",
+          diagnosis: data.diagnosis || "",
+          clinical_snapshot_json: JSON.stringify({
+            vitals,
+            time: consultTimePart,
+            consultationTime: consultTimePart,
+            consultationDate: consultDatePart,
+            symptomDuration: data.symptomDuration,
+            followUpDate: data.followUpDate,
+            followUpInstructions: data.followUpInstructions,
+            allergies: data.allergies ?? patient.allergies,
+            conditions: data.conditions ?? patient.conditions,
+            medicines: data.medicines,
+          }),
+        })
+      }
+      setAutoSaveStatus("saved")
+    } catch (err) {
+      console.warn("[Cliniqo] Auto-save draft error:", err)
+      setAutoSaveStatus("error")
+    }
+  }
+
+  useEffect(() => {
+    if (!isInitialDraftLoadedRef.current || isFinalizingRef.current) return
+    if (autoSaveTimerRef.current) {
+      clearTimeout(autoSaveTimerRef.current)
+    }
+    autoSaveTimerRef.current = setTimeout(() => {
+      executeAutoSave()
+    }, 700)
+    return () => {
+      if (autoSaveTimerRef.current) {
+        clearTimeout(autoSaveTimerRef.current)
+      }
+    }
+  }, [data, vitals])
+
+  const handleBlurCapture = () => {
+    if (!isInitialDraftLoadedRef.current || isFinalizingRef.current) return
+    if (autoSaveTimerRef.current) {
+      clearTimeout(autoSaveTimerRef.current)
+    }
+    executeAutoSave()
+  }
 
   const patientIdRef = useRef(patient.id)
   useEffect(() => {
@@ -650,27 +786,67 @@ export function Consultation({
 
     try {
       if (isTauriDesktop() && desktopSession?.clinic_id) {
-        const consultationId = await saveLocalConsultation({
-          clinic_id: desktopSession.clinic_id,
-          patient_id: patient.id,
-          consultation_date: combinedConsultationDate,
-          chief_complaint: data.chiefComplaint,
-          diagnosis: data.diagnosis,
-          clinical_snapshot_json: JSON.stringify({
-            vitals,
-            time: consultTimePart,
-            consultationTime: consultTimePart,
-            consultationDate: consultDatePart,
-            symptomDuration: data.symptomDuration,
-            followUpDate: data.followUpDate,
-            followUpInstructions: data.followUpInstructions,
-            allergies: data.allergies ?? patient.allergies,
-            conditions: data.conditions ?? patient.conditions,
-          }),
-        })
-
+        let consultationId: string | null = null
         let savedRxRecord: LocalPrescriptionRecord | null = null
-        if (consultationId) {
+
+        if (activePrescriptionRecord && activePrescriptionRecord.consultation_id) {
+          // Re-finalizing an active prescription: update in-place without creating a duplicate RX or revision
+          consultationId = activePrescriptionRecord.consultation_id
+          await updateLocalConsultation({
+            clinic_id: desktopSession.clinic_id,
+            consultation_id: consultationId,
+            consultation_date: combinedConsultationDate,
+            chief_complaint: data.chiefComplaint,
+            diagnosis: data.diagnosis,
+            clinical_snapshot_json: JSON.stringify({
+              vitals,
+              time: consultTimePart,
+              consultationTime: consultTimePart,
+              consultationDate: consultDatePart,
+              symptomDuration: data.symptomDuration,
+              followUpDate: data.followUpDate,
+              followUpInstructions: data.followUpInstructions,
+              allergies: data.allergies ?? patient.allergies,
+              conditions: data.conditions ?? patient.conditions,
+            }),
+          })
+
+          await updateLocalPrescription({
+            clinic_id: desktopSession.clinic_id,
+            prescription_id: activePrescriptionRecord.id,
+            items_json: JSON.stringify(data.medicines),
+          })
+
+          savedRxRecord = {
+            ...activePrescriptionRecord,
+            items_json: JSON.stringify(data.medicines),
+            updated_at: finalizedTimestamp,
+          }
+
+          updatedData.prescriptionNumber = savedRxRecord.prescription_number
+          onDataChange(updatedData)
+        } else {
+          consultationId = await saveLocalConsultation({
+            clinic_id: desktopSession.clinic_id,
+            patient_id: patient.id,
+            consultation_date: combinedConsultationDate,
+            chief_complaint: data.chiefComplaint,
+            diagnosis: data.diagnosis,
+            clinical_snapshot_json: JSON.stringify({
+              vitals,
+              time: consultTimePart,
+              consultationTime: consultTimePart,
+              consultationDate: consultDatePart,
+              symptomDuration: data.symptomDuration,
+              followUpDate: data.followUpDate,
+              followUpInstructions: data.followUpInstructions,
+              allergies: data.allergies ?? patient.allergies,
+              conditions: data.conditions ?? patient.conditions,
+            }),
+          })
+        }
+
+        if (!savedRxRecord && consultationId) {
           const rxNumber = `RX-${Date.now().toString().slice(-6)}`
           const savedRxId = await saveLocalPrescription({
             clinic_id: desktopSession.clinic_id,
@@ -852,6 +1028,9 @@ export function Consultation({
             onAddCustomDiagnosis?.(data.diagnosis.trim())
           }
         }
+        try {
+          window.localStorage.removeItem(draftStorageKey)
+        } catch {}
         onFinalized?.(
           consultationId,
           combinedConsultationDate || finalizedTimestamp,
@@ -959,6 +1138,9 @@ export function Consultation({
         }
         updatedData.prescriptionNumber = rxNumber
         onDataChange(updatedData)
+        try {
+          window.localStorage.removeItem(draftStorageKey)
+        } catch {}
         onFinalized?.(
           null,
           combinedConsultationDate || finalizedTimestamp,
@@ -982,8 +1164,9 @@ export function Consultation({
     }
   }
 
-  const handleSaveDraft = () => {
+  const handleSaveDraft = async () => {
     setHasAttemptedSubmit(true)
+    await executeAutoSave()
     setSaved(true)
     window.setTimeout(() => setSaved(false), 1800)
   }
@@ -1103,6 +1286,37 @@ export function Consultation({
         >
           <ArrowLeft size={18} />
         </IconButton>
+        {autoSaveStatus === "saving" && (
+          <span
+            className="autosave-status text-xs text-slate-500 dark:text-slate-400 flex items-center gap-1.5 px-2 py-1"
+            role="status"
+          >
+            <Loader2 size={13} className="animate-spin" /> Saving...
+          </span>
+        )}
+        {autoSaveStatus === "saved" && (
+          <span
+            className="autosave-status text-xs text-emerald-600 dark:text-emerald-400 flex items-center gap-1.5 px-2 py-1"
+            role="status"
+          >
+            <Check size={13} /> Saved
+          </span>
+        )}
+        {autoSaveStatus === "error" && (
+          <span
+            className="autosave-status text-xs text-rose-600 dark:text-rose-400 flex items-center gap-1.5 px-2 py-1"
+            role="alert"
+          >
+            <AlertCircle size={13} /> Unable to save –{" "}
+            <button
+              type="button"
+              className="underline hover:text-rose-700 font-medium cursor-pointer ml-1"
+              onClick={() => executeAutoSave()}
+            >
+              Retry
+            </button>
+          </span>
+        )}
         <Button
           variant="secondary"
           aria-live="polite"
@@ -1129,7 +1343,7 @@ export function Consultation({
         </Button>
       </AppHeader>
 
-      <div className="consultation-shell">
+      <div className="consultation-shell" onBlurCapture={handleBlurCapture}>
         {finalizeError && (
           <div
             role="alert"

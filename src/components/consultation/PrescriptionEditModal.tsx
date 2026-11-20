@@ -77,6 +77,7 @@ export interface PrescriptionEditModalProps {
   customDiagnoses?: string[]
   clinicId?: string
   desktopSession?: DesktopSessionContext | null
+  isRevision?: boolean
   onSaveRevision: (
     revisionData: PrescriptionRevisionData | Medicine[],
     reasonForRevision?: string,
@@ -97,6 +98,7 @@ export function PrescriptionEditModal({
   customDiagnoses,
   clinicId,
   desktopSession,
+  isRevision = true,
   onSaveRevision,
 }: PrescriptionEditModalProps) {
   // --- SECTION A: Vitals State ---
@@ -769,13 +771,21 @@ export function PrescriptionEditModal({
     <Modal
       title={
         step === "edit"
-          ? `Edit Prescription (${prescriptionNumber} · Rev ${currentRevisionNumber})`
-          : `Review & Confirm Revision ${currentRevisionNumber + 1}`
+          ? isRevision
+            ? `Edit Prescription (${prescriptionNumber} · Rev ${currentRevisionNumber})`
+            : `Edit Prescription (${prescriptionNumber})`
+          : isRevision
+            ? `Review & Confirm Revision ${currentRevisionNumber + 1}`
+            : "Review & Confirm Changes"
       }
       description={
         step === "edit"
-          ? "Modify clinical notes, vitals, consultation details or medicines. Finalizing creates an immutable new revision."
-          : `Please confirm all changes for Revision ${currentRevisionNumber + 1}. Previous revisions remain unchanged.`
+          ? isRevision
+            ? "Modify clinical notes, vitals, consultation details or medicines. Finalizing creates an immutable new revision."
+            : "Modify clinical notes, vitals, consultation details or medicines."
+          : isRevision
+            ? `Please confirm all changes for Revision ${currentRevisionNumber + 1}. Previous revisions remain unchanged.`
+            : "Please confirm all changes for this prescription."
       }
       onClose={onClose}
       width="wide"
@@ -1322,11 +1332,15 @@ export function PrescriptionEditModal({
           <div className="space-y-4">
             <div className="p-3.5 rounded-lg bg-teal-50 dark:bg-teal-950/40 border border-teal-200 dark:border-teal-800 text-sm space-y-1.5">
               <p className="font-semibold text-teal-900 dark:text-teal-200">
-                Revision Details
+                {isRevision ? "Revision Details" : "Prescription Details"}
               </p>
               <p className="text-teal-800 dark:text-teal-300 text-xs">
-                Prescription: <strong>{prescriptionNumber}</strong> · Target:{" "}
-                <strong>Revision {currentRevisionNumber + 1}</strong>
+                Prescription: <strong>{prescriptionNumber}</strong>
+                {isRevision && (
+                  <>
+                    {" "}· Target: <strong>Revision {currentRevisionNumber + 1}</strong>
+                  </>
+                )}
               </p>
             </div>
 
@@ -1372,8 +1386,9 @@ export function PrescriptionEditModal({
 
             <div>
               <p className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">
-                Medicines in Revision {currentRevisionNumber + 1} (
-                {medicines.length})
+                {isRevision
+                  ? `Medicines in Revision ${currentRevisionNumber + 1} (${medicines.length})`
+                  : `Medicines in Prescription (${medicines.length})`}
               </p>
               <ul className="divide-y divide-slate-200 dark:divide-slate-800 border rounded-lg border-slate-200 dark:border-slate-800">
                 {medicines.map((m, idx) => (
@@ -1418,7 +1433,9 @@ export function PrescriptionEditModal({
                 onClick={handleFinalSave}
                 loading={isSubmitting}
               >
-                Finalize Revision {currentRevisionNumber + 1}
+                {isRevision
+                  ? `Finalize Revision ${currentRevisionNumber + 1}`
+                  : "Save changes"}
               </Button>
             </div>
           </div>

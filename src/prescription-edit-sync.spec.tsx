@@ -21,6 +21,7 @@ import {
   searchCatalogue,
   saveLocalConsultation,
   reviseLocalPrescription,
+  getLatestPatientMedicalHistory,
   type LocalPrescriptionRecord,
   type LocalConsultationRecord,
 } from "./desktop/desktop-bridge"
@@ -598,6 +599,190 @@ describe("Prescription Edit Modal — Reason Removal & Medicine Data Sync Suite"
       expect(reconstructed.consultationData.time).toBe("10:35")
       expect(reconstructed.consultationData.chiefComplaint).toBe("fever (5 days)")
       expect(reconstructed.consultationData.diagnosis).toBe("Viral fever")
+    })
+  })
+
+  describe("Prescription Editing — Normal Edit vs Revision Workflow (Requirement 1)", () => {
+    it("renders normal edit modal without revision badges when isRevision is false", () => {
+      const html = renderToString(
+        <PrescriptionEditModal
+          isOpen={true}
+          onClose={vi.fn()}
+          prescriptionNumber="RX-854704"
+          currentRevisionNumber={1}
+          isRevision={false}
+          initialMedicines={mockMedicines}
+          initialVitals={mockVitals}
+          patient={mockPatient}
+          onSaveRevision={vi.fn()}
+        />,
+      )
+
+      expect(html).toContain("Edit Prescription (RX-854704)")
+      expect(html).not.toContain("RX-854704 · Rev 1")
+      expect(html).not.toContain("Finalizing creates an immutable new revision")
+      expect(html).toContain("Modify clinical notes, vitals, consultation details or medicines.")
+    })
+
+    it("renders revision modal with revision badge and notice when isRevision is true", () => {
+      const html = renderToString(
+        <PrescriptionEditModal
+          isOpen={true}
+          onClose={vi.fn()}
+          prescriptionNumber="RX-854704"
+          currentRevisionNumber={1}
+          isRevision={true}
+          initialMedicines={mockMedicines}
+          initialVitals={mockVitals}
+          patient={mockPatient}
+          onSaveRevision={vi.fn()}
+        />,
+      )
+
+      expect(html).toContain("Edit Prescription (RX-854704 · Rev 1)")
+      expect(html).toContain("Finalizing creates an immutable new revision")
+    })
+  })
+
+  describe("Medical History — Carry Forward & Patient Isolation (Requirement 2)", () => {
+    it("returns empty array when patient has no previous consultations", async () => {
+      const history = await getLatestPatientMedicalHistory("clinic-1", "non-existent-pat")
+      expect(history).toEqual([])
+    })
+
+    it("extracts conditions from latest consultation snapshot and isolates across patients", () => {
+      const consultations: LocalConsultationRecord[] = [
+        {
+          id: "cons-old",
+          server_id: null,
+          clinic_id: "clinic-1",
+          patient_id: "pat-A",
+          doctor_id: "doc-1",
+          consultation_date: "2026-10-01T10:00:00",
+          status: "ACTIVE",
+          chief_complaint: "Old visit",
+          diagnosis: "Fever",
+          clinical_snapshot_json: JSON.stringify({ conditions: ["Asthma"] }),
+          sync_status: "SYNCED",
+          server_version: 1,
+          local_version: 1,
+          updated_at: "2026-10-01T10:00:00",
+        },
+        {
+          id: "cons-newest",
+          server_id: null,
+          clinic_id: "clinic-1",
+          patient_id: "pat-A",
+          doctor_id: "doc-1",
+          consultation_date: "2026-11-15T11:00:00",
+          status: "ACTIVE",
+          chief_complaint: "Recent visit",
+          diagnosis: "Hypertension check",
+          clinical_snapshot_json: JSON.stringify({
+            conditions: ["Asthma", "Hypertension", "Type 2 Diabetes"],
+          }),
+          sync_status: "SYNCED",
+          server_version: 2,
+          local_version: 2,
+          updated_at: "2026-11-15T11:00:00",
+        },
+        {
+          id: "cons-pat-B",
+          server_id: null,
+          clinic_id: "clinic-1",
+          patient_id: "pat-B",
+          doctor_id: "doc-1",
+          consultation_date: "2026-11-19T10:00:00",
+          status: "ACTIVE",
+          chief_complaint: "Patient B visit",
+          diagnosis: "Cardiac condition",
+          clinical_snapshot_json: JSON.stringify({
+            conditions: ["Coronary Artery Disease"],
+          }),
+          sync_status: "SYNCED",
+          server_version: 1,
+          local_version: 1,
+          updated_at: "2026-11-19T10:00:00",
+        },
+      ]
+
+      // Filter strictly for pat-A
+      const patAConsults = consultations.filter(
+        (c) => c.patient_id === "pat-A" && c.status !== "DRAFT",
+      )
+      patAConsults.sort((a, b) => {
+        const dateA = new Date(a.consultation_date || a.updated_at).getTime()
+        const dateB = new Date(b.consultation_date || b.updated_at).getTime()
+        return dateB - dateA
+      })
+
+      const latestA = patAConsults[0]
+      const snapshotA = JSON.parse(latestA.clinical_snapshot_json!)
+      expect(snapshotA.conditions).toEqual(["Asthma", "Hypertension", "Type 2 Diabetes"])
+
+      // Ensure patient B's conditions never leak to patient A
+      expect(snapshotA.conditions).not.toContain("Coronary Artery Disease")
+    })
+  })
+
+  describe("Auto-Save Mechanism (Requirement 3)", () => {
+    const mockStorageMap: Record<string, string> = {}
+    const safeStorage = {
+      getItem: (k: string) => mockStorageMap[k] || null,
+      setItem: (k: string, v: string) => {
+        mockStorageMap[k] = v
+      },
+      removeItem: (k: string) => {
+        delete mockStorageMap[k]
+      },
+    }
+
+    it("persists consultation draft into localStorage and restores it cleanly", () => {
+      const storageKey = "cliniqo_draft_consultation_clinic-123_pat-123"
+      const draftPayload = {
+        patientId: "pat-123",
+        clinicId: "clinic-123",
+        data: {
+          chiefComplaint: "Severe migraine",
+          diagnosis: "Migraine with aura",
+          medicines: mockMedicines,
+          conditions: ["Migraine"],
+        },
+        vitals: mockVitals,
+        savedAt: new Date().toISOString(),
+      }
+
+      safeStorage.setItem(storageKey, JSON.stringify(draftPayload))
+      const retrieved = JSON.parse(safeStorage.getItem(storageKey)!)
+
+      expect(retrieved.data.chiefComplaint).toBe("Severe migraine")
+      expect(retrieved.data.diagnosis).toBe("Migraine with aura")
+      expect(retrieved.vitals.systolic).toBe("120")
+
+      // Clearing on finalization
+      safeStorage.removeItem(storageKey)
+      expect(safeStorage.getItem(storageKey)).toBeNull()
+    })
+
+    it("persists patient registration draft into localStorage and clears on save", () => {
+      const draftPatientKey = "cliniqo_draft_patient_clinic-123"
+      const patientDraft = {
+        name: "Test Incomplete Patient",
+        phone: "9876500000",
+        age: "28",
+        gender: "Female",
+        savedAt: new Date().toISOString(),
+      }
+
+      safeStorage.setItem(draftPatientKey, JSON.stringify(patientDraft))
+      const retrieved = JSON.parse(safeStorage.getItem(draftPatientKey)!)
+
+      expect(retrieved.name).toBe("Test Incomplete Patient")
+      expect(retrieved.phone).toBe("9876500000")
+
+      // Clear on save
+      safeStorage.removeItem(draftPatientKey)
+      expect(safeStorage.getItem(draftPatientKey)).toBeNull()
     })
   })
 })

@@ -2000,6 +2000,112 @@ pub fn save_local_consultation(
     .map_err(|e| e.to_string())
 }
 
+#[derive(Deserialize)]
+pub struct SaveConsultationDraftArgs {
+    pub clinic_id: String,
+    pub consultation_id: String,
+    pub patient_id: String,
+    pub consultation_date: String,
+    pub chief_complaint: String,
+    pub diagnosis: String,
+    pub clinical_snapshot_json: Option<String>,
+}
+
+#[tauri::command]
+pub fn save_local_consultation_draft(
+    state: State<'_, AppState>,
+    args: SaveConsultationDraftArgs,
+) -> Result<String, String> {
+    let session = state
+        .session_mgr
+        .validate_session(Some(&args.clinic_id))
+        .map_err(|e| e.to_string())?;
+
+    let verified_doctor_id = session.doctor_id;
+    let mut conn = state.db.get_connection();
+    let dek = state.db.get_dek();
+
+    DbOperations::upsert_consultation_draft(
+        &mut conn,
+        dek,
+        &args.clinic_id,
+        &args.consultation_id,
+        &args.patient_id,
+        &verified_doctor_id,
+        &args.consultation_date,
+        &args.chief_complaint,
+        &args.diagnosis,
+        args.clinical_snapshot_json.as_deref(),
+    )
+    .map_err(|e| e.to_string())
+}
+
+#[derive(Deserialize)]
+pub struct UpdateConsultationArgs {
+    pub clinic_id: String,
+    pub consultation_id: String,
+    pub consultation_date: Option<String>,
+    pub chief_complaint: Option<String>,
+    pub diagnosis: Option<String>,
+    pub clinical_snapshot_json: Option<String>,
+}
+
+#[tauri::command]
+pub fn update_local_consultation(
+    state: State<'_, AppState>,
+    args: UpdateConsultationArgs,
+) -> Result<String, String> {
+    let _session = state
+        .session_mgr
+        .validate_session(Some(&args.clinic_id))
+        .map_err(|e| e.to_string())?;
+
+    let mut conn = state.db.get_connection();
+    let dek = state.db.get_dek();
+
+    DbOperations::update_consultation(
+        &mut conn,
+        dek,
+        &args.clinic_id,
+        &args.consultation_id,
+        args.consultation_date.as_deref(),
+        args.chief_complaint.as_deref(),
+        args.diagnosis.as_deref(),
+        args.clinical_snapshot_json.as_deref(),
+    )
+    .map_err(|e| e.to_string())
+}
+
+#[derive(Deserialize)]
+pub struct UpdatePrescriptionArgs {
+    pub clinic_id: String,
+    pub prescription_id: String,
+    pub items_json: String,
+}
+
+#[tauri::command]
+pub fn update_local_prescription(
+    state: State<'_, AppState>,
+    args: UpdatePrescriptionArgs,
+) -> Result<String, String> {
+    let _session = state
+        .session_mgr
+        .validate_session(Some(&args.clinic_id))
+        .map_err(|e| e.to_string())?;
+
+    let mut conn = state.db.get_connection();
+    let dek = state.db.get_dek();
+
+    DbOperations::update_prescription(
+        &mut conn,
+        dek,
+        &args.clinic_id,
+        &args.prescription_id,
+        &args.items_json,
+    )
+    .map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub fn get_local_consultations(
     state: State<'_, AppState>,

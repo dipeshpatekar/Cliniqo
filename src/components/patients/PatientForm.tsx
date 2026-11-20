@@ -15,8 +15,8 @@ import {
   defaultPatientFormFieldPreferences,
   getIndiaDateTimeLocalString,
 } from "../../types"
-import { AlertCircle, ArrowLeft, Stethoscope, UserRound } from "lucide-react"
-import type { PatientSaveDiagnostic } from "../../desktop/desktop-bridge"
+import { AlertCircle, ArrowLeft, Stethoscope, UserRound, Check, Loader2 } from "lucide-react"
+import type { PatientSaveDiagnostic, DesktopSessionContext } from "../../desktop/desktop-bridge"
 
 export function PatientForm({
   go,
@@ -26,6 +26,7 @@ export function PatientForm({
   patients,
   nextPatientId,
   fieldPreferences = defaultPatientFormFieldPreferences,
+  desktopSession,
 }: {
   go: (page: Page) => void
   onSave: (
@@ -38,6 +39,7 @@ export function PatientForm({
   patients: Patient[]
   nextPatientId: string
   fieldPreferences?: PatientFormFieldPreferences
+  desktopSession?: DesktopSessionContext | null
 }) {
   const [submitted, setSubmitted] = useState(false)
   const [isSaving, setIsSaving] = useState(false)
@@ -46,6 +48,11 @@ export function PatientForm({
   const [name, setName] = useState(patient?.name || "")
   const [phone, setPhone] = useState(patient?.phone || "")
   const [dirty, setDirty] = useState(false)
+  const [autoSaveStatus, setAutoSaveStatus] = useState<"idle" | "saving" | "saved" | "error">("idle")
+  const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const isInitialDraftLoadedRef = useRef(false)
+  const draftPatientKey = `cliniqo_draft_patient_${desktopSession?.clinic_id || "default"}`
+
   const formRef = useRef<HTMLFormElement>(null)
   const isSavingRef = useRef(false)
   const lastStartConsultationRef = useRef(false)
@@ -55,6 +62,98 @@ export function PatientForm({
       ? `patient-edit-${patient.id}`
       : `patient-create-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
   )
+
+  // Restore draft on mount if creating a new patient
+  useEffect(() => {
+    if (patient) return
+    try {
+      const saved = window.localStorage.getItem(draftPatientKey)
+      if (saved) {
+        const parsed = JSON.parse(saved)
+        if (parsed && typeof parsed === "object") {
+          if (parsed.name && !name) setName(parsed.name)
+          if (parsed.phone && !phone) setPhone(parsed.phone)
+          if (formRef.current) {
+            const form = formRef.current
+            if (parsed.age !== undefined && form.elements.namedItem("age")) {
+              ;(form.elements.namedItem("age") as HTMLInputElement).value = parsed.age
+            }
+            if (parsed.ageMonths !== undefined && form.elements.namedItem("ageMonths")) {
+              ;(form.elements.namedItem("ageMonths") as HTMLInputElement).value = parsed.ageMonths
+            }
+            if (parsed.gender && form.elements.namedItem("gender")) {
+              ;(form.elements.namedItem("gender") as HTMLSelectElement).value = parsed.gender
+            }
+            if (parsed.dateOfBirth && form.elements.namedItem("dateOfBirth")) {
+              ;(form.elements.namedItem("dateOfBirth") as HTMLInputElement).value = parsed.dateOfBirth
+            }
+            if (parsed.alternatePhone && form.elements.namedItem("alternatePhone")) {
+              ;(form.elements.namedItem("alternatePhone") as HTMLInputElement).value = parsed.alternatePhone
+            }
+            if (parsed.address && form.elements.namedItem("address")) {
+              ;(form.elements.namedItem("address") as HTMLTextAreaElement).value = parsed.address
+            }
+            if (parsed.registeredAt && form.elements.namedItem("registeredAt")) {
+              ;(form.elements.namedItem("registeredAt") as HTMLInputElement).value = parsed.registeredAt
+            }
+          }
+          setAutoSaveStatus("saved")
+        }
+      }
+    } catch {}
+
+    const timer = setTimeout(() => {
+      isInitialDraftLoadedRef.current = true
+    }, 300)
+    return () => clearTimeout(timer)
+  }, [patient, draftPatientKey])
+
+  const executePatientAutoSave = () => {
+    if (patient || isSavingRef.current) return
+    const form = formRef.current
+    if (!form) return
+
+    setAutoSaveStatus("saving")
+    try {
+      const data = new FormData(form)
+      const payload = {
+        name: name || String(data.get("name") || ""),
+        phone: phone || String(data.get("phone") || ""),
+        age: String(data.get("age") || ""),
+        ageMonths: String(data.get("ageMonths") || ""),
+        gender: String(data.get("gender") || ""),
+        dateOfBirth: String(data.get("dateOfBirth") || ""),
+        alternatePhone: String(data.get("alternatePhone") || ""),
+        address: String(data.get("address") || ""),
+        registeredAt: String(data.get("registeredAt") || ""),
+        savedAt: new Date().toISOString(),
+      }
+      window.localStorage.setItem(draftPatientKey, JSON.stringify(payload))
+      setAutoSaveStatus("saved")
+    } catch (err) {
+      console.warn("[Cliniqo] Patient auto-save failed:", err)
+      setAutoSaveStatus("error")
+    }
+  }
+
+  const triggerDebouncedAutoSave = () => {
+    setDirty(true)
+    if (!isInitialDraftLoadedRef.current || patient) return
+    if (autoSaveTimerRef.current) {
+      clearTimeout(autoSaveTimerRef.current)
+    }
+    autoSaveTimerRef.current = setTimeout(() => {
+      executePatientAutoSave()
+    }, 700)
+  }
+
+  const handleBlurCapture = () => {
+    if (!isInitialDraftLoadedRef.current || patient) return
+    if (autoSaveTimerRef.current) {
+      clearTimeout(autoSaveTimerRef.current)
+    }
+    executePatientAutoSave()
+  }
 
   useEffect(() => {
     // Automatically focus the patient name input on mount so the user can type immediately
@@ -173,6 +272,9 @@ export function PatientForm({
           clientMutationIdRef.current,
         )
         setDirty(false)
+        try {
+          window.localStorage.removeItem(draftPatientKey)
+        } catch {}
       } catch (err: any) {
         const diag: PatientSaveDiagnostic = err?.diagnostic || {
           category: "UNKNOWN_SAVE_FAILURE",
@@ -251,6 +353,37 @@ export function PatientForm({
         >
           <ArrowLeft size={18} />
         </IconButton>
+        {!editing && autoSaveStatus === "saving" && (
+          <span
+            className="autosave-status text-xs text-slate-500 dark:text-slate-400 flex items-center gap-1.5 px-2 py-1"
+            role="status"
+          >
+            <Loader2 size={13} className="animate-spin" /> Saving...
+          </span>
+        )}
+        {!editing && autoSaveStatus === "saved" && (
+          <span
+            className="autosave-status text-xs text-emerald-600 dark:text-emerald-400 flex items-center gap-1.5 px-2 py-1"
+            role="status"
+          >
+            <Check size={13} /> Saved
+          </span>
+        )}
+        {!editing && autoSaveStatus === "error" && (
+          <span
+            className="autosave-status text-xs text-rose-600 dark:text-rose-400 flex items-center gap-1.5 px-2 py-1"
+            role="alert"
+          >
+            <AlertCircle size={13} /> Unable to save –{" "}
+            <button
+              type="button"
+              className="underline hover:text-rose-700 font-medium cursor-pointer ml-1"
+              onClick={executePatientAutoSave}
+            >
+              Retry
+            </button>
+          </span>
+        )}
         <Button
           type="submit"
           form="patient-form"
@@ -277,7 +410,9 @@ export function PatientForm({
         id="patient-form"
         className="page-content form-page"
         onSubmit={submit}
-        onChange={() => setDirty(true)}
+        onChange={triggerDebouncedAutoSave}
+        onInput={triggerDebouncedAutoSave}
+        onBlurCapture={handleBlurCapture}
       >
         <div className="form-main">
           {saveError && (
@@ -573,6 +708,9 @@ export function PatientForm({
         onConfirm={() => {
           setShowDiscardConfirm(false)
           setDirty(false)
+          try {
+            window.localStorage.removeItem(draftPatientKey)
+          } catch {}
           go("patients")
         }}
         onCancel={() => setShowDiscardConfirm(false)}

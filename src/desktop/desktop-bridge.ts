@@ -169,6 +169,31 @@ export interface LocalPrescriptionArgs {
   items_json: string
 }
 
+export interface SaveConsultationDraftArgs {
+  clinic_id: string
+  consultation_id: string
+  patient_id: string
+  consultation_date: string
+  chief_complaint: string
+  diagnosis: string
+  clinical_snapshot_json?: string | null
+}
+
+export interface UpdateConsultationArgs {
+  clinic_id: string
+  consultation_id: string
+  consultation_date?: string | null
+  chief_complaint?: string | null
+  diagnosis?: string | null
+  clinical_snapshot_json?: string | null
+}
+
+export interface UpdatePrescriptionArgs {
+  clinic_id: string
+  prescription_id: string
+  items_json: string
+}
+
 export interface ReviseLocalPrescriptionArgs {
   clinic_id: string
   prescription_id: string
@@ -878,6 +903,18 @@ export async function saveLocalConsultation(
   return invokeTauri<string>("save_local_consultation", { args })
 }
 
+export async function saveLocalConsultationDraft(
+  args: SaveConsultationDraftArgs,
+): Promise<string | null> {
+  return invokeTauri<string>("save_local_consultation_draft", { args })
+}
+
+export async function updateLocalConsultation(
+  args: UpdateConsultationArgs,
+): Promise<string | null> {
+  return invokeTauri<string>("update_local_consultation", { args })
+}
+
 export async function getLocalConsultations(
   clinicId: string,
   patientId?: string | null,
@@ -889,10 +926,55 @@ export async function getLocalConsultations(
   return result ?? []
 }
 
+/**
+ * Retrieves the medical history (conditions array) from the patient's most recent finalized consultation.
+ * Strictly filters by patientId to prevent leakage across different patients.
+ */
+export async function getLatestPatientMedicalHistory(
+  clinicId: string,
+  patientId: string,
+): Promise<string[]> {
+  if (!patientId || !clinicId) return []
+  try {
+    const consultations = await getLocalConsultations(clinicId, patientId)
+    if (!consultations || consultations.length === 0) return []
+
+    const patientConsultations = consultations.filter(
+      (c) => c.patient_id === patientId && c.status !== "DRAFT",
+    )
+    if (patientConsultations.length === 0) return []
+
+    patientConsultations.sort((a, b) => {
+      const dateA = new Date(a.consultation_date || a.updated_at).getTime()
+      const dateB = new Date(b.consultation_date || b.updated_at).getTime()
+      return dateB - dateA
+    })
+
+    const latest = patientConsultations[0]
+    if (latest.clinical_snapshot_json) {
+      try {
+        const snapshot = JSON.parse(latest.clinical_snapshot_json)
+        if (Array.isArray(snapshot.conditions) && snapshot.conditions.length > 0) {
+          return snapshot.conditions.map((c: any) => String(c).trim()).filter(Boolean)
+        }
+      } catch {}
+    }
+  } catch (err) {
+    console.warn("[Cliniqo Bridge] Failed to load latest patient medical history:", err)
+  }
+  return []
+}
+
 export async function saveLocalPrescription(
   args: LocalPrescriptionArgs,
 ): Promise<string | null> {
   return invokeTauri<string>("save_local_prescription", { args })
+}
+
+export async function updateLocalPrescription(
+  args: UpdatePrescriptionArgs,
+): Promise<string | null> {
+  return invokeTauri<string>("update_local_prescription", { args })
 }
 
 export async function reviseLocalPrescription(

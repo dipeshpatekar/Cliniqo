@@ -89,7 +89,10 @@ import {
   importInventoryStock,
   getLocalConsultations,
   saveLocalConsultation,
+  updateLocalConsultation,
+  updateLocalPrescription,
   reviseLocalPrescription,
+  getLatestPatientMedicalHistory,
   getNextInvoiceNumber,
   type DesktopSessionContext,
   type LocalInvoiceRecord,
@@ -1103,7 +1106,7 @@ export default function App({
     go("patient-profile")
   }
 
-  const startConsultation = (patient: Patient) => {
+  const startConsultation = async (patient: Patient) => {
     if (isStartingConsultationRef.current) return
     if (!patient || !patient.id || patient.id === "PT-INIT") {
       alert("No valid patient selected for consultation.")
@@ -1115,7 +1118,24 @@ export default function App({
       setPatientSaveFeedback(null)
       setViewingHistoricalPrescription(null)
       setActiveConsultationPrescriptionRecord(null)
-      setConsultationData(createEmptyConsultationData())
+
+      let initialConditions = patient.conditions || []
+      if (isTauriDesktop() && desktopSession?.clinic_id) {
+        try {
+          const carriedConditions = await getLatestPatientMedicalHistory(
+            desktopSession.clinic_id,
+            patient.id,
+          )
+          if (carriedConditions.length > 0) {
+            initialConditions = carriedConditions
+          }
+        } catch {}
+      }
+
+      const emptyData = createEmptyConsultationData()
+      emptyData.conditions = initialConditions
+      emptyData.allergies = patient.allergies || []
+      setConsultationData(emptyData)
       setVitals({
         systolic: "",
         diastolic: "",
@@ -1372,6 +1392,188 @@ export default function App({
       })
     }
     setActiveConsultationPrescriptionRecord(newRecord)
+    setConsultationData(updatedConsultationData)
+    setVitals(updatedVitals)
+  }
+
+  const handleUpdateActivePrescription = async (
+    medicinesOrData: Medicine[] | PrescriptionRevisionData,
+    _reasonForRevision?: string,
+  ) => {
+    const targetRecord = activeConsultationPrescriptionRecord
+    if (!targetRecord) {
+      throw new Error("No active prescription selected.")
+    }
+
+    const isFullData = !Array.isArray(medicinesOrData)
+    const medicines: Medicine[] = isFullData
+      ? medicinesOrData.medicines
+      : medicinesOrData
+
+    const updatedVitals: Vitals = isFullData
+      ? medicinesOrData.vitals
+      : vitals
+
+    const updatedConsultationData: ConsultationData = isFullData
+      ? {
+          date: medicinesOrData.consultationDate,
+          time: medicinesOrData.consultationTime,
+          chiefComplaint: medicinesOrData.chiefComplaint,
+          symptomDuration: medicinesOrData.symptomDuration,
+          diagnosis: medicinesOrData.diagnosis,
+          medicines,
+          followUpDate: medicinesOrData.followUpDate,
+          followUpInstructions: medicinesOrData.followUpInstructions,
+          allergies: medicinesOrData.allergies,
+          conditions: medicinesOrData.conditions,
+        }
+      : {
+          ...consultationData,
+          medicines,
+        }
+
+    if (isTauriDesktop() && desktopSession?.clinic_id) {
+      // 1. In-place update of prescription items (keeps revision_number: 1, status: ACTIVE)
+      await updateLocalPrescription({
+        clinic_id: desktopSession.clinic_id,
+        prescription_id: targetRecord.id,
+        items_json: JSON.stringify(medicines),
+      })
+
+      // 2. In-place update of consultation record
+      if (isFullData && targetRecord.consultation_id) {
+        const consultDatePart = medicinesOrData.consultationDate
+        const consultTimePart = medicinesOrData.consultationTime
+        const combinedConsultationDate =
+          consultDatePart.includes("T") || consultDatePart.includes(" ")
+            ? consultDatePart
+            : `${consultDatePart}T${consultTimePart}`
+
+        await updateLocalConsultation({
+          clinic_id: desktopSession.clinic_id,
+          consultation_id: targetRecord.consultation_id,
+          consultation_date: combinedConsultationDate,
+          chief_complaint: medicinesOrData.chiefComplaint,
+          diagnosis: medicinesOrData.diagnosis,
+          clinical_snapshot_json: JSON.stringify({
+            vitals: medicinesOrData.vitals,
+            time: consultTimePart,
+            consultationTime: consultTimePart,
+            consultationDate: consultDatePart,
+            symptomDuration: medicinesOrData.symptomDuration,
+            followUpDate: medicinesOrData.followUpDate,
+            followUpInstructions: medicinesOrData.followUpInstructions,
+            allergies: medicinesOrData.allergies,
+            conditions: medicinesOrData.conditions,
+          }),
+        })
+      }
+
+      // Persist any new custom complaints & diagnoses
+      if (isFullData) {
+        if (medicinesOrData.chiefComplaint?.trim()) {
+          handleAddCustomChiefComplaint(medicinesOrData.chiefComplaint.trim())
+        }
+        if (medicinesOrData.diagnosis?.trim()) {
+          handleAddCustomDiagnosis(medicinesOrData.diagnosis.trim())
+        }
+      }
+
+      // Persist new custom clinical library values & formulary
+      let currentLib = clinicalLibrary
+      for (const m of medicines) {
+        if (m.name?.trim()) {
+          currentLib = addClinicalLibraryItem(
+            currentLib,
+            "Medicines",
+            m.name.trim(),
+            desktopSession.clinic_id,
+          )
+        }
+        if (m.formulation?.trim()) {
+          currentLib = addClinicalLibraryItem(
+            currentLib,
+            "Formulations",
+            m.formulation.trim(),
+            desktopSession.clinic_id,
+          )
+        }
+        if (m.strength?.trim()) {
+          currentLib = addClinicalLibraryItem(
+            currentLib,
+            "Strengths",
+            m.strength.trim(),
+            desktopSession.clinic_id,
+          )
+        }
+        if (m.dose?.trim()) {
+          currentLib = addClinicalLibraryItem(
+            currentLib,
+            "Doses",
+            m.dose.trim(),
+            desktopSession.clinic_id,
+          )
+        }
+        if (m.frequency?.trim()) {
+          currentLib = addClinicalLibraryItem(
+            currentLib,
+            "Frequencies",
+            m.frequency.trim(),
+            desktopSession.clinic_id,
+          )
+        }
+        if (m.duration?.trim()) {
+          currentLib = addClinicalLibraryItem(
+            currentLib,
+            "Durations",
+            m.duration.trim(),
+            desktopSession.clinic_id,
+          )
+        }
+        if (m.food?.trim()) {
+          currentLib = addClinicalLibraryItem(
+            currentLib,
+            "FoodInstructions",
+            m.food.trim(),
+            desktopSession.clinic_id,
+          )
+        }
+      }
+      setClinicalLibrary(currentLib)
+
+      for (const m of medicines) {
+        if (m.name?.trim() && m.formulation?.trim()) {
+          try {
+            await saveLocalFormularyItem({
+              clinic_id: desktopSession.clinic_id,
+              name: m.name.trim(),
+              formulation: m.formulation.trim(),
+              strength: m.strength?.trim() || null,
+              active_ingredient: m.activeIngredient?.trim() || null,
+              default_dosage: m.dose?.trim() || null,
+              default_route: m.route?.trim() || null,
+              default_frequency: m.frequency?.trim() || null,
+              default_duration: m.duration?.trim() || null,
+              default_instructions: m.directions?.trim() || null,
+            })
+          } catch {}
+        }
+      }
+
+      if (isFullData && (medicinesOrData.allergies || medicinesOrData.conditions)) {
+        updatePatientMedicalInfo(
+          medicinesOrData.allergies || selectedPatient.allergies,
+          medicinesOrData.conditions || selectedPatient.conditions,
+        )
+      }
+    }
+
+    const updatedRecord: LocalPrescriptionRecord = {
+      ...targetRecord,
+      items_json: JSON.stringify(medicines),
+      updated_at: new Date().toISOString(),
+    }
+    setActiveConsultationPrescriptionRecord(updatedRecord)
     setConsultationData(updatedConsultationData)
     setVitals(updatedVitals)
   }
@@ -2180,6 +2382,7 @@ export default function App({
         patients={patientRecords}
         nextPatientId={nextPatientId}
         fieldPreferences={patientFormFieldPreferences}
+        desktopSession={desktopSession}
       />
     )
   } else if (page === "patient-profile") {
@@ -2211,6 +2414,7 @@ export default function App({
         onDataChange={setConsultationData}
         onAddMedicine={addMedicineDefinition}
         desktopSession={desktopSession}
+        activePrescriptionRecord={activeConsultationPrescriptionRecord}
         onUpdatePatientMedicalInfo={updatePatientMedicalInfo}
         customChiefComplaints={customChiefComplaints}
         onAddCustomChiefComplaint={handleAddCustomChiefComplaint}
@@ -2360,10 +2564,13 @@ export default function App({
             ? viewingHistoricalPrescription!.record
             : activeConsultationPrescriptionRecord
         }
+        isHistorical={isHistorical}
         onRevisePrescription={
-          isHistorical || Boolean(activeConsultationPrescriptionRecord)
+          isHistorical
             ? handleRevisePrescription
-            : undefined
+            : activeConsultationPrescriptionRecord
+              ? handleUpdateActivePrescription
+              : undefined
         }
         itemsError={
           isHistorical ? viewingHistoricalPrescription!.itemsError : null

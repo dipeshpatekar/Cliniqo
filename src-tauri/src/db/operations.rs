@@ -630,6 +630,132 @@ impl DbOperations {
         Ok(consultation_id)
     }
 
+    /// Inserts or updates a consultation draft with encrypted clinical data.
+    /// Ensures that finalized consultations cannot be silently modified by auto-save.
+    pub fn upsert_consultation_draft(
+        conn: &mut Connection,
+        dek: &DatabaseEncryptionKey,
+        clinic_id: &str,
+        consultation_id: &str,
+        patient_id: &str,
+        doctor_id: &str,
+        consultation_date: &str,
+        chief_complaint: &str,
+        diagnosis: &str,
+        clinical_snapshot_json: Option<&str>,
+    ) -> Result<String, DatabaseOpError> {
+        let existing: Option<String> = conn
+            .query_row(
+                "SELECT status FROM local_consultations WHERE clinic_id = ?1 AND id = ?2",
+                params![clinic_id, consultation_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+
+        let clinical_data = ClinicalData {
+            chief_complaint: chief_complaint.to_string(),
+            diagnosis: diagnosis.to_string(),
+            clinical_snapshot_json: clinical_snapshot_json.map(|s| s.to_string()),
+        };
+        let clinical_bytes = serde_json::to_vec(&clinical_data)?;
+        let (encrypted_clinical, clinical_nonce) = encrypt_payload(&dek.key, &clinical_bytes)?;
+
+        if let Some(status) = existing {
+            if status != "DRAFT" {
+                return Err(DatabaseOpError::ConflictResolution(
+                    "Cannot modify finalized consultation via draft auto-save".to_string(),
+                ));
+            }
+
+            conn.execute(
+                r#"
+                UPDATE local_consultations
+                SET consultation_date = ?1,
+                    encrypted_clinical_data = ?2,
+                    nonce = ?3,
+                    updated_at = CURRENT_TIMESTAMP,
+                    local_version = local_version + 1
+                WHERE clinic_id = ?4 AND id = ?5 AND status = 'DRAFT'
+                "#,
+                params![consultation_date, encrypted_clinical, clinical_nonce, clinic_id, consultation_id],
+            )?;
+        } else {
+            conn.execute(
+                r#"
+                INSERT INTO local_consultations (
+                    id, clinic_id, patient_id, doctor_id, consultation_date, status,
+                    encrypted_clinical_data, nonce, sync_status, local_version
+                ) VALUES (?1, ?2, ?3, ?4, ?5, 'DRAFT', ?6, ?7, 'LOCAL_ONLY', 1)
+                "#,
+                params![
+                    consultation_id,
+                    clinic_id,
+                    patient_id,
+                    doctor_id,
+                    consultation_date,
+                    encrypted_clinical,
+                    clinical_nonce,
+                ],
+            )?;
+        }
+
+        Ok(consultation_id.to_string())
+    }
+
+    /// Updates an existing consultation's clinical details in-place.
+    pub fn update_consultation(
+        conn: &mut Connection,
+        dek: &DatabaseEncryptionKey,
+        clinic_id: &str,
+        consultation_id: &str,
+        consultation_date: Option<&str>,
+        chief_complaint: Option<&str>,
+        diagnosis: Option<&str>,
+        clinical_snapshot_json: Option<&str>,
+    ) -> Result<String, DatabaseOpError> {
+        let (existing_date, existing_enc, existing_nonce): (String, Vec<u8>, Vec<u8>) = conn.query_row(
+            "SELECT consultation_date, encrypted_clinical_data, nonce FROM local_consultations WHERE clinic_id = ?1 AND id = ?2",
+            params![clinic_id, consultation_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?;
+
+        let mut existing_clinical: ClinicalData = {
+            let dec = decrypt_payload(&dek.key, &existing_enc, &existing_nonce)
+                .map_err(|e| DatabaseOpError::DecryptionFailed(e.to_string()))?;
+            serde_json::from_slice(&dec)?
+        };
+
+        if let Some(cc) = chief_complaint {
+            existing_clinical.chief_complaint = cc.to_string();
+        }
+        if let Some(diag) = diagnosis {
+            existing_clinical.diagnosis = diag.to_string();
+        }
+        if let Some(snap) = clinical_snapshot_json {
+            existing_clinical.clinical_snapshot_json = Some(snap.to_string());
+        }
+
+        let clinical_bytes = serde_json::to_vec(&existing_clinical)?;
+        let (encrypted_clinical, clinical_nonce) = encrypt_payload(&dek.key, &clinical_bytes)?;
+
+        let date_to_set = consultation_date.unwrap_or(&existing_date);
+
+        conn.execute(
+            r#"
+            UPDATE local_consultations
+            SET consultation_date = ?1,
+                encrypted_clinical_data = ?2,
+                nonce = ?3,
+                updated_at = CURRENT_TIMESTAMP,
+                local_version = local_version + 1
+            WHERE clinic_id = ?4 AND id = ?5
+            "#,
+            params![date_to_set, encrypted_clinical, clinical_nonce, clinic_id, consultation_id],
+        )?;
+
+        Ok(consultation_id.to_string())
+    }
+
     /// Queries local consultations for a clinic, decrypting the clinical data.
     pub fn get_consultations(
         conn: &Connection,
@@ -800,6 +926,49 @@ impl DbOperations {
 
         tx.commit()?;
         Ok(prescription_id)
+    }
+
+    /// Updates an active prescription's medication items in-place without creating a new revision.
+    /// Preserves original revision_number, prescription_number, and record identity.
+    pub fn update_prescription(
+        conn: &mut Connection,
+        dek: &DatabaseEncryptionKey,
+        clinic_id: &str,
+        prescription_id: &str,
+        items_json: &str,
+    ) -> Result<String, DatabaseOpError> {
+        let parsed_items: serde_json::Value = serde_json::from_str(items_json)
+            .map_err(|e| DatabaseOpError::ConflictResolution(format!("Invalid items JSON: {e}")))?;
+        let items_arr = parsed_items
+            .as_array()
+            .ok_or_else(|| DatabaseOpError::ConflictResolution("Prescription items must be an array".to_string()))?;
+        if items_arr.is_empty() {
+            return Err(DatabaseOpError::ConflictResolution(
+                "Prescription must contain at least one medicine item".to_string(),
+            ));
+        }
+
+        let (encrypted_items, nonce) = encrypt_payload(&dek.key, items_json.as_bytes())?;
+
+        let rows_affected = conn.execute(
+            r#"
+            UPDATE local_prescriptions
+            SET encrypted_items = ?1,
+                nonce = ?2,
+                updated_at = CURRENT_TIMESTAMP,
+                local_version = local_version + 1
+            WHERE clinic_id = ?3 AND id = ?4 AND status = 'ACTIVE'
+            "#,
+            params![encrypted_items, nonce, clinic_id, prescription_id],
+        )?;
+
+        if rows_affected == 0 {
+            return Err(DatabaseOpError::ConflictResolution(format!(
+                "Cannot update prescription {prescription_id}: not found or not active"
+            )));
+        }
+
+        Ok(prescription_id.to_string())
     }
 
     /// Queries local prescriptions for a clinic, decrypting the items.
@@ -9098,5 +9267,181 @@ mod tests {
         // Next sequential code must now be AAA-0003
         let next = DbOperations::get_next_patient_code(&mut conn, clinic_id).unwrap();
         assert_eq!(next, "AAA-0003");
+    }
+
+    #[test]
+    fn test_prescription_edit_inplace_preserves_revision_number_and_identity() {
+        let (mut conn, dek) = setup_test_db();
+        let clinic_id = "clinic-rx-edit-test";
+
+        let patient = DbOperations::insert_patient_ext(
+            &mut conn,
+            &dek,
+            clinic_id,
+            "RXE-0001",
+            "John Doe",
+            "9876543210",
+            "Male",
+            None,
+            40,
+            &[],
+            &[],
+            None,
+            None,
+        )
+        .unwrap();
+
+        let consultation_id = DbOperations::insert_consultation(
+            &mut conn,
+            &dek,
+            clinic_id,
+            &patient.id,
+            "doc-1",
+            "2026-11-20T10:00:00",
+            "Fever",
+            "Viral fever",
+            Some(r#"{"vitals":{"systolic":"120","diastolic":"80"}}"#),
+        )
+        .unwrap();
+
+        let initial_items = r#"[{"id":1,"name":"Paracetamol","formulation":"Tablet","strength":"500 mg"}]"#;
+        let rx_id = DbOperations::insert_prescription(
+            &mut conn,
+            &dek,
+            clinic_id,
+            &consultation_id,
+            &patient.id,
+            "doc-1",
+            "RX-100001",
+            initial_items,
+        )
+        .unwrap();
+
+        let rxs = DbOperations::get_prescriptions(&mut conn, &dek, clinic_id, Some(&patient.id)).unwrap();
+        assert_eq!(rxs.len(), 1);
+        assert_eq!(rxs[0].id, rx_id);
+        assert_eq!(rxs[0].revision_number, 1);
+        assert_eq!(rxs[0].status, "ACTIVE");
+        assert_eq!(rxs[0].prescription_number, "RX-100001");
+
+        // Now perform in-place update (normal editing immediately after creation)
+        let updated_items = r#"[{"id":1,"name":"Paracetamol","formulation":"Tablet","strength":"650 mg"},{"id":2,"name":"Cetirizine","formulation":"Tablet","strength":"10 mg"}]"#;
+        DbOperations::update_prescription(&mut conn, &dek, clinic_id, &rx_id, updated_items).unwrap();
+
+        // Verify that prescription record is updated in-place: revision_number MUST remain 1, status ACTIVE
+        let updated_rxs = DbOperations::get_prescriptions(&mut conn, &dek, clinic_id, Some(&patient.id)).unwrap();
+        assert_eq!(updated_rxs.len(), 1, "Must remain a single prescription without creating duplicate or revision rows");
+        assert_eq!(updated_rxs[0].id, rx_id, "Prescription ID must be preserved");
+        assert_eq!(updated_rxs[0].revision_number, 1, "Revision number must remain 1 for normal edits");
+        assert_eq!(updated_rxs[0].status, "ACTIVE");
+        assert_eq!(updated_rxs[0].prescription_number, "RX-100001");
+        assert_eq!(updated_rxs[0].items_json.as_deref(), Some(updated_items));
+    }
+
+    #[test]
+    fn test_consultation_edit_inplace_and_draft_protection() {
+        let (mut conn, dek) = setup_test_db();
+        let clinic_id = "clinic-cons-draft-test";
+
+        let patient = DbOperations::insert_patient_ext(
+            &mut conn,
+            &dek,
+            clinic_id,
+            "CND-0001",
+            "Jane Doe",
+            "9876543211",
+            "Female",
+            None,
+            30,
+            &[],
+            &["Asthma".to_string()],
+            None,
+            None,
+        )
+        .unwrap();
+
+        let draft_id = "draft_consult_12345";
+        // 1. Upsert consultation draft
+        DbOperations::upsert_consultation_draft(
+            &mut conn,
+            &dek,
+            clinic_id,
+            draft_id,
+            &patient.id,
+            "doc-1",
+            "2026-11-20T10:30:00",
+            "Cough",
+            "Bronchitis",
+            Some(r#"{"conditions":["Asthma"]}"#),
+        )
+        .unwrap();
+
+        let consults = DbOperations::get_consultations(&mut conn, &dek, clinic_id, Some(&patient.id)).unwrap();
+        assert_eq!(consults.len(), 1);
+        assert_eq!(consults[0].status, "DRAFT");
+        assert_eq!(consults[0].chief_complaint, "Cough");
+
+        // 2. Modify draft
+        DbOperations::upsert_consultation_draft(
+            &mut conn,
+            &dek,
+            clinic_id,
+            draft_id,
+            &patient.id,
+            "doc-1",
+            "2026-11-20T10:35:00",
+            "Cough and fever",
+            "Acute Bronchitis",
+            Some(r#"{"conditions":["Asthma","Hypertension"]}"#),
+        )
+        .unwrap();
+
+        let updated_consults = DbOperations::get_consultations(&mut conn, &dek, clinic_id, Some(&patient.id)).unwrap();
+        assert_eq!(updated_consults.len(), 1, "Must update draft in-place without creating duplicates");
+        assert_eq!(updated_consults[0].chief_complaint, "Cough and fever");
+        assert_eq!(updated_consults[0].diagnosis, "Acute Bronchitis");
+
+        // 3. Update status to ACTIVE (simulating finalization)
+        conn.execute("UPDATE local_consultations SET status = 'ACTIVE' WHERE id = ?1", params![draft_id]).unwrap();
+
+        // 4. Verify that background draft auto-save CANNOT overwrite finalized consultations
+        let err = DbOperations::upsert_consultation_draft(
+            &mut conn,
+            &dek,
+            clinic_id,
+            draft_id,
+            &patient.id,
+            "doc-1",
+            "2026-11-20T10:40:00",
+            "Overwriting complaint",
+            "Overwriting diagnosis",
+            None,
+        )
+        .unwrap_err();
+
+        assert!(
+            err.to_string().contains("Cannot modify finalized consultation via draft auto-save"),
+            "Finalized consultation must be protected from draft overwrites: {}",
+            err
+        );
+
+        // 5. In-place consultation update for active consultation works cleanly
+        DbOperations::update_consultation(
+            &mut conn,
+            &dek,
+            clinic_id,
+            draft_id,
+            Some("2026-11-20T10:45:00"),
+            Some("Persistent cough"),
+            Some("Resolved bronchitis"),
+            Some(r#"{"conditions":["Asthma"]}"#),
+        )
+        .unwrap();
+
+        let final_consults = DbOperations::get_consultations(&mut conn, &dek, clinic_id, Some(&patient.id)).unwrap();
+        assert_eq!(final_consults.len(), 1);
+        assert_eq!(final_consults[0].status, "ACTIVE");
+        assert_eq!(final_consults[0].chief_complaint, "Persistent cough");
+        assert_eq!(final_consults[0].diagnosis, "Resolved bronchitis");
     }
 }

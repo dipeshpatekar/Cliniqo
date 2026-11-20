@@ -54,6 +54,7 @@ export interface PrescriptionPreviewProps {
   returnPage: "consultation" | "settings" | "patient-profile"
   desktopSession?: DesktopSessionContext | null
   prescriptionRecord?: LocalPrescriptionRecord | null
+  isHistorical?: boolean
   onRevisePrescription?: (
     medicinesOrData: any,
     reasonForRevision?: string,
@@ -80,6 +81,7 @@ export function PrescriptionPreview({
   returnPage,
   desktopSession,
   prescriptionRecord,
+  isHistorical,
   onRevisePrescription,
   itemsError,
   topSpacingMm = 0,
@@ -875,6 +877,7 @@ export function PrescriptionPreview({
           onClose={() => setShowEditModal(false)}
           prescriptionNumber={prescriptionRecord.prescription_number}
           currentRevisionNumber={prescriptionRecord.revision_number}
+          isRevision={Boolean(isHistorical ?? (returnPage === "patient-profile"))}
           initialMedicines={data.medicines}
           initialVitals={vitals}
           initialConsultationData={data}

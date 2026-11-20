@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, type ReactNode } from "react"
+import { useState, useEffect, useRef, useCallback, type ReactNode } from "react"
 import { Menu, RefreshCw } from "lucide-react"
 
 // Re-export utility functions for backward compatibility with existing tests
@@ -280,6 +280,28 @@ export default function App({
     useState<"added" | "updated" | null>(null)
   const [settingsKey, setSettingsKey] = useState(0)
   const [settingsInitialTab, setSettingsInitialTab] = useState("Doctor profile")
+  const [activeDraftConsultationId, setActiveDraftConsultationId] =
+    useState<string | null>(null)
+  const navigationInterceptorRef = useRef<
+    ((next: Page) => Promise<boolean | void> | boolean | void) | null
+  >(null)
+
+  const registerNavigationInterceptor = useCallback(
+    (
+      interceptor:
+        | ((next: Page) => Promise<boolean | void> | boolean | void)
+        | null,
+    ) => {
+      navigationInterceptorRef.current = interceptor
+      return () => {
+        if (navigationInterceptorRef.current === interceptor) {
+          navigationInterceptorRef.current = null
+        }
+      }
+    },
+    [],
+  )
+
   const [prescriptionPreviewReturnPage, setPrescriptionPreviewReturnPage] =
     useState<PrescriptionPreviewReturnPage>(
       initialPrescriptionPreviewReturnPage,
@@ -992,7 +1014,14 @@ export default function App({
     )
   }, [clinicalLibrary])
 
-  const go = (next: Page, sessionOverride?: DesktopSessionContext | null) => {
+  const go = async (next: Page, sessionOverride?: DesktopSessionContext | null) => {
+    if (navigationInterceptorRef.current && next !== page) {
+      try {
+        await navigationInterceptorRef.current(next)
+      } catch (err) {
+        console.warn("[Cliniqo Navigation] Interceptor failed:", err)
+      }
+    }
     const effectiveSession =
       sessionOverride !== undefined
         ? sessionOverride
@@ -1090,6 +1119,7 @@ export default function App({
   const openPatient = (patient: Patient) => {
     setSelectedPatient(patient)
     setPatientSaveFeedback(null)
+    setActiveDraftConsultationId(null)
     setConsultationData(createEmptyConsultationData())
     setVitals({
       systolic: "",
@@ -1116,6 +1146,7 @@ export default function App({
     try {
       setSelectedPatient(patient)
       setPatientSaveFeedback(null)
+      setActiveDraftConsultationId(null)
       setViewingHistoricalPrescription(null)
       setActiveConsultationPrescriptionRecord(null)
 
@@ -1157,6 +1188,88 @@ export default function App({
         isStartingConsultationRef.current = false
       }, 500)
     }
+  }
+
+  const resumeConsultation = (
+    patient: Patient,
+    draftRecord: LocalConsultationRecord,
+  ) => {
+    setSelectedPatient(patient)
+    setPatientSaveFeedback(null)
+    setViewingHistoricalPrescription(null)
+    setActiveConsultationPrescriptionRecord(null)
+
+    let restoredData = createEmptyConsultationData()
+    let restoredVitals: Vitals = {
+      systolic: "",
+      diastolic: "",
+      heartRate: "",
+      spo2: "",
+      temperature: "",
+      height: "",
+      weight: "",
+    }
+
+    if (draftRecord.clinical_snapshot_json) {
+      try {
+        const snap = JSON.parse(draftRecord.clinical_snapshot_json)
+        if (snap.vitals) {
+          restoredVitals = { ...restoredVitals, ...snap.vitals }
+        }
+        restoredData = {
+          date:
+            snap.consultationDate ||
+            snap.date ||
+            (draftRecord.consultation_date
+              ? draftRecord.consultation_date.slice(0, 10)
+              : ""),
+          time: snap.consultationTime || snap.time || "",
+          chiefComplaint:
+            snap.chiefComplaint || draftRecord.chief_complaint || "",
+          symptomDuration: snap.symptomDuration || "",
+          diagnosis: snap.diagnosis || draftRecord.diagnosis || "",
+          medicines: Array.isArray(snap.medicines) ? snap.medicines : [],
+          followUpDate: snap.followUpDate || "",
+          followUpInstructions: snap.followUpInstructions || "",
+          allergies: Array.isArray(snap.allergies)
+            ? snap.allergies
+            : patient.allergies || [],
+          conditions: Array.isArray(snap.conditions)
+            ? snap.conditions
+            : patient.conditions || [],
+        }
+      } catch (err) {
+        console.error("Failed to parse clinical snapshot for draft:", err)
+      }
+    } else {
+      restoredData.chiefComplaint = draftRecord.chief_complaint || ""
+      restoredData.diagnosis = draftRecord.diagnosis || ""
+      if (draftRecord.consultation_date) {
+        const parts = draftRecord.consultation_date.split("T")
+        restoredData.date = parts[0] || ""
+        restoredData.time = parts[1] || ""
+      }
+      restoredData.conditions = patient.conditions || []
+    }
+
+    try {
+      const draftKey = `cliniqo_draft_consultation_${desktopSession?.clinic_id || "default"}_${patient.id}`
+      const localSaved = window.localStorage.getItem(draftKey)
+      if (localSaved) {
+        const parsed = JSON.parse(localSaved)
+        if (parsed?.data) {
+          restoredData = { ...restoredData, ...parsed.data }
+        }
+        if (parsed?.vitals) {
+          restoredVitals = { ...restoredVitals, ...parsed.vitals }
+        }
+      }
+    } catch {}
+
+    setConsultationData(restoredData)
+    setVitals(restoredVitals)
+    setActiveDraftConsultationId(draftRecord.id)
+    go("consultation")
   }
 
   const viewHistoricalPrescription = async (
@@ -1709,11 +1822,19 @@ export default function App({
     patient: Patient,
     startConsultation = false,
     clientMutationId?: string,
-  ) => {
-    if (isSavingPatientRef.current) return
+    navigateAfterSave = true,
+  ): Promise<Patient | null> => {
+    if (isSavingPatientRef.current) return null
     isSavingPatientRef.current = true
     try {
-      const wasEditing = Boolean(editingPatient)
+      const wasEditing =
+        Boolean(editingPatient) ||
+        patientRecords.some(
+          (p) =>
+            p.id === patient.id ||
+            (patient.displayId && p.displayId === patient.displayId) ||
+            (patient.patientCode && p.patientCode === patient.patientCode),
+        )
       let effectivePatient = patient
 
       if (isTauriDesktop() && desktopSession?.clinic_id) {
@@ -1751,7 +1872,7 @@ export default function App({
         }
 
         const saveRes = await saveLocalPatient({
-          id: wasEditing ? editingPatient?.id : null,
+          id: wasEditing ? (editingPatient?.id || patient.id) : null,
           clinic_id: desktopSession.clinic_id,
           patient_code: publicCode,
           name: patient.name,
@@ -1838,20 +1959,23 @@ export default function App({
       setPatientSaveFeedback(
         startConsultation ? null : wasEditing ? "updated" : "added",
       )
-      setEditingPatient(null)
-      if (startConsultation) {
-        setConsultationData(createEmptyConsultationData())
-        setVitals({
-          systolic: "",
-          diastolic: "",
-          heartRate: "",
-          spo2: "",
-          temperature: "",
-          height: "",
-          weight: "",
-        })
+      if (navigateAfterSave) {
+        setEditingPatient(null)
+        if (startConsultation) {
+          setConsultationData(createEmptyConsultationData())
+          setVitals({
+            systolic: "",
+            diastolic: "",
+            heartRate: "",
+            spo2: "",
+            temperature: "",
+            height: "",
+            weight: "",
+          })
+        }
+        go(startConsultation ? "consultation" : "patient-profile")
       }
-      go(startConsultation ? "consultation" : "patient-profile")
+      return effectivePatient
     } finally {
       isSavingPatientRef.current = false
     }
@@ -2389,6 +2513,7 @@ export default function App({
         nextPatientId={nextPatientId}
         fieldPreferences={patientFormFieldPreferences}
         desktopSession={desktopSession}
+        registerNavigationInterceptor={registerNavigationInterceptor}
       />
     )
   } else if (page === "patient-profile") {
@@ -2402,6 +2527,7 @@ export default function App({
         desktopSession={desktopSession}
         onStartBill={startBill}
         onStartConsultation={startConsultation}
+        onResumeConsultation={resumeConsultation}
         onViewPrescription={viewHistoricalPrescription}
         onEditPatient={editPatient}
         activeTab={patientProfileTab}
@@ -2429,12 +2555,15 @@ export default function App({
         onAddMedicine={addMedicineDefinition}
         desktopSession={desktopSession}
         activePrescriptionRecord={activeConsultationPrescriptionRecord}
+        activeDraftConsultationId={activeDraftConsultationId}
+        registerNavigationInterceptor={registerNavigationInterceptor}
         onUpdatePatientMedicalInfo={updatePatientMedicalInfo}
         customChiefComplaints={customChiefComplaints}
         onAddCustomChiefComplaint={handleAddCustomChiefComplaint}
         customDiagnoses={customDiagnoses}
         onAddCustomDiagnosis={handleAddCustomDiagnosis}
         onFinalized={(_consultationId, finalizedTimestamp, rxRecord) => {
+          setActiveDraftConsultationId(null)
           if (consultationData.chiefComplaint?.trim()) {
             handleAddCustomChiefComplaint(consultationData.chiefComplaint)
           }

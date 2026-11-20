@@ -27,19 +27,24 @@ export function PatientForm({
   nextPatientId,
   fieldPreferences = defaultPatientFormFieldPreferences,
   desktopSession,
+  registerNavigationInterceptor,
 }: {
   go: (page: Page) => void
   onSave: (
     patient: Patient,
     startConsultation?: boolean,
     clientMutationId?: string,
-  ) => Promise<void> | void
+    navigateAfterSave?: boolean,
+  ) => Promise<Patient | void> | void
   onReviewPatient: (patient: Patient) => void
   patient: Patient | null
   patients: Patient[]
   nextPatientId: string
   fieldPreferences?: PatientFormFieldPreferences
   desktopSession?: DesktopSessionContext | null
+  registerNavigationInterceptor?: (
+    interceptor: ((next: Page) => Promise<boolean | void> | boolean | void) | null,
+  ) => () => void
 }) {
   const [submitted, setSubmitted] = useState(false)
   const [isSaving, setIsSaving] = useState(false)
@@ -51,6 +56,7 @@ export function PatientForm({
   const [autoSaveStatus, setAutoSaveStatus] = useState<"idle" | "saving" | "saved" | "error">("idle")
   const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const isInitialDraftLoadedRef = useRef(false)
+  const createdPatientIdRef = useRef<string | null>(patient?.id || null)
   const draftPatientKey = `cliniqo_draft_patient_${desktopSession?.clinic_id || "default"}`
 
   const formRef = useRef<HTMLFormElement>(null)
@@ -108,28 +114,93 @@ export function PatientForm({
     return () => clearTimeout(timer)
   }, [patient, draftPatientKey])
 
-  const executePatientAutoSave = () => {
-    if (patient || isSavingRef.current) return
+  const executePatientAutoSave = async () => {
+    if (isSavingRef.current) return
     const form = formRef.current
     if (!form) return
 
-    setAutoSaveStatus("saving")
+    const data = new FormData(form)
+    const currentName = (name || String(data.get("name") || "")).trim()
+    const currentPhone = (phone || String(data.get("phone") || "")).trim()
+    const currentAddress = String(data.get("address") || "")
+    const currentRegisteredAt = String(data.get("registeredAt") || "")
+    const currentDateOfBirth = String(data.get("dateOfBirth") || "")
+    const currentAlternatePhone = String(data.get("alternatePhone") || "")
+    const currentGender = String(data.get("gender") || "")
+    const currentAge =
+      data.get("age") !== null && String(data.get("age")).trim() !== ""
+        ? Math.max(0, parseInt(String(data.get("age")), 10) || 0)
+        : (patient?.age ?? 0)
+    const currentAgeMonths =
+      data.get("ageMonths") !== null && String(data.get("ageMonths")).trim() !== ""
+        ? Math.min(11, Math.max(0, parseInt(String(data.get("ageMonths")), 10) || 0))
+        : (patient?.ageMonths ?? 0)
+
+    // Also persist draft to localStorage for recovery
     try {
-      const data = new FormData(form)
       const payload = {
-        name: name || String(data.get("name") || ""),
-        phone: phone || String(data.get("phone") || ""),
-        age: String(data.get("age") || ""),
-        ageMonths: String(data.get("ageMonths") || ""),
-        gender: String(data.get("gender") || ""),
-        dateOfBirth: String(data.get("dateOfBirth") || ""),
-        alternatePhone: String(data.get("alternatePhone") || ""),
-        address: String(data.get("address") || ""),
-        registeredAt: String(data.get("registeredAt") || ""),
+        name: currentName,
+        phone: currentPhone,
+        age: currentAge,
+        ageMonths: currentAgeMonths,
+        gender: currentGender,
+        dateOfBirth: currentDateOfBirth,
+        alternatePhone: currentAlternatePhone,
+        address: currentAddress,
+        registeredAt: currentRegisteredAt,
         savedAt: new Date().toISOString(),
       }
       window.localStorage.setItem(draftPatientKey, JSON.stringify(payload))
+    } catch {}
+
+    // Only persist if at least some patient info is entered
+    if (!currentName && !currentPhone && !currentAddress) {
+      return
+    }
+
+    setAutoSaveStatus("saving")
+    try {
+      const targetId = patient?.id || createdPatientIdRef.current || nextPatientId
+      const candidatePatient: Patient = {
+        id: targetId,
+        name: currentName || "Unnamed Patient",
+        initials:
+          (currentName || "UP")
+            .split(/\s+/)
+            .slice(0, 2)
+            .map((part) => part[0])
+            .join("")
+            .toUpperCase() || "PT",
+        age: currentAge,
+        ageMonths: currentAgeMonths,
+        gender: currentGender || "Other",
+        phone: currentPhone,
+        lastVisit: patient?.lastVisit || "No visits yet",
+        allergies: patient?.allergies || [],
+        conditions: patient?.conditions || [],
+        dateOfBirth: currentDateOfBirth,
+        alternatePhone: currentAlternatePhone,
+        address: currentAddress,
+        registeredAt:
+          currentRegisteredAt ||
+          patient?.registeredAt ||
+          new Date().toISOString(),
+      }
+
+      const result = await onSave(
+        candidatePatient,
+        false,
+        clientMutationIdRef.current,
+        false,
+      )
+
+      if (result && typeof result === "object" && "id" in result) {
+        createdPatientIdRef.current = (result as Patient).id
+      } else {
+        createdPatientIdRef.current = targetId
+      }
       setAutoSaveStatus("saved")
+      setDirty(false)
     } catch (err) {
       console.warn("[Cliniqo] Patient auto-save failed:", err)
       setAutoSaveStatus("error")
@@ -138,7 +209,7 @@ export function PatientForm({
 
   const triggerDebouncedAutoSave = () => {
     setDirty(true)
-    if (!isInitialDraftLoadedRef.current || patient) return
+    if (!isInitialDraftLoadedRef.current) return
     if (autoSaveTimerRef.current) {
       clearTimeout(autoSaveTimerRef.current)
     }
@@ -148,7 +219,7 @@ export function PatientForm({
   }
 
   const handleBlurCapture = () => {
-    if (!isInitialDraftLoadedRef.current || patient) return
+    if (!isInitialDraftLoadedRef.current) return
     if (autoSaveTimerRef.current) {
       clearTimeout(autoSaveTimerRef.current)
     }
@@ -183,20 +254,41 @@ export function PatientForm({
   )
 
   useEffect(() => {
-    const warn = (event: BeforeUnloadEvent) => {
-      if (!dirty) return
-      event.preventDefault()
-    }
-    window.addEventListener("beforeunload", warn)
-    return () => window.removeEventListener("beforeunload", warn)
-  }, [dirty])
+    if (!registerNavigationInterceptor) return
+    const unregister = registerNavigationInterceptor(async () => {
+      if (autoSaveTimerRef.current) {
+        clearTimeout(autoSaveTimerRef.current)
+      }
+      await executePatientAutoSave()
+    })
+    return unregister
+  }, [registerNavigationInterceptor, name, phone, patient, nextPatientId])
 
-  const leave = () => {
-    if (dirty) {
-      setShowDiscardConfirm(true)
-    } else {
-      go("patients")
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "hidden") {
+        executePatientAutoSave()
+      }
     }
+    const handleBeforeUnload = () => {
+      executePatientAutoSave()
+    }
+    document.addEventListener("visibilitychange", handleVisibilityChange)
+    window.addEventListener("beforeunload", handleBeforeUnload)
+    return () => {
+      document.removeEventListener("visibilitychange", handleVisibilityChange)
+      window.removeEventListener("beforeunload", handleBeforeUnload)
+    }
+  }, [name, phone, patient, nextPatientId])
+
+  const leave = async () => {
+    if (autoSaveTimerRef.current) {
+      clearTimeout(autoSaveTimerRef.current)
+    }
+    if (dirty || name.trim() || phone.trim()) {
+      await executePatientAutoSave()
+    }
+    go("patients")
   }
 
   const performSave = async (startConsultation: boolean) => {
@@ -223,9 +315,12 @@ export function PatientForm({
         const submittedName = name.trim()
         const registeredAtVal = String(data.get("registeredAt") || "")
 
+        const targetId =
+          patient?.id || createdPatientIdRef.current || nextPatientId
+
         await onSave(
           {
-            id: patient?.id || nextPatientId,
+            id: targetId,
             name: submittedName,
             initials: submittedName
               .split(/\s+/)
@@ -270,6 +365,7 @@ export function PatientForm({
           },
           startConsultation,
           clientMutationIdRef.current,
+          true,
         )
         setDirty(false)
         try {
@@ -353,7 +449,7 @@ export function PatientForm({
         >
           <ArrowLeft size={18} />
         </IconButton>
-        {!editing && autoSaveStatus === "saving" && (
+        {autoSaveStatus === "saving" && (
           <span
             className="autosave-status text-xs text-slate-500 dark:text-slate-400 flex items-center gap-1.5 px-2 py-1"
             role="status"
@@ -361,7 +457,7 @@ export function PatientForm({
             <Loader2 size={13} className="animate-spin" /> Saving...
           </span>
         )}
-        {!editing && autoSaveStatus === "saved" && (
+        {autoSaveStatus === "saved" && (
           <span
             className="autosave-status text-xs text-emerald-600 dark:text-emerald-400 flex items-center gap-1.5 px-2 py-1"
             role="status"
@@ -369,7 +465,7 @@ export function PatientForm({
             <Check size={13} /> Saved
           </span>
         )}
-        {!editing && autoSaveStatus === "error" && (
+        {autoSaveStatus === "error" && (
           <span
             className="autosave-status text-xs text-rose-600 dark:text-rose-400 flex items-center gap-1.5 px-2 py-1"
             role="alert"

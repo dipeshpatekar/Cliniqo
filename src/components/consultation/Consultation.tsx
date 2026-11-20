@@ -94,6 +94,10 @@ export interface ConsultationProps {
   onAddMedicine?: (medicine: ClinicalMedicineDefinition) => void
   desktopSession?: DesktopSessionContext | null
   activePrescriptionRecord?: LocalPrescriptionRecord | null
+  activeDraftConsultationId?: string | null
+  registerNavigationInterceptor?: (
+    interceptor: ((next: Page) => Promise<boolean | void> | boolean | void) | null,
+  ) => () => void
   onFinalized?: (
     consultationId?: string | null,
     finalizedTimestamp?: string,
@@ -120,6 +124,8 @@ export function Consultation({
   onAddMedicine,
   desktopSession,
   activePrescriptionRecord,
+  activeDraftConsultationId,
+  registerNavigationInterceptor,
   onFinalized,
   onUpdatePatientMedicalInfo,
   customChiefComplaints,
@@ -217,7 +223,15 @@ export function Consultation({
 
   const draftStorageKey = `cliniqo_draft_consultation_${desktopSession?.clinic_id || "default"}_${patient.id}`
   const [autoSaveStatus, setAutoSaveStatus] = useState<"idle" | "saving" | "saved" | "error">("idle")
-  const draftConsultationIdRef = useRef<string>(`draft_consult_${patient.id}`)
+  const draftConsultationIdRef = useRef<string>(
+    activeDraftConsultationId || `draft_consult_${patient.id}`,
+  )
+
+  useEffect(() => {
+    if (activeDraftConsultationId) {
+      draftConsultationIdRef.current = activeDraftConsultationId
+    }
+  }, [activeDraftConsultationId])
   const finalizedSessionRef = useRef<{
     consultationId: string | null
     rxRecord: LocalPrescriptionRecord | null
@@ -288,6 +302,7 @@ export function Consultation({
       const draftPayload = {
         patientId: patient.id,
         clinicId: desktopSession?.clinic_id,
+        consultationId: draftConsultationIdRef.current,
         data,
         vitals,
         savedAt: new Date().toISOString(),
@@ -310,12 +325,15 @@ export function Consultation({
             time: consultTimePart,
             consultationTime: consultTimePart,
             consultationDate: consultDatePart,
+            chiefComplaint: data.chiefComplaint,
             symptomDuration: data.symptomDuration,
+            diagnosis: data.diagnosis,
             followUpDate: data.followUpDate,
             followUpInstructions: data.followUpInstructions,
-            allergies: data.allergies ?? patient.allergies,
-            conditions: data.conditions ?? patient.conditions,
+            allergies: data.allergies ?? patient.allergies ?? [],
+            conditions: data.conditions ?? patient.conditions ?? [],
             medicines: data.medicines,
+            savedAt: new Date().toISOString(),
           }),
         })
       }
@@ -348,6 +366,43 @@ export function Consultation({
     }
     executeAutoSave()
   }
+
+  useEffect(() => {
+    if (!registerNavigationInterceptor) return
+    const unregister = registerNavigationInterceptor(async (nextPage) => {
+      if (isFinalizingRef.current || nextPage === "preview") return
+      if (autoSaveTimerRef.current) {
+        clearTimeout(autoSaveTimerRef.current)
+      }
+      await executeAutoSave()
+    })
+    return unregister
+  }, [
+    registerNavigationInterceptor,
+    data,
+    vitals,
+    patient.id,
+    desktopSession?.clinic_id,
+  ])
+
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "hidden" && !isFinalizingRef.current) {
+        executeAutoSave()
+      }
+    }
+    const handleBeforeUnload = () => {
+      if (!isFinalizingRef.current) {
+        executeAutoSave()
+      }
+    }
+    document.addEventListener("visibilitychange", handleVisibilityChange)
+    window.addEventListener("beforeunload", handleBeforeUnload)
+    return () => {
+      document.removeEventListener("visibilitychange", handleVisibilityChange)
+      window.removeEventListener("beforeunload", handleBeforeUnload)
+    }
+  }, [data, vitals, patient.id, desktopSession?.clinic_id])
 
   const patientIdRef = useRef(patient.id)
   useEffect(() => {
@@ -845,24 +900,70 @@ export function Consultation({
           updatedData.prescriptionNumber = savedRxRecord.prescription_number
           onDataChange(updatedData)
         } else {
-          consultationId = await saveLocalConsultation({
-            clinic_id: desktopSession.clinic_id,
-            patient_id: patient.id,
-            consultation_date: combinedConsultationDate,
-            chief_complaint: data.chiefComplaint,
-            diagnosis: data.diagnosis,
-            clinical_snapshot_json: JSON.stringify({
-              vitals,
-              time: consultTimePart,
-              consultationTime: consultTimePart,
-              consultationDate: consultDatePart,
-              symptomDuration: data.symptomDuration,
-              followUpDate: data.followUpDate,
-              followUpInstructions: data.followUpInstructions,
-              allergies: data.allergies ?? patient.allergies,
-              conditions: data.conditions ?? patient.conditions,
-            }),
-          })
+          if (draftConsultationIdRef.current) {
+            try {
+              await updateLocalConsultation({
+                clinic_id: desktopSession.clinic_id,
+                consultation_id: draftConsultationIdRef.current,
+                consultation_date: combinedConsultationDate,
+                chief_complaint: data.chiefComplaint,
+                diagnosis: data.diagnosis,
+                clinical_snapshot_json: JSON.stringify({
+                  vitals,
+                  time: consultTimePart,
+                  consultationTime: consultTimePart,
+                  consultationDate: consultDatePart,
+                  symptomDuration: data.symptomDuration,
+                  followUpDate: data.followUpDate,
+                  followUpInstructions: data.followUpInstructions,
+                  allergies: data.allergies ?? patient.allergies,
+                  conditions: data.conditions ?? patient.conditions,
+                  medicines: data.medicines,
+                }),
+              })
+              consultationId = draftConsultationIdRef.current
+            } catch {
+              consultationId = await saveLocalConsultation({
+                clinic_id: desktopSession.clinic_id,
+                patient_id: patient.id,
+                consultation_date: combinedConsultationDate,
+                chief_complaint: data.chiefComplaint,
+                diagnosis: data.diagnosis,
+                clinical_snapshot_json: JSON.stringify({
+                  vitals,
+                  time: consultTimePart,
+                  consultationTime: consultTimePart,
+                  consultationDate: consultDatePart,
+                  symptomDuration: data.symptomDuration,
+                  followUpDate: data.followUpDate,
+                  followUpInstructions: data.followUpInstructions,
+                  allergies: data.allergies ?? patient.allergies,
+                  conditions: data.conditions ?? patient.conditions,
+                  medicines: data.medicines,
+                }),
+              })
+            }
+          } else {
+            consultationId = await saveLocalConsultation({
+              clinic_id: desktopSession.clinic_id,
+              patient_id: patient.id,
+              consultation_date: combinedConsultationDate,
+              chief_complaint: data.chiefComplaint,
+              diagnosis: data.diagnosis,
+              clinical_snapshot_json: JSON.stringify({
+                vitals,
+                time: consultTimePart,
+                consultationTime: consultTimePart,
+                consultationDate: consultDatePart,
+                symptomDuration: data.symptomDuration,
+                followUpDate: data.followUpDate,
+                followUpInstructions: data.followUpInstructions,
+                allergies: data.allergies ?? patient.allergies,
+                conditions: data.conditions ?? patient.conditions,
+                medicines: data.medicines,
+              }),
+            })
+          }
         }
 
         if (!savedRxRecord && consultationId) {

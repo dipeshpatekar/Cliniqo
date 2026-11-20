@@ -49,6 +49,7 @@ export function PatientProfile({
   desktopSession,
   onStartBill,
   onStartConsultation,
+  onResumeConsultation,
   onViewPrescription,
   onEditPatient,
   activeTab,
@@ -64,6 +65,10 @@ export function PatientProfile({
   desktopSession?: DesktopSessionContext | null
   onStartBill?: (patient: Patient, invoice?: LocalInvoiceRecord) => void
   onStartConsultation?: (patient: Patient) => void
+  onResumeConsultation?: (
+    patient: Patient,
+    draft: LocalConsultationRecord,
+  ) => void
   onViewPrescription?: (rx: LocalPrescriptionRecord) => void
   onEditPatient?: (patient: Patient) => void
   activeTab?: string
@@ -92,6 +97,9 @@ export function PatientProfile({
   const allergyLabel = allergyAnalysis.displayLabel
 
   const loadHistory = useCallback(async () => {
+    let matchedC: LocalConsultationRecord[] = []
+    let dedupedRx: LocalPrescriptionRecord[] = initialPrescriptions || []
+
     if (isTauriDesktop() && desktopSession?.clinic_id) {
       setLoadingHistory(true)
       try {
@@ -103,7 +111,7 @@ export function PatientProfile({
             () => [],
           ),
         ])
-        const matchedC = (cList || []).filter(
+        matchedC = (cList || []).filter(
           (c) =>
             c.patient_id === patient.id ||
             c.patient_id === patient.displayId ||
@@ -117,7 +125,7 @@ export function PatientProfile({
         )
         // Deduplicate prescriptions by unique record ID, or prescription number and revision number
         const seenKeys = new Set<string>()
-        const dedupedRx: LocalPrescriptionRecord[] = []
+        dedupedRx = []
         for (const r of matchedRx) {
           const key = r.id || `${r.prescription_number}_rev${r.revision_number}`
           if (!seenKeys.has(key)) {
@@ -125,19 +133,65 @@ export function PatientProfile({
             dedupedRx.push(r)
           }
         }
-        setConsultations(matchedC)
-        setPrescriptions(dedupedRx)
       } catch (err) {
         console.error("Failed to load patient history:", err)
       } finally {
         setLoadingHistory(false)
       }
     }
+
+    // Merge in any draft stored in localStorage (available in desktop & web mode)
+    let mergedConsultations = [...matchedC]
+    try {
+      const draftKey = `cliniqo_draft_consultation_${desktopSession?.clinic_id || "default"}_${patient.id}`
+      const localDraftRaw = window.localStorage.getItem(draftKey)
+      if (localDraftRaw) {
+        const parsed = JSON.parse(localDraftRaw)
+        if (
+          parsed &&
+          typeof parsed === "object" &&
+          (parsed.data || parsed.vitals)
+        ) {
+          const draftId =
+            parsed.consultationId || `draft_consult_${patient.id}`
+          const exists = mergedConsultations.some((c) => c.id === draftId)
+          if (!exists) {
+            const draftRecord: LocalConsultationRecord = {
+              id: draftId,
+              server_id: null,
+              clinic_id: desktopSession?.clinic_id || "default",
+              patient_id: patient.id,
+              doctor_id: desktopSession?.doctor_id || "doctor",
+              consultation_date: parsed.data?.date
+                ? `${parsed.data.date}T${parsed.data.time || "00:00"}`
+                : parsed.savedAt || new Date().toISOString(),
+              status: "DRAFT",
+              chief_complaint: parsed.data?.chiefComplaint || "",
+              diagnosis: parsed.data?.diagnosis || "",
+              clinical_snapshot_json: JSON.stringify({
+                vitals: parsed.vitals,
+                ...parsed.data,
+              }),
+              sync_status: "LOCAL_ONLY",
+              server_version: 0,
+              local_version: 1,
+              updated_at: parsed.savedAt || new Date().toISOString(),
+            }
+            mergedConsultations = [draftRecord, ...mergedConsultations]
+          }
+        }
+      }
+    } catch {}
+
+    setConsultations(mergedConsultations)
+    setPrescriptions(dedupedRx)
   }, [
     desktopSession?.clinic_id,
+    desktopSession?.doctor_id,
     patient.id,
     patient.displayId,
     patient.patientCode,
+    initialPrescriptions,
   ])
 
   useEffect(() => {
@@ -338,6 +392,7 @@ export function PatientProfile({
           {[
             "Overview",
             "Medical History",
+            "Consultations",
             "Prescriptions",
             "Invoices",
           ].map((item) => (
@@ -349,6 +404,9 @@ export function PatientProfile({
               onClick={() => handleSelectTab(item)}
             >
               {item}
+              {item === "Consultations" && consultations.length > 0 && (
+                <span>{consultations.length}</span>
+              )}
               {item === "Prescriptions" && <span>{prescriptions.length}</span>}
             </button>
           ))}
@@ -363,6 +421,7 @@ export function PatientProfile({
             prescriptions={prescriptions}
             onEditPatient={onEditPatient}
             onStartConsultation={onStartConsultation}
+            onResumeConsultation={onResumeConsultation}
           />
         )}
         {tab === "Medical History" && <HistoryTab patient={patient} />}
@@ -375,6 +434,7 @@ export function PatientProfile({
             loading={loadingHistory}
             desktopSession={desktopSession}
             onStartConsultation={onStartConsultation}
+            onResumeConsultation={onResumeConsultation}
           />
         )}
         {tab === "Prescriptions" && (

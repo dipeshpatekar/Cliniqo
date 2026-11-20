@@ -32,6 +32,7 @@ export function OverviewTab({
   prescriptions = [],
   onEditPatient,
   onStartConsultation,
+  onResumeConsultation,
 }: {
   go: (page: Page) => void
   patient: Patient
@@ -40,6 +41,10 @@ export function OverviewTab({
   prescriptions?: LocalPrescriptionRecord[]
   onEditPatient?: (patient: Patient) => void
   onStartConsultation?: (patient: Patient) => void
+  onResumeConsultation?: (
+    patient: Patient,
+    draft: LocalConsultationRecord,
+  ) => void
 }) {
   return (
     <div className="profile-grid">
@@ -187,7 +192,11 @@ export function OverviewTab({
                 <Button
                   size="sm"
                   variant="secondary"
-                  onClick={() => go(isDraft ? "consultation" : "preview")}
+                  onClick={() =>
+                    isDraft && onResumeConsultation
+                      ? onResumeConsultation(patient, entry)
+                      : go(isDraft ? "consultation" : "preview")
+                  }
                 >
                   {isDraft ? "Resume" : "Review"}
                 </Button>
@@ -251,6 +260,7 @@ export function ConsultationsTab({
   loading = false,
   desktopSession,
   onStartConsultation,
+  onResumeConsultation,
 }: {
   go: (page: Page) => void
   patient?: Patient
@@ -259,6 +269,10 @@ export function ConsultationsTab({
   loading?: boolean
   desktopSession?: DesktopSessionContext | null
   onStartConsultation?: (patient: Patient) => void
+  onResumeConsultation?: (
+    patient: Patient,
+    draft: LocalConsultationRecord,
+  ) => void
 }) {
   return (
     <section className="panel record-list">
@@ -291,7 +305,11 @@ export function ConsultationsTab({
           return (
             <button
               key={c.id}
-              onClick={() => go(isDraft ? "consultation" : "preview")}
+              onClick={() =>
+                isDraft && onResumeConsultation && patient
+                  ? onResumeConsultation(patient, c)
+                  : go(isDraft ? "consultation" : "preview")
+              }
             >
               <span className="record-icon">
                 <ClipboardList size={18} />

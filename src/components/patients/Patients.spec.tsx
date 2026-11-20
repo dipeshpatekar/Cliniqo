@@ -115,7 +115,7 @@ describe("Patient Components & UX", () => {
       expect(html).toContain("PC-1001")
       expect(html).toContain("Penicillin")
       expect(html).toContain("Type 2 Diabetes")
-      expect(html).toContain("Patient changes saved.")
+      expect(html).toContain("Patient saved")
       expect(html).toContain("Start consultation")
       expect(html).toContain("Create bill")
     })
@@ -531,7 +531,7 @@ describe("Patient Components & UX", () => {
       expect(formatPatientAgeGender(45, "Male", "yrs")).toBe("45 yrs · Male")
     })
 
-    it("displays finalized consultation date and time in Patients table and preserves 'No visits yet'", () => {
+    it("displays finalized consultation date and time in Patients table and never displays 'No visits yet'", () => {
       const patientWithVisit: Patient = {
         id: "PC-9902",
         name: "Cocakola",
@@ -550,7 +550,8 @@ describe("Patient Components & UX", () => {
         age: 67,
         gender: "Male",
         phone: "",
-        lastVisit: "No visits yet",
+        lastVisit: "2026-11-18T10:00:00.000Z",
+        registeredAt: "2026-11-18T10:00:00.000Z",
         allergies: [],
         conditions: [],
       }
@@ -568,8 +569,9 @@ describe("Patient Components & UX", () => {
       const html = rawHtml.replace(/<!-- -->/g, "")
       // Patient with finalized visit displays formatted date and time
       expect(html).toContain("10/11/2026")
-      // Patient without visit continues to display "No visits yet"
-      expect(html).toContain("No visits yet")
+      expect(html).toContain("18/11/2026")
+      // Never displays "No visits yet"
+      expect(html).not.toContain("No visits yet")
     })
 
     it("formats prescription date with finalized time accurately", () => {

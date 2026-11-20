@@ -20,6 +20,7 @@ export interface ViewingHistoricalPrescriptionState {
 export function resolvePrescriptionPreviewNavigation(
   currentPage: Page,
   previousReturnPage: PrescriptionPreviewReturnPage,
+  isFinalized = false,
 ): {
   returnPage: PrescriptionPreviewReturnPage
   clearHistorical: boolean
@@ -41,6 +42,12 @@ export function resolvePrescriptionPreviewNavigation(
   }
 
   if (currentPage === "consultation") {
+    if (isFinalized) {
+      return {
+        returnPage: "patient-profile",
+        clearHistorical: true,
+      }
+    }
     return {
       returnPage: "consultation",
       clearHistorical: true,
@@ -216,7 +223,7 @@ export function computePrescriptionPreviewState(
   isHistorical: boolean
 } {
   const isSamplePreview = returnPage === "settings"
-  const isHistorical = Boolean(viewingHistorical && returnPage === "patient-profile")
+  const isHistorical = Boolean(viewingHistorical)
   return { isSamplePreview, isHistorical }
 }
 

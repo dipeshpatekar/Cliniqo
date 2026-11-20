@@ -14,6 +14,7 @@ import {
 import {
   formatDateDDMMYYYY,
   formatDateTimeDDMMYYYY,
+  formatPatientVisitDateTime,
   formatPatientAge,
   formatPatientGender,
   getPublicPatientId,
@@ -489,10 +490,11 @@ export function PatientsPage({
                       </td>
                       <td>{patient.phone || "—"}</td>
                       <td>
-                        {patient.lastVisit &&
-                        patient.lastVisit !== "No visits yet"
-                          ? formatDateTimeDDMMYYYY(patient.lastVisit, true)
-                          : "No visits yet"}
+                        {formatPatientVisitDateTime(
+                          patient.lastVisit ||
+                            patient.registeredAt ||
+                            patient.createdAt,
+                        )}
                       </td>
                       <td>
                         <div className="row-actions">

@@ -5,6 +5,7 @@ import {
   formatDateDDMMYYYY,
   formatDateTimeDDMMYYYY,
   formatIndiaDateTime,
+  formatPatientVisitDateTime,
   formatPatientAge,
   formatPatientGender,
   getPublicPatientId,
@@ -107,10 +108,8 @@ export function OverviewTab({
             <dt>Consultation status</dt>
             <dd>
               {consultations.length > 0
-                ? `Last visit: ${formatDateTimeDDMMYYYY(consultations[0].consultation_date || consultations[0].updated_at, true) || "Recorded"}`
-                : hasHistory && patient.lastVisit !== "No visits yet"
-                  ? `Last visit: ${formatDateTimeDDMMYYYY(patient.lastVisit, true) || patient.lastVisit}`
-                  : "No consultations recorded"}
+                ? `Last visit: ${formatPatientVisitDateTime(consultations[0].consultation_date || consultations[0].updated_at) || "Recorded"}`
+                : `Last visit: ${formatPatientVisitDateTime(patient.lastVisit || patient.registeredAt || patient.createdAt)}`}
             </dd>
           </div>
         </dl>

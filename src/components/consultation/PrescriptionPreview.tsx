@@ -55,6 +55,7 @@ export interface PrescriptionPreviewProps {
   desktopSession?: DesktopSessionContext | null
   prescriptionRecord?: LocalPrescriptionRecord | null
   isHistorical?: boolean
+  isNewlyFinalized?: boolean
   onRevisePrescription?: (
     medicinesOrData: any,
     reasonForRevision?: string,
@@ -82,6 +83,7 @@ export function PrescriptionPreview({
   desktopSession,
   prescriptionRecord,
   isHistorical,
+  isNewlyFinalized,
   onRevisePrescription,
   itemsError,
   topSpacingMm = 0,
@@ -90,6 +92,9 @@ export function PrescriptionPreview({
   customChiefComplaints,
   customDiagnoses,
 }: PrescriptionPreviewProps) {
+  const isViewingHistorical = Boolean(
+    isHistorical ?? (!isNewlyFinalized && returnPage === "patient-profile"),
+  )
   const [whatsapp, setWhatsapp] = useState(false)
   const [delivery, setDelivery] =
     useState<"confirm" | "sending" | "queued" | "failed">("confirm")
@@ -196,7 +201,7 @@ export function PrescriptionPreview({
           returnPage === "settings"
             ? "Sample preview · Layout changes apply to all future prescriptions"
             : prescriptionRecord
-              ? returnPage === "patient-profile"
+              ? isViewingHistorical
                 ? `${
                     prescriptionRecord.revision_number > 1
                       ? `Revision ${prescriptionRecord.revision_number}`
@@ -294,7 +299,7 @@ export function PrescriptionPreview({
           <div className="preview-note">
             <AlertCircle size={17} />
             <span>
-              {returnPage === "patient-profile" ? (
+              {isViewingHistorical ? (
                 <>
                   Viewing finalized historical prescription{" "}
                   <strong>{prescriptionRecord.prescription_number}</strong> (
@@ -307,11 +312,7 @@ export function PrescriptionPreview({
                     : " Historical revisions are read-only."}
                 </>
               ) : (
-                <>
-                  Finalized prescription{" "}
-                  <strong>{prescriptionRecord.prescription_number}</strong>.
-                  Persisted to local encrypted storage.
-                </>
+                <>Prescription saved</>
               )}
             </span>
             {returnPage === "patient-profile" &&
@@ -877,7 +878,7 @@ export function PrescriptionPreview({
           onClose={() => setShowEditModal(false)}
           prescriptionNumber={prescriptionRecord.prescription_number}
           currentRevisionNumber={prescriptionRecord.revision_number}
-          isRevision={Boolean(isHistorical ?? (returnPage === "patient-profile"))}
+          isRevision={isViewingHistorical}
           initialMedicines={data.medicines}
           initialVitals={vitals}
           initialConsultationData={data}

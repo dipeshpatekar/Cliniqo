@@ -206,7 +206,10 @@ export function PatientForm({
         ageMonths: currentAgeMonths,
         gender: currentGender || "Other",
         phone: currentPhone,
-        lastVisit: patient?.lastVisit || "No visits yet",
+        lastVisit:
+          patient?.lastVisit && patient.lastVisit !== "No visits yet"
+            ? patient.lastVisit
+            : currentRegisteredAt || new Date().toISOString(),
         allergies: patient?.allergies || [],
         conditions: patient?.conditions || [],
         dateOfBirth: currentDateOfBirth,
@@ -384,7 +387,10 @@ export function PatientForm({
                 : (patient?.ageMonths ?? 0),
             gender: String(data.get("gender") || patient?.gender || "").trim(),
             phone: phone.trim() ? phone.trim() : patient?.phone || "",
-            lastVisit: patient?.lastVisit || "No visits yet",
+            lastVisit:
+              patient?.lastVisit && patient.lastVisit !== "No visits yet"
+                ? patient.lastVisit
+                : registeredAtVal || currentRegisteredAt || new Date().toISOString(),
             allergies: patient?.allergies || [],
             conditions: patient?.conditions || [],
             dateOfBirth: String(

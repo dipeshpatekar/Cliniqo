@@ -13,6 +13,7 @@ import {
   formatDateDDMMYYYY,
   formatDateTimeDDMMYYYY,
   formatIndiaDateTime,
+  formatPatientVisitDateTime,
   formatPatientAgeGender,
   getPublicPatientId,
   type Page,
@@ -206,9 +207,9 @@ export function PatientProfile({
   const effectiveLastVisit =
     patient.lastVisit && patient.lastVisit !== "No visits yet"
       ? patient.lastVisit
-      : consultations.length > 0
-        ? consultations[0].consultation_date || consultations[0].updated_at
-        : "No visits yet"
+      : consultations.filter((c) => c.status !== "DRAFT").length > 0
+        ? consultations.filter((c) => c.status !== "DRAFT")[0].consultation_date || consultations[0].updated_at
+        : patient.registeredAt || patient.createdAt || new Date().toISOString()
 
   const effectiveRegisteredAt = patient.registeredAt || patient.createdAt
 
@@ -291,16 +292,7 @@ export function PatientProfile({
           <div className="success-banner" role="status" aria-live="polite">
             <CheckCircle2 size={19} />
             <div>
-              <strong>
-                {saveFeedback === "added"
-                  ? "Patient added successfully."
-                  : "Patient changes saved."}
-              </strong>
-              <span>
-                {saveFeedback === "added"
-                  ? "The local patient record is ready for this session."
-                  : "The existing local record was updated without changing its patient ID."}
-              </span>
+              <strong>Patient saved</strong>
             </div>
           </div>
         )}
@@ -351,9 +343,7 @@ export function PatientProfile({
               </p>
               <span className="last-seen">
                 <CalendarDays size={14} />{" "}
-                {effectiveLastVisit === "No visits yet"
-                  ? "No consultations yet"
-                  : `Last visit ${formatDateTimeDDMMYYYY(effectiveLastVisit, true) || effectiveLastVisit}`}
+                {`Last visit ${formatPatientVisitDateTime(effectiveLastVisit)}`}
               </span>
             </div>
           </div>

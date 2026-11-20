@@ -1573,7 +1573,7 @@ describe("Consultation Components & UX", () => {
       expect(html).not.toContain("RX-PREVIEW")
       // Header and note must show finalized persisted status
       expect(html).toContain("Prescription RX-884920")
-      expect(html).toContain("Finalized prescription <strong>RX-884920</strong>. Persisted to local encrypted storage.")
+      expect(html).toContain("Prescription saved")
     })
 
     it("displays fallback prescriptionNumber from consultation data if present", () => {

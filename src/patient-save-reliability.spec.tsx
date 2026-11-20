@@ -579,7 +579,7 @@ describe("Cliniqo Patient Save Reliability & Diagnostic Error Reporting", () => 
 
   describe("Patient Visit Tracking & Registration DateTime Separation", () => {
     it("preserves registration date & time and keeps it distinguishable from consultation last visit", async () => {
-      const { mapLocalRecordToPatient, formatDateTimeDDMMYYYY, formatIndiaDateTime } = await import("./types")
+      const { mapLocalRecordToPatient, formatDateTimeDDMMYYYY, formatIndiaDateTime, formatPatientVisitDateTime } = await import("./types")
       const { PatientProfile } = await import("./components/patients/PatientProfile")
 
       const regDate = "2026-11-18T09:30:00"
@@ -614,9 +614,10 @@ describe("Cliniqo Patient Save Reliability & Diagnostic Error Reporting", () => 
 
       const patient = mapLocalRecordToPatient(newPatientRec)
       expect(patient.registeredAt).toBe(regDate)
-      expect(patient.lastVisit).toBe("No visits yet")
+      // When a new patient is registered, lastVisit is initialized with their registration timestamp
+      expect(patient.lastVisit).toBe(regDate)
 
-      // In Patient Profile, newly created patient displays registration time and 'No consultations yet'
+      // In Patient Profile, newly created patient displays registration time and formatted last visit, not 'No consultations yet'
       const htmlInitial = renderToString(
         <PatientProfile
           go={() => {}}
@@ -624,7 +625,9 @@ describe("Cliniqo Patient Save Reliability & Diagnostic Error Reporting", () => 
           saveFeedback={null}
         />,
       )
-      expect(htmlInitial).toContain("No consultations yet")
+      expect(htmlInitial).not.toContain("No consultations yet")
+      expect(htmlInitial).toContain("Last visit")
+      expect(htmlInitial).toContain(formatPatientVisitDateTime(regDate))
       expect(htmlInitial).toContain("Registered")
       expect(htmlInitial).toContain(formatIndiaDateTime(regDate))
 
@@ -645,7 +648,7 @@ describe("Cliniqo Patient Save Reliability & Diagnostic Error Reporting", () => 
       )
 
       expect(htmlAfter).toContain("Last visit")
-      expect(htmlAfter).toContain(formatDateTimeDDMMYYYY(consultDate, true))
+      expect(htmlAfter).toContain(formatPatientVisitDateTime(consultDate))
       expect(htmlAfter).toContain(formatIndiaDateTime(regDate))
       // Registration date and last visit date must remain distinguishable
       expect(patientAfterVisit.registeredAt).not.toEqual(patientAfterVisit.lastVisit)

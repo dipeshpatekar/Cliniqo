@@ -715,6 +715,46 @@ export function formatIndiaDateTime(
   return formatDateTimeDDMMYYYY(input, true)
 }
 
+export function formatPatientVisitDateTime(
+  input?: string | Date | number | null,
+): string {
+  if (!input) return ""
+  if (typeof input === "string") {
+    const trimmed = input.trim()
+    if (!trimmed || trimmed === "No visits yet" || trimmed === "Not visited yet") {
+      return ""
+    }
+    // If it's already in DD/MM/YYYY · hh:mm A or DD/MM/YYYY, hh:mm A
+    if (/^\d{2}\/\d{2}\/\d{4}\s*[·,]\s*\d{1,2}:\d{2}\s*[AaPp][Mm]$/.test(trimmed)) {
+      return trimmed.replace(/\s*,\s*/, " · ")
+    }
+  }
+
+  const d = parseIndiaDateTime(input)
+  if (!d || isNaN(d.getTime())) {
+    return typeof input === "string" ? input.trim() : ""
+  }
+
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: INDIA_TIME_ZONE,
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: true,
+  }).formatToParts(d)
+  const map: Record<string, string> = {}
+  for (const p of parts) map[p.type] = p.value
+  const dateStr = `${map.day}/${map.month}/${map.year}`
+  if (!map.hour || !map.minute) {
+    return dateStr
+  }
+  const period = (map.dayPeriod || "").toUpperCase()
+  const timeStr = `${map.hour}:${map.minute} ${period}`.trim()
+  return `${dateStr} · ${timeStr}`
+}
+
 export function formatTime12Hour(time?: string | null): string {
   if (!time || !time.trim()) return ""
   const trimmedTime = time.trim()
@@ -1034,6 +1074,11 @@ export function mapLocalRecordToPatient(rec: LocalPatientRecord): Patient {
     }
   }
 
+  const effectiveLastVisit =
+    rec.last_visit && rec.last_visit !== "No visits yet"
+      ? rec.last_visit
+      : registeredAt || rec.created_at || rec.updated_at || new Date().toISOString()
+
   return {
     id: rec.id,
     displayId,
@@ -1044,7 +1089,7 @@ export function mapLocalRecordToPatient(rec: LocalPatientRecord): Patient {
     ageMonths,
     gender: rec.gender && rec.gender.trim() ? rec.gender.trim() : "",
     phone: rec.phone || "",
-    lastVisit: rec.last_visit || "No visits yet",
+    lastVisit: effectiveLastVisit,
     allergies: Array.isArray(rec.allergies) ? rec.allergies : [],
     conditions: Array.isArray(rec.conditions) ? rec.conditions : [],
     dateOfBirth: rec.date_of_birth || undefined,

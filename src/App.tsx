@@ -306,6 +306,7 @@ export default function App({
     useState<PrescriptionPreviewReturnPage>(
       initialPrescriptionPreviewReturnPage,
     )
+  const hasFinalizedActiveConsultationRef = useRef<boolean>(false)
   const [viewingHistoricalPrescription, setViewingHistoricalPrescription] =
     useState<ViewingHistoricalPrescriptionState | null>(
       initialViewingHistoricalPrescription,
@@ -1050,10 +1051,12 @@ export default function App({
     }
 
     if (next === "preview") {
+      const isFinalized = hasFinalizedActiveConsultationRef.current
       const { returnPage, clearHistorical, settingsTab } =
         resolvePrescriptionPreviewNavigation(
           page,
           prescriptionPreviewReturnPage,
+          isFinalized,
         )
       setPrescriptionPreviewReturnPage(returnPage)
       if (settingsTab) {
@@ -1062,6 +1065,9 @@ export default function App({
       if (clearHistorical) {
         setViewingHistoricalPrescription(null)
       }
+    }
+    if (next !== "preview") {
+      hasFinalizedActiveConsultationRef.current = false
     }
     if (shouldClearHistoricalPrescriptionOnNavigation(next)) {
       setViewingHistoricalPrescription(null)
@@ -1980,6 +1986,21 @@ export default function App({
         )
       }
 
+      const regTime =
+        patient.registeredAt ||
+        effectivePatient.registeredAt ||
+        getIndiaDateTimeLocalString()
+      effectivePatient = {
+        ...effectivePatient,
+        registeredAt: regTime,
+        lastVisit:
+          effectivePatient.lastVisit && effectivePatient.lastVisit !== "No visits yet"
+            ? effectivePatient.lastVisit
+            : patient.lastVisit && patient.lastVisit !== "No visits yet"
+              ? patient.lastVisit
+              : regTime,
+      }
+
       setPatientRecords((records) => [
         effectivePatient,
         ...records.filter(
@@ -2616,6 +2637,8 @@ export default function App({
         onAddCustomDiagnosis={handleAddCustomDiagnosis}
         onFinalized={(_consultationId, finalizedTimestamp, rxRecord) => {
           setActiveDraftConsultationId(null)
+          hasFinalizedActiveConsultationRef.current = true
+          setPrescriptionPreviewReturnPage("patient-profile")
           if (consultationData.chiefComplaint?.trim()) {
             handleAddCustomChiefComplaint(consultationData.chiefComplaint)
           }
@@ -2623,16 +2646,29 @@ export default function App({
             handleAddCustomDiagnosis(consultationData.diagnosis)
           }
           const visitTimestamp = finalizedTimestamp || new Date().toISOString()
-          setSelectedPatient((prev) => ({
-            ...prev,
-            lastVisit: visitTimestamp,
-          }))
+          setSelectedPatient((prev) => {
+            const currentVisitTime = prev.lastVisit ? Date.parse(prev.lastVisit) : 0
+            const newVisitTime = Date.parse(visitTimestamp)
+            const effectiveTime =
+              isNaN(newVisitTime) || isNaN(currentVisitTime) || newVisitTime >= currentVisitTime
+                ? visitTimestamp
+                : prev.lastVisit
+            return {
+              ...prev,
+              lastVisit: effectiveTime,
+            }
+          })
           setPatientRecords((prev) =>
-            prev.map((p) =>
-              p.id === selectedPatient.id
-                ? { ...p, lastVisit: visitTimestamp }
-                : p,
-            ),
+            prev.map((p) => {
+              if (p.id !== selectedPatient.id) return p
+              const currentVisitTime = p.lastVisit ? Date.parse(p.lastVisit) : 0
+              const newVisitTime = Date.parse(visitTimestamp)
+              const effectiveTime =
+                isNaN(newVisitTime) || isNaN(currentVisitTime) || newVisitTime >= currentVisitTime
+                  ? visitTimestamp
+                  : p.lastVisit
+              return { ...p, lastVisit: effectiveTime }
+            }),
           )
           if (rxRecord) {
             setActiveConsultationPrescriptionRecord(rxRecord)
@@ -2723,6 +2759,10 @@ export default function App({
       />
     )
   } else if (page === "preview") {
+    const isNewlyFinalized = Boolean(
+      hasFinalizedActiveConsultationRef.current ||
+        (!viewingHistoricalPrescription && activeConsultationPrescriptionRecord),
+    )
     const { isSamplePreview, isHistorical } = computePrescriptionPreviewState(
       prescriptionPreviewReturnPage,
       viewingHistoricalPrescription,
@@ -2760,6 +2800,7 @@ export default function App({
             : activeConsultationPrescriptionRecord
         }
         isHistorical={isHistorical}
+        isNewlyFinalized={isNewlyFinalized}
         onRevisePrescription={
           isHistorical
             ? handleRevisePrescription

@@ -107,8 +107,11 @@ export function Field({
   )
 }
 
-export function TextInput(props: React.InputHTMLAttributes<HTMLInputElement>) {
-  return <input className="input" {...props} />
+export function TextInput({
+  className,
+  ...props
+}: React.InputHTMLAttributes<HTMLInputElement>) {
+  return <input className={cn("input", className)} {...props} />
 }
 
 export function SelectInput(
@@ -708,3 +711,47 @@ export function ConfirmDialog({
 export { ShortcutGuideModal } from "./ShortcutGuideModal"
 export { GlobalSearchModal, GlobalPatientSearch } from "./GlobalSearchModal"
 export type { GlobalPatientSearchProps } from "./GlobalSearchModal"
+
+export interface SavedBookmarkIconProps extends React.SVGProps<SVGSVGElement> {
+  size?: number
+  width?: number | string
+  height?: number | string
+  className?: string
+  color?: string
+}
+
+export function SavedBookmarkIcon({
+  size,
+  width,
+  height,
+  className,
+  color,
+  style,
+  ...props
+}: SavedBookmarkIconProps) {
+  const computedWidth = width ?? (size ? Math.round(size * 0.84) : 16)
+  const computedHeight = height ?? (size ?? 19)
+
+  return (
+    <svg
+      width={computedWidth}
+      height={computedHeight}
+      viewBox="0 0 20 24"
+      fill={color || "currentColor"}
+      xmlns="http://www.w3.org/2000/svg"
+      className={cn("saved-bookmark-icon shrink-0", className)}
+      aria-hidden="true"
+      style={{
+        display: "inline-block",
+        verticalAlign: "middle",
+        flexShrink: 0,
+        ...style,
+      }}
+      {...props}
+    >
+      <path d="M 5.5 2 L 14.5 2 C 16.43 2 18 3.57 18 5.5 L 18 19.5 C 18 21.1 16.6 22.3 15.1 22.1 C 14.2 22.0 13.4 21.4 12.8 20.8 L 10 17.2 L 7.2 20.8 C 6.6 21.4 5.8 22.0 4.9 22.1 C 3.4 22.3 2 21.1 2 19.5 L 2 5.5 C 2 3.57 3.57 2 5.5 2 Z" />
+    </svg>
+  )
+}
+
+export const BookmarkSuccessIcon = SavedBookmarkIcon

@@ -147,6 +147,8 @@ describe("Patient Components & UX", () => {
       expect(html).toMatch(/autofocus/i)
       expect(html).not.toContain("Patient record integrity")
       expect(html).not.toContain("Encrypted offline persistence")
+      expect(html).toContain("patient-form-bottom-actions")
+      expect(html).not.toMatch(/<div class="patient-form-actions"[^>]*>[\s\S]*?<strong>Save patient<\/strong>/)
     })
 
     it("renders prefilled form fields for editing an existing patient", () => {
@@ -215,6 +217,25 @@ describe("Patient Components & UX", () => {
       expect(editHtml).toContain("Mobile number")
       expect(editHtml).toContain("Alternate phone")
       expect(editHtml).toContain("Address")
+    })
+
+    it("disables Enter key form submission on Add New Patient page while preserving textareas and Save button", async () => {
+      const fs = await import("fs")
+      const patientFormSrc = fs.readFileSync(
+        "src/components/patients/PatientForm.tsx",
+        "utf8",
+      )
+      // Must contain onKeyDown handler on form
+      expect(patientFormSrc).toContain("onKeyDown={handleFormKeyDown}")
+      // Handler must check !editing so it only applies on Add New Patient
+      expect(patientFormSrc).toMatch(/!editing\s*&&\s*\(/)
+      expect(patientFormSrc).toContain('event.key === "Enter"')
+      // Must preserve multiline textareas
+      expect(patientFormSrc).toContain('tagName === "textarea"')
+      // Must preserve buttons
+      expect(patientFormSrc).toContain('tagName === "button"')
+      // Must call preventDefault
+      expect(patientFormSrc).toContain("event.preventDefault()")
     })
   })
 

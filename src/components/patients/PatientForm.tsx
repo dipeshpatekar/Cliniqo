@@ -5,6 +5,7 @@ import {
   Field,
   FormSection,
   IconButton,
+  SavedBookmarkIcon,
   SelectInput,
   TextArea,
   TextInput,
@@ -439,6 +440,27 @@ export function PatientForm({
     await performSave(submitter?.value === "consultation")
   }
 
+  const handleFormKeyDown = (event: React.KeyboardEvent<HTMLFormElement>) => {
+    // Only apply on the Add New Patient page (!editing)
+    if (!editing && (event.key === "Enter" || event.keyCode === 13)) {
+      if (event.nativeEvent?.isComposing) {
+        return
+      }
+      const target = event.target as HTMLElement | null
+      const tagName = target?.tagName?.toLowerCase()
+      // Ensure multiline text fields retain their normal Enter/newline behavior
+      if (tagName === "textarea") {
+        return
+      }
+      // Allow explicit keyboard activation on buttons
+      if (tagName === "button") {
+        return
+      }
+      // Prevent unintended Enter-key form submission from input fields
+      event.preventDefault()
+    }
+  }
+
   useEffect(() => {
     const handleShortcut = (e: Event) => {
       const customEvent = e as CustomEvent<{ action: string }>
@@ -504,7 +526,7 @@ export function PatientForm({
             className="autosave-status text-xs text-emerald-600 dark:text-emerald-400 flex items-center gap-1.5 px-2 py-1"
             role="status"
           >
-            <Check size={13} /> Saved
+            <SavedBookmarkIcon size={13} className="shrink-0 text-emerald-600 dark:text-emerald-400" /> Saved
           </span>
         )}
         {autoSaveStatus === "error" && (
@@ -548,6 +570,7 @@ export function PatientForm({
         id="patient-form"
         className="page-content form-page"
         onSubmit={submit}
+        onKeyDown={handleFormKeyDown}
         onChange={triggerDebouncedAutoSave}
         onInput={triggerDebouncedAutoSave}
         onBlurCapture={handleBlurCapture}
@@ -809,13 +832,10 @@ export function PatientForm({
             </div>
           </FormSection>
 
-          <div className="patient-form-actions">
-            <div>
-              <strong>{editing ? "Save changes" : "Save patient"}</strong>
-            </div>
+          <div className="patient-form-bottom-actions">
             <Button
               type="submit"
-              variant="secondary"
+              variant="primary"
               value="profile"
               disabled={isSaving}
               loading={isSaving}

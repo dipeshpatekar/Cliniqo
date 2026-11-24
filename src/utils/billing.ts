@@ -34,26 +34,50 @@ export function computeBillTotals(
   }
 }
 
+export function isMedicineEmpty(med?: Partial<Medicine> | null): boolean {
+  if (!med) return true
+  const name = (med.name || "").trim()
+  const formulation = (med.formulation || "").trim()
+  const dose = (med.dose != null ? String(med.dose) : "").trim()
+  const strength = (med.strength || "").trim()
+  const route = (med.route || "").trim()
+  const directions = (med.directions || "").trim()
+  const frequency = (med.frequency || "").trim()
+  const duration = (med.duration || "").trim()
+  return !name && !formulation && !dose && !strength && !route && !directions && !frequency && !duration
+}
+
 export function validateMedicineFormulation(
   med: Partial<Medicine>,
 ): { valid: boolean; error?: string } {
-  if (!med.formulation) {
+  if (!med) {
+    return { valid: false, error: "Medicine data is missing" }
+  }
+  const formulation = (med.formulation || "").trim()
+  if (!formulation) {
     return { valid: false, error: "Formulation is required" }
   }
-  if (!med.name || !med.name.trim()) {
+  const name = (med.name || "").trim()
+  if (!name) {
     return { valid: false, error: "Medicine name is required" }
   }
 
-  const f = med.formulation.toLowerCase()
+  const dose = med.dose != null ? String(med.dose).trim() : ""
+  const frequency = med.frequency != null ? String(med.frequency).trim() : ""
+  const duration = med.duration != null ? String(med.duration).trim() : ""
+  const route = med.route != null ? String(med.route).trim() : ""
+  const directions = med.directions != null ? String(med.directions).trim() : ""
+
+  const f = formulation.toLowerCase()
 
   if (f.includes("injection")) {
-    if (!med.route || !med.route.trim()) {
+    if (!route) {
       return {
         valid: false,
         error: "Route (IV, IM, SC, ID) required for injection",
       }
     }
-    if (!med.dose || !med.dose.trim()) {
+    if (!dose) {
       return { valid: false, error: "Dose required for injection" }
     }
   } else if (
@@ -63,47 +87,47 @@ export function validateMedicineFormulation(
     f.includes("lotion") ||
     f.includes("topical")
   ) {
-    if (!med.directions || !med.directions.trim()) {
+    if (!directions) {
       return {
         valid: false,
         error: "Application instructions required for topical",
       }
     }
-    if (!med.frequency || !med.frequency.trim()) {
+    if (!frequency) {
       return { valid: false, error: "Frequency required for topical" }
     }
-    if (!med.duration || !med.duration.trim()) {
+    if (!duration) {
       return { valid: false, error: "Duration required for topical" }
     }
   } else if (f.includes("drop")) {
-    if (!med.dose || !med.dose.trim()) {
+    if (!dose) {
       return { valid: false, error: "Dose (drops) required" }
     }
-    if (!med.frequency || !med.frequency.trim()) {
+    if (!frequency) {
       return { valid: false, error: "Frequency required" }
     }
-    if (!med.duration || !med.duration.trim()) {
+    if (!duration) {
       return { valid: false, error: "Duration required" }
     }
   } else if (f.includes("inhaler")) {
-    if (!med.dose || !med.dose.trim()) {
+    if (!dose) {
       return { valid: false, error: "Dose (puffs) required" }
     }
-    if (!med.frequency || !med.frequency.trim()) {
+    if (!frequency) {
       return { valid: false, error: "Frequency required" }
     }
-    if (!med.duration || !med.duration.trim()) {
+    if (!duration) {
       return { valid: false, error: "Duration required" }
     }
   } else {
     // Tablets, Capsules, Syrups, Suspensions
-    if (!med.dose || !med.dose.trim()) {
+    if (!dose) {
       return { valid: false, error: "Dose required" }
     }
-    if (!med.frequency || !med.frequency.trim()) {
+    if (!frequency) {
       return { valid: false, error: "Frequency required" }
     }
-    if (!med.duration || !med.duration.trim()) {
+    if (!duration) {
       return { valid: false, error: "Duration required" }
     }
   }

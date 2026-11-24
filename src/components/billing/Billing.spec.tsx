@@ -260,5 +260,57 @@ describe("Billing Components & UX", () => {
       expect(html).toContain("opacity-50 cursor-not-allowed")
       expect(html).toContain("disabled")
     })
+
+    it("renders 'Back to patient profile' label when bill is finalized", () => {
+      const rawHtml = renderToString(
+        <BillPreview
+          go={() => {}}
+          patient={samplePatient}
+          bill={finalizedBill}
+          bannerImage={null}
+          signatureImage={null}
+          layout={defaultLayout}
+          returnPage="bill-form"
+        />,
+      )
+      const html = rawHtml.replace(/<!-- -->/g, "")
+      expect(html).toContain("Back to patient profile")
+    })
+
+    it("renders 'Back to bill settings' label when returnPage is settings", () => {
+      const rawHtml = renderToString(
+        <BillPreview
+          go={() => {}}
+          patient={samplePatient}
+          bill={finalizedBill}
+          bannerImage={null}
+          signatureImage={null}
+          layout={defaultLayout}
+          returnPage="settings"
+        />,
+      )
+      const html = rawHtml.replace(/<!-- -->/g, "")
+      expect(html).toContain("Back to bill settings")
+    })
+
+    it("renders 'Back to bill' label when draft is not finalized and returnPage is bill-form", () => {
+      const draftBill: BillData = {
+        ...finalizedBill,
+        status: "DRAFT",
+      }
+      const rawHtml = renderToString(
+        <BillPreview
+          go={() => {}}
+          patient={samplePatient}
+          bill={draftBill}
+          bannerImage={null}
+          signatureImage={null}
+          layout={defaultLayout}
+          returnPage="bill-form"
+        />,
+      )
+      const html = rawHtml.replace(/<!-- -->/g, "")
+      expect(html).toContain("Back to bill")
+    })
   })
 })

@@ -2,7 +2,6 @@ import { useState, useEffect, useMemo, useRef } from "react"
 import {
   ArrowLeft,
   Check,
-  CheckCircle2,
   ExternalLink,
   CalendarDays,
   Activity,
@@ -27,6 +26,7 @@ import type {
 } from "../../types"
 import {
   emptyMedicine,
+  normalizeMedicineList,
   getDoseConfig,
   topicalFormulations,
   medicineOptions,
@@ -46,7 +46,7 @@ import {
   FORMULATION_LETTER_MAP,
   addClinicalLibraryItem,
 } from "../../types"
-import { validateMedicineFormulation } from "../../utils/billing"
+import { validateMedicineFormulation, isMedicineEmpty } from "../../utils/billing"
 import { analyzeAllergies } from "../../utils/allergy"
 import { FREQUENCY_NUMERIC_MAP } from "../../utils/keyboardShortcuts"
 import {
@@ -59,6 +59,7 @@ import {
   type SearchOptionItem,
   FormSection,
   TextArea,
+  SavedBookmarkIcon,
 } from "../common"
 import { AppHeader } from "../layout"
 import { CompactField } from "./CompactField"
@@ -261,25 +262,38 @@ export function Consultation({
       if (savedDraft) {
         const parsed = JSON.parse(savedDraft)
         if (parsed && typeof parsed === "object") {
-          hasDraft = true
-          if (parsed.consultationId && typeof parsed.consultationId === "string") {
-            draftConsultationIdRef.current = parsed.consultationId
-          }
-          if (parsed.data) {
-            onDataChange(parsed.data)
-            if (parsed.data.conditions) {
-              setConditionsInput(parsed.data.conditions.join(", "))
+          const draftIdMatches =
+            !activeDraftConsultationId ||
+            !parsed.consultationId ||
+            parsed.consultationId === activeDraftConsultationId
+
+          if (draftIdMatches) {
+            hasDraft = true
+            if (parsed.consultationId && typeof parsed.consultationId === "string") {
+              draftConsultationIdRef.current = parsed.consultationId
             }
-            if (parsed.data.allergies) {
-              setAllergiesInput(parsed.data.allergies.join(", "))
+            if (parsed.data) {
+              const normalizedData = {
+                ...parsed.data,
+                medicines: Array.isArray(parsed.data.medicines)
+                  ? normalizeMedicineList(parsed.data.medicines)
+                  : [],
+              }
+              onDataChange(normalizedData)
+              if (parsed.data.conditions) {
+                setConditionsInput(parsed.data.conditions.join(", "))
+              }
+              if (parsed.data.allergies) {
+                setAllergiesInput(parsed.data.allergies.join(", "))
+              }
             }
+            if (parsed.vitals) {
+              Object.entries(parsed.vitals).forEach(([k, v]) => {
+                onVitalsChange(k as keyof Vitals, String(v))
+              })
+            }
+            setAutoSaveStatus("saved")
           }
-          if (parsed.vitals) {
-            Object.entries(parsed.vitals).forEach(([k, v]) => {
-              onVitalsChange(k as keyof Vitals, String(v))
-            })
-          }
-          setAutoSaveStatus("saved")
         }
       }
     } catch {}
@@ -816,11 +830,16 @@ export function Consultation({
     }
   }, [data.date])
 
-  const medicinesValid = data.medicines.every(
-    (m) => validateMedicineFormulation(m).valid,
+  const activeMedicines = useMemo(
+    () => data.medicines.filter((m) => !isMedicineEmpty(m)),
+    [data.medicines],
+  )
+  const medicinesValid = useMemo(
+    () => activeMedicines.every((m) => validateMedicineFormulation(m).valid),
+    [activeMedicines],
   )
   const consultationComplete = Boolean(
-    data.medicines.length === 0 || medicinesValid,
+    activeMedicines.length === 0 || medicinesValid,
   )
 
   const updateMedicine = (id: number, key: keyof Medicine, value: string) =>
@@ -1382,7 +1401,56 @@ export function Consultation({
   const handleTriggerFinalize = async () => {
     if (isFinalizingRef.current || isFinalizing) return
     setHasAttemptedSubmit(true)
-    if (!consultationComplete) return
+    setFinalizeError(null)
+
+    // Prune completely untouched empty rows
+    const nonBlankMedicines = data.medicines.filter((m) => !isMedicineEmpty(m))
+    if (nonBlankMedicines.length !== data.medicines.length) {
+      updateData({ medicines: nonBlankMedicines })
+    }
+
+    // Validate active medicines
+    const invalidMedicines: { index: number; name: string; error: string }[] = []
+    nonBlankMedicines.forEach((m, idx) => {
+      const v = validateMedicineFormulation(m)
+      if (!v.valid) {
+        invalidMedicines.push({
+          index: idx + 1,
+          name: m.name && m.name.trim() ? m.name.trim() : `Medicine #${idx + 1}`,
+          error: v.error || "Incomplete medication details",
+        })
+      }
+    })
+
+    if (invalidMedicines.length > 0) {
+      const errorMsg = invalidMedicines
+        .map((im) => `${im.name}: ${im.error}`)
+        .join("; ")
+      setFinalizeError(
+        `Cannot finalize prescription: Please complete required medication details — ${errorMsg}`,
+      )
+
+      // Scroll to the first invalid medicine element
+      const firstInvalid = invalidMedicines[0]
+      const targetMed = nonBlankMedicines[firstInvalid.index - 1]
+      if (targetMed) {
+        const el =
+          document.getElementById(`formulation-${targetMed.id}`) ||
+          document.getElementById(`medicine-${targetMed.id}`) ||
+          document.getElementById(`dose-${targetMed.id}`)
+        el?.scrollIntoView({ behavior: "smooth", block: "center" })
+        el?.focus()
+      }
+      return
+    }
+
+    if (!consultationComplete && nonBlankMedicines.length > 0) {
+      setFinalizeError(
+        "Please fill in all required fields before finalizing the prescription.",
+      )
+      return
+    }
+
     await handleFinalize()
   }
 
@@ -1403,8 +1471,7 @@ export function Consultation({
         handleSaveDraftRef.current()
       } else if (
         action === "finalize-prescription" ||
-        action === "consultation-ctrl-p" ||
-        action === "print"
+        action === "consultation-ctrl-p"
       ) {
         handleTriggerFinalizeRef.current()
       } else if (action === "add-medicine") {
@@ -1463,7 +1530,7 @@ export function Consultation({
     const handleKeyDown = (e: KeyboardEvent) => {
       if (
         (e.ctrlKey || e.metaKey) &&
-        e.key.toLowerCase() === "p" &&
+        (e.key.toLowerCase() === "p" || e.key.toLowerCase() === "f") &&
         !e.shiftKey
       ) {
         if (!e.defaultPrevented) {
@@ -1507,7 +1574,7 @@ export function Consultation({
             className="autosave-status text-xs text-emerald-600 dark:text-emerald-400 flex items-center gap-1.5 px-2 py-1"
             role="status"
           >
-            <Check size={13} /> Saved
+            <SavedBookmarkIcon size={13} className="shrink-0 text-emerald-600 dark:text-emerald-400" /> Saved
           </span>
         )}
         {autoSaveStatus === "error" && (
@@ -1533,7 +1600,7 @@ export function Consultation({
         >
           {saved ? (
             <>
-              <Check size={16} /> Session draft updated
+              <SavedBookmarkIcon size={16} className="shrink-0 mr-1.5" /> Session draft updated
             </>
           ) : (
             "Update local draft"
@@ -1634,7 +1701,7 @@ export function Consultation({
           </div>
 
           <section className="form-section consultation-datetime-section">
-            <div className="consultation-datetime-row flex flex-wrap lg:flex-nowrap items-center justify-between gap-4">
+            <div className="consultation-datetime-row flex flex-wrap sm:flex-nowrap items-center justify-between gap-4">
               <div className="form-section-head flex items-center gap-3 shrink-0 mb-0">
                 <span>
                   <CalendarDays size={18} />
@@ -1643,35 +1710,27 @@ export function Consultation({
                   <h2>Consultation date and time</h2>
                 </div>
               </div>
-              <div className="flex flex-wrap sm:flex-nowrap items-center gap-4 grow justify-end">
-                <Field
-                  label="Consultation date"
+              <div className="consultation-datetime-inputs flex flex-wrap sm:flex-nowrap items-center gap-3 shrink-0">
+                <TextInput
+                  type="date"
                   required
-                  className="w-full sm:w-auto min-w-[170px]"
-                >
-                  <TextInput
-                    type="date"
-                    required
-                    value={data.date}
-                    onChange={(event) =>
-                      updateData({ date: event.target.value })
-                    }
-                  />
-                </Field>
-                <Field
-                  label="Consultation time"
+                  aria-label="Consultation date"
+                  value={data.date}
+                  onChange={(event) =>
+                    updateData({ date: event.target.value })
+                  }
+                  className="consultation-date-input"
+                />
+                <TextInput
+                  type="time"
                   required
-                  className="w-full sm:w-auto min-w-[150px]"
-                >
-                  <TextInput
-                    type="time"
-                    required
-                    value={data.time}
-                    onChange={(event) =>
-                      updateData({ time: event.target.value })
-                    }
-                  />
-                </Field>
+                  aria-label="Consultation time"
+                  value={data.time}
+                  onChange={(event) =>
+                    updateData({ time: event.target.value })
+                  }
+                  className="consultation-time-input"
+                />
               </div>
             </div>
           </section>
@@ -1773,10 +1832,7 @@ export function Consultation({
 
           <FormSection icon={Activity} title="Medical background">
             <div className="form-grid two">
-              <Field
-                label="Known allergies"
-                hint="Optional, comma-separated (e.g. Penicillin, or 'None' / 'NKDA')"
-              >
+              <Field label="Known allergies">
                 <TextArea
                   value={allergiesInput}
                   onChange={(e) => handleAllergiesChange(e.target.value)}
@@ -1828,7 +1884,7 @@ export function Consultation({
                   </div>
                 )}
               </Field>
-              <Field label="Medical History" hint="Optional, comma-separated">
+              <Field label="Medical History">
                 <TextArea
                   value={conditionsInput}
                   onChange={(e) => handleConditionsChange(e.target.value)}
@@ -1862,18 +1918,9 @@ export function Consultation({
             {data.medicines.length === 0 ? (
               <div className="medicine-empty flex flex-col items-center justify-center py-6 text-center">
                 <Pill size={22} className="text-slate-400 mb-1" />
-                <p className="text-sm text-slate-500 mb-3">
+                <p className="text-sm text-slate-500">
                   No medicines added
                 </p>
-                <Button
-                  size="sm"
-                  variant="secondary"
-                  icon={Plus}
-                  title="Add medicine (Ctrl+Shift+M)"
-                  onClick={addMedicine}
-                >
-                  Add medicine
-                </Button>
               </div>
             ) : (
               <div className="medicines-container">
@@ -2003,11 +2050,6 @@ export function Consultation({
                           <div className="medicine-row-primary">
                             <Field
                               label="Formulation"
-                              hint={
-                                !medicine.formulation
-                                  ? "Select a formulation to continue"
-                                  : undefined
-                              }
                               className="med-col-formulation"
                             >
                               <SelectInput
@@ -2077,58 +2119,6 @@ export function Consultation({
                                     : "No matching medicine. Continue typing to use a custom name."
                                 }
                               />
-                              {medicine.sourceIdentifier && (
-                                <div
-                                  style={{
-                                    display: "flex",
-                                    gap: "6px",
-                                    alignItems: "center",
-                                    marginTop: "4px",
-                                    fontSize: "11px",
-                                    color: "#0284c7",
-                                  }}
-                                >
-                                  <CheckCircle2 size={13} />
-                                  <span>
-                                    Verified Medicine (
-                                    {medicine.sourceIdentifier})
-                                  </span>
-                                  {medicine.isCombination && (
-                                    <span
-                                      style={{
-                                        backgroundColor: "#fef3c7",
-                                        color: "#92400e",
-                                        padding: "1px 5px",
-                                        borderRadius: "3px",
-                                        fontWeight: 600,
-                                      }}
-                                    >
-                                      Combination
-                                    </span>
-                                  )}
-                                </div>
-                              )}
-                              {medicine.isCustom &&
-                                medicine.name.trim() &&
-                                !medicine.sourceIdentifier && (
-                                  <div
-                                    style={{
-                                      display: "flex",
-                                      gap: "4px",
-                                      alignItems: "center",
-                                      marginTop: "4px",
-                                      fontSize: "11px",
-                                      color: "#64748b",
-                                    }}
-                                  >
-                                    <span>Custom uncatalogued medicine</span>
-                                  </div>
-                                )}
-                              {medicine.activeIngredient && (
-                                <span className="med-active-ingredient">
-                                  Active: {medicine.activeIngredient}
-                                </span>
-                              )}
                             </Field>
 
                             {medicine.formulation ? (
@@ -2136,13 +2126,6 @@ export function Consultation({
                                 <Field
                                   label="Strength"
                                   className="med-col-strength"
-                                  hint={
-                                    availableStrengths.length > 1
-                                      ? `${availableStrengths.length} verified strengths available`
-                                      : availableStrengths.length === 1
-                                        ? "Auto-selected verified strength"
-                                        : undefined
-                                  }
                                 >
                                   <SearchableOptionSelect
                                     id={`strength-${medicine.id}`}
@@ -2164,11 +2147,6 @@ export function Consultation({
                                 <Field
                                   label="Dose"
                                   className="med-col-dose"
-                                  hint={
-                                    doseConfig.unit
-                                      ? `Unit: ${doseConfig.unit}`
-                                      : undefined
-                                  }
                                 >
                                   <SearchableOptionSelect
                                     id={`dose-${medicine.id}`}
@@ -2312,7 +2290,7 @@ export function Consultation({
 
                       {hasAttemptedSubmit &&
                         !validation.valid &&
-                        medicine.formulation && (
+                        !isMedicineEmpty(medicine) && (
                           <div className="med-validation-warning">
                             <AlertCircle size={13} />
                             <span>{validation.error}</span>
@@ -2324,6 +2302,19 @@ export function Consultation({
               </div>
             )}
           </section>
+
+          <div className="add-medicine-divider-wrap flex justify-center items-center">
+            <Button
+              size="sm"
+              variant="secondary"
+              icon={Plus}
+              title="Add medicine (Ctrl+Shift+M)"
+              onClick={addMedicine}
+              className="consultation-add-medicine-between"
+            >
+              Add medicine
+            </Button>
+          </div>
 
           <FormSection icon={CalendarDays} title="Adv.">
             <div className="form-grid two">

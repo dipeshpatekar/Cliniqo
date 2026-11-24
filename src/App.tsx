@@ -50,6 +50,7 @@ import {
   addCustomDiagnosis,
   complaintOptions,
   getIndiaDateTimeLocalString,
+  normalizeMedicineList,
 } from "./types"
 import { cn } from "./utils/cn"
 
@@ -126,6 +127,7 @@ export interface AppProps {
   initialViewingHistoricalPrescription?: ViewingHistoricalPrescriptionState | null
   initialPrescriptionPreviewReturnPage?: PrescriptionPreviewReturnPage
   initialPatientProfileTab?: string
+  initialBillPreviewReturnPage?: BillPreviewReturnPage
 }
 
 const SAMPLE_PREVIEW_PATIENT: Patient = {
@@ -225,6 +227,7 @@ export default function App({
   initialViewingHistoricalPrescription = null,
   initialPrescriptionPreviewReturnPage = "consultation",
   initialPatientProfileTab = "Overview",
+  initialBillPreviewReturnPage = "bill-form",
 }: AppProps = {}) {
   const [page, setPage] = useState<Page>(initialPage)
   const [desktopSession, setDesktopSession] =
@@ -307,6 +310,7 @@ export default function App({
       initialPrescriptionPreviewReturnPage,
     )
   const hasFinalizedActiveConsultationRef = useRef<boolean>(false)
+  const hasFinalizedBillRef = useRef<boolean>(false)
   const [viewingHistoricalPrescription, setViewingHistoricalPrescription] =
     useState<ViewingHistoricalPrescriptionState | null>(
       initialViewingHistoricalPrescription,
@@ -319,7 +323,9 @@ export default function App({
     setActiveConsultationPrescriptionRecord,
   ] = useState<LocalPrescriptionRecord | null>(null)
   const [billPreviewReturnPage, setBillPreviewReturnPage] =
-    useState<"bill-form" | "settings" | "patient-profile">("bill-form")
+    useState<"bill-form" | "settings" | "patient-profile">(
+      initialBillPreviewReturnPage,
+    )
   const [vitals, setVitals] = useState<Vitals>({
     systolic: "",
     diastolic: "",
@@ -1073,14 +1079,42 @@ export default function App({
       setViewingHistoricalPrescription(null)
     }
     if (next === "bill-preview") {
+      const isFinalized =
+        hasFinalizedBillRef.current || billData.status === "FINALIZED"
       const { returnPage, settingsTab } = resolveBillPreviewNavigation(
         page,
         billPreviewReturnPage,
+        isFinalized,
       )
       setBillPreviewReturnPage(returnPage)
       if (settingsTab) {
         setSettingsInitialTab(settingsTab)
       }
+    }
+    if (next !== "bill-preview") {
+      hasFinalizedBillRef.current = false
+    }
+    if (page === "bill-preview" && next === "patient-profile") {
+      const targetId =
+        billData.patientId ||
+        (selectedPatient && selectedPatient.id !== "PT-INIT"
+          ? selectedPatient.id
+          : undefined) ||
+        (typeof window !== "undefined"
+          ? window.localStorage.getItem("cliniqo_active_bill_patient_id") || undefined
+          : undefined)
+      if (targetId) {
+        const matched = patientRecords.find(
+          (p) =>
+            p.id === targetId ||
+            p.displayId === targetId ||
+            p.patientCode === targetId,
+        )
+        if (matched) {
+          setSelectedPatient(matched)
+        }
+      }
+      setPatientProfileTab("Invoices")
     }
     if (next === "patient-form") {
       setEditingPatient(null)
@@ -1243,7 +1277,9 @@ export default function App({
             snap.chiefComplaint || draftRecord.chief_complaint || "",
           symptomDuration: snap.symptomDuration || "",
           diagnosis: snap.diagnosis || draftRecord.diagnosis || "",
-          medicines: Array.isArray(snap.medicines) ? snap.medicines : [],
+          medicines: Array.isArray(snap.medicines)
+            ? normalizeMedicineList(snap.medicines)
+            : [],
           followUpDate: snap.followUpDate || "",
           followUpInstructions: snap.followUpInstructions || "",
           allergies: Array.isArray(snap.allergies)
@@ -1272,11 +1308,23 @@ export default function App({
       const localSaved = window.localStorage.getItem(draftKey)
       if (localSaved) {
         const parsed = JSON.parse(localSaved)
-        if (parsed?.data) {
-          restoredData = { ...restoredData, ...parsed.data }
-        }
-        if (parsed?.vitals) {
-          restoredVitals = { ...restoredVitals, ...parsed.vitals }
+        // Scoped check: only merge if the local draft belongs to this consultation or has no specific ID
+        if (
+          !parsed?.consultationId ||
+          parsed.consultationId === draftRecord.id
+        ) {
+          if (parsed?.data) {
+            restoredData = {
+              ...restoredData,
+              ...parsed.data,
+              medicines: Array.isArray(parsed.data.medicines)
+                ? normalizeMedicineList(parsed.data.medicines)
+                : restoredData.medicines,
+            }
+          }
+          if (parsed?.vitals) {
+            restoredVitals = { ...restoredVitals, ...parsed.vitals }
+          }
         }
       }
     } catch {}
@@ -1726,6 +1774,11 @@ export default function App({
     existingInvoice?: LocalInvoiceRecord,
   ) => {
     setSelectedPatient(patient)
+    if (typeof window !== "undefined" && patient?.id && patient.id !== "PT-INIT") {
+      try {
+        window.localStorage.setItem("cliniqo_active_bill_patient_id", patient.id)
+      } catch {}
+    }
     if (existingInvoice) {
       let parsedItems: BillItem[] = []
       try {
@@ -1775,6 +1828,8 @@ export default function App({
           ) / 100,
         taxRatePercent: Number(existingInvoice.tax_rate_percent) || 0,
         notes: existingInvoice.notes || "",
+        patientId: existingInvoice.patient_id || patient.id,
+        consultationId: existingInvoice.consultation_id || undefined,
         items:
           parsedItems.length > 0
             ? parsedItems
@@ -1788,6 +1843,7 @@ export default function App({
               ],
       })
       if (existingInvoice.status === "FINALIZED") {
+        hasFinalizedBillRef.current = true
         setBillPreviewReturnPage("patient-profile")
         go("bill-preview")
       } else {
@@ -1821,6 +1877,7 @@ export default function App({
       paymentStatus: "Unpaid",
       discount: 0,
       taxRatePercent: 0,
+      patientId: patient.id,
       items: [
         {
           id: Date.now(),
@@ -2825,23 +2882,62 @@ export default function App({
         bill={billData}
         onChange={setBillData}
         desktopSession={desktopSession}
-        onFinalized={() => {
+        onFinalized={(record) => {
+          hasFinalizedBillRef.current = true
           setBillPreviewReturnPage("patient-profile")
+          const targetPatientId = record?.patient_id || selectedPatient?.id
+          if (targetPatientId) {
+            try {
+              window.localStorage.setItem("cliniqo_active_bill_patient_id", targetPatientId)
+            } catch {}
+            const matched = patientRecords.find(
+              (p) =>
+                p.id === targetPatientId ||
+                p.displayId === targetPatientId ||
+                p.patientCode === targetPatientId,
+            )
+            if (matched) {
+              setSelectedPatient(matched)
+            }
+          }
         }}
       />
     )
   } else if (page === "bill-preview") {
     const isSamplePreview = billPreviewReturnPage === "settings"
+    const effectivePatient = isSamplePreview ? SAMPLE_PREVIEW_PATIENT : selectedPatient
     content = (
       <BillPreview
         go={go}
-        patient={isSamplePreview ? SAMPLE_PREVIEW_PATIENT : selectedPatient}
+        patient={effectivePatient}
         bill={isSamplePreview ? SAMPLE_PREVIEW_BILL : billData}
         bannerImage={prescriptionBannerImage}
         signatureImage={doctorSignatureImage}
         layout={billLayout}
         returnPage={billPreviewReturnPage}
         desktopSession={desktopSession}
+        onBackToPatient={(targetPatientId) => {
+          const id =
+            targetPatientId ||
+            billData.patientId ||
+            effectivePatient?.id ||
+            (typeof window !== "undefined"
+              ? window.localStorage.getItem("cliniqo_active_bill_patient_id") || undefined
+              : undefined)
+          if (id) {
+            const matched = patientRecords.find(
+              (p) =>
+                p.id === id ||
+                p.displayId === id ||
+                p.patientCode === id,
+            )
+            if (matched) {
+              setSelectedPatient(matched)
+            }
+          }
+          setPatientProfileTab("Invoices")
+          go("patient-profile")
+        }}
       />
     )
   } else {

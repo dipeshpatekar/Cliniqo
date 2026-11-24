@@ -505,4 +505,40 @@ describe("Cliniqo Production Prescription Routing & Workflow (App & prescription
       expect(htmlPatB).not.toContain("RX-2026-0042")
     })
   })
+
+  describe("Test D — Bill Preview routing and reliable back navigation to Patient Info", () => {
+    it("1. resolveBillPreviewNavigation returns patient-profile when bill is finalized", () => {
+      const resFromForm = resolveBillPreviewNavigation("bill-form", "bill-form", true)
+      expect(resFromForm.returnPage).toBe("patient-profile")
+
+      const resFromProfile = resolveBillPreviewNavigation("patient-profile", "patient-profile", true)
+      expect(resFromProfile.returnPage).toBe("patient-profile")
+    })
+
+    it("2. resolveBillPreviewNavigation returns settings when coming from settings", () => {
+      const res = resolveBillPreviewNavigation("settings", "bill-form", true)
+      expect(res.returnPage).toBe("settings")
+      expect(res.settingsTab).toBe("Bill layout")
+    })
+
+    it("3. resolveBillPreviewNavigation returns bill-form only for unfinalized draft", () => {
+      const res = resolveBillPreviewNavigation("bill-form", "bill-form", false)
+      expect(res.returnPage).toBe("bill-form")
+    })
+
+    it("4. Renders Bill Preview for finalized bill with Back to patient profile topbar action", () => {
+      const html = renderToString(
+        <App
+          initialPage="bill-preview"
+          initialDesktopSession={mockDesktopSession}
+          initialSelectedPatient={mockPatientA}
+          initialBillPreviewReturnPage="patient-profile"
+        />,
+      )
+
+      expect(html).toContain("Bill preview")
+      expect(html).toContain("Back to patient profile")
+      expect(html).not.toContain("Back to bill settings")
+    })
+  })
 })

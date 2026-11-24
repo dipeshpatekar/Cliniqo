@@ -276,6 +276,8 @@ export type BillData = {
   taxRatePercent: number
   notes?: string
   items: BillItem[]
+  patientId?: string
+  consultationId?: string
 }
 
 export type BillLayoutPreferences = {
@@ -1174,20 +1176,29 @@ export const FORMULATION_NORM_MAP: Record<string, string> = {
 export const FREQUENCY_NORM_MAP: Record<string, string> = {
   OD: "Once daily",
   BD: "Twice daily",
+  BID: "Twice daily",
   TID: "Three times daily",
+  TDS: "Three times daily",
   QID: "Four times daily",
+  QDS: "Four times daily",
   Q4H: "Every 4 hours",
   Q6H: "Every 6 hours",
   Q8H: "Every 8 hours",
   Q12H: "Every 12 hours",
   BEDTIME: "At bedtime",
+  HS: "At bedtime",
   WEEKLY: "Once weekly",
+  PRN: "As needed",
+  SOS: "As needed",
 }
 
 export const FOOD_NORM_MAP: Record<string, string> = {
   AFTER_MEALS: "After food",
+  AFTER_FOOD: "After food",
   BEFORE_MEALS: "Before food",
+  BEFORE_FOOD: "Before food",
   WITH_MEALS: "With food",
+  WITH_FOOD: "With food",
   EMPTY_STOMACH: "Empty stomach",
   AS_DIRECTED: "As directed",
   IRRELEVANT: "Any time",

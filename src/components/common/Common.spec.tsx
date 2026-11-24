@@ -13,6 +13,8 @@ import {
   GlobalPatientSearch,
   Logo,
   CliniqoLogoIcon,
+  SavedBookmarkIcon,
+  BookmarkSuccessIcon,
 } from "./index"
 import { User } from "lucide-react"
 
@@ -354,6 +356,36 @@ describe("Common Components", () => {
       expect(html).toContain('height="64"')
       expect(html).toContain("custom-logo")
       expect(html).toContain('viewBox="0 0 1296 1296"')
+    })
+  })
+
+  describe("SavedBookmarkIcon", () => {
+    it("renders the standardized bookmark SVG silhouette with default dimensions and viewbox", () => {
+      const html = renderToString(<SavedBookmarkIcon />)
+      expect(html).toContain("<svg")
+      expect(html).toContain('viewBox="0 0 20 24"')
+      expect(html).toContain('width="16"')
+      expect(html).toContain('height="19"')
+      expect(html).toContain('fill="currentColor"')
+      expect(html).toContain("saved-bookmark-icon")
+      // Silhouette path with rounded corners and V-notch
+      expect(html).toContain("M 5.5 2 L 14.5 2")
+      expect(html).toContain("L 10 17.2")
+    })
+
+    it("scales appropriately when size is provided for inline indicators", () => {
+      const htmlSmall = renderToString(<SavedBookmarkIcon size={13} className="inline-saved" />)
+      expect(htmlSmall).toContain('width="11"')
+      expect(htmlSmall).toContain('height="13"')
+      expect(htmlSmall).toContain("inline-saved")
+
+      const htmlBanner = renderToString(<SavedBookmarkIcon size={19} />)
+      expect(htmlBanner).toContain('width="16"')
+      expect(htmlBanner).toContain('height="19"')
+    })
+
+    it("BookmarkSuccessIcon alias exports the same standardized component", () => {
+      expect(BookmarkSuccessIcon).toBe(SavedBookmarkIcon)
     })
   })
 })

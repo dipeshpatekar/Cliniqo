@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react"
-import { Button, ConfirmDialog, IconButton } from "../common"
+import { Button, ConfirmDialog, IconButton, SavedBookmarkIcon } from "../common"
 import { AppHeader } from "../layout"
 import { analyzeAllergies } from "../../utils/allergy"
 import { InvoicesTab } from "./InvoicesTab"
@@ -290,7 +290,7 @@ export function PatientProfile({
       <div className="page-content profile-page">
         {saveFeedback && (
           <div className="success-banner" role="status" aria-live="polite">
-            <CheckCircle2 size={19} />
+            <SavedBookmarkIcon size={19} className="shrink-0" />
             <div>
               <strong>Patient saved</strong>
             </div>

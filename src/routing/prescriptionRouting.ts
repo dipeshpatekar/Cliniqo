@@ -72,6 +72,7 @@ export function resolvePrescriptionPreviewNavigation(
 export function resolveBillPreviewNavigation(
   currentPage: Page,
   previousReturnPage: BillPreviewReturnPage,
+  isFinalized = false,
 ): {
   returnPage: BillPreviewReturnPage
   settingsTab?: string
@@ -83,7 +84,7 @@ export function resolveBillPreviewNavigation(
     }
   }
 
-  if (currentPage === "patient-profile") {
+  if (currentPage === "patient-profile" || isFinalized) {
     return {
       returnPage: "patient-profile",
     }

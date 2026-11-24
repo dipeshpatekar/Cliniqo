@@ -203,11 +203,20 @@ describe("Cliniqo Prescription Finalization Navigation, Concise Notifications & 
           returnPage="patient-profile"
           prescriptionRecord={mockFinalizedRx}
           isNewlyFinalized={true}
+          onRevisePrescription={async () => {}}
         />,
       )
 
       expect(html).toContain("Prescription saved")
       expect(html).not.toContain("Persisted to local encrypted storage")
+      // Success banner must contain the standardized bookmark icon
+      expect(html).toMatch(/saved-bookmark-icon|preview-note-bookmark-icon/)
+      // Banner must NOT contain an inner Edit prescription button
+      const bannerMatch = html.match(/<div class="preview-note">([\s\S]*?)<\/div>/)
+      expect(bannerMatch).toBeTruthy()
+      expect(bannerMatch![1]).not.toContain("Edit prescription")
+      // Top bar must still contain the primary Edit prescription button
+      expect(html).toContain("Edit prescription")
     })
 
     it("2. PatientProfile renders 'Patient saved' without technical explanation", () => {

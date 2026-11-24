@@ -26,6 +26,7 @@ import {
   SelectInput,
   StatusPill,
   FormSection,
+  SavedBookmarkIcon,
 } from "../common"
 import { AppHeader } from "../layout"
 import {
@@ -228,11 +229,12 @@ export function BillForm({
               : "Unpaid",
           discount: discountRupees,
           taxRatePercent: taxRatePercent,
+          patientId: patient.id,
         }
         onChange(updatedBill)
         onFinalized?.(finalizedRecord)
       } else {
-        onChange({ ...bill, status: "FINALIZED" })
+        onChange({ ...bill, status: "FINALIZED", patientId: patient.id })
         onFinalized?.({
           id: bill.id || `inv-${Date.now()}`,
           server_id: null,
@@ -342,7 +344,7 @@ export function BillForm({
       <div className="page-content billing-page">
         {saveFeedback && (
           <div className="success-banner" role="status" aria-live="polite">
-            <CheckCircle2 size={19} />
+            <SavedBookmarkIcon size={19} className="shrink-0" />
             <div>
               <strong>{saveFeedback}</strong>
               <span>Changes are persisted in encrypted local storage.</span>

@@ -356,11 +356,10 @@ describe("Consultation Components & UX", () => {
 
       // Row 2 secondary fields layout
       expect(html).toContain("medicine-row-secondary")
-      expect(html).toContain("Unit: mL")
-      expect(html).toContain("Unit: capsule(s)")
-
-      // Unselected formulation has hint and no layout shift class med-formulation-first
-      expect(html).toContain("Select a formulation to continue")
+      // Clean medicine form: informational hints/status messages are removed
+      expect(html).not.toContain("Unit: mL")
+      expect(html).not.toContain("Unit: capsule(s)")
+      expect(html).not.toContain("Select a formulation to continue")
       expect(html).not.toContain("med-formulation-first")
     })
 
@@ -958,7 +957,9 @@ describe("Consultation Components & UX", () => {
       expect(html).toContain("topbar-back")
       // Medicine row renders clean canonical product name, not the stock parenthesis
       expect(html).toContain("6D BODYPROOF")
-      expect(html).toContain("Verified Medicine (stock_6D BODYPROOF)")
+      // Informational status messages (Verified Medicine, Active ingredient) are cleaned up from UI
+      expect(html).not.toContain("Verified Medicine")
+      expect(html).not.toContain("Active:")
       expect(html).toContain("med-col-name")
       expect(html).toContain("med-col-formulation")
     })

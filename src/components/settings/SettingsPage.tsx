@@ -24,7 +24,7 @@ import type {
   PatientFormFieldPreferences,
 } from "../../types"
 import { defaultPatientFormFieldPreferences } from "../../types"
-import { Button, IconButton } from "../common"
+import { Button, IconButton, SavedBookmarkIcon } from "../common"
 import { AppHeader } from "../layout"
 import { SettingsProfile } from "./SettingsProfile"
 import { PrescriptionSettings } from "./PrescriptionSettings"
@@ -271,7 +271,7 @@ export function SettingsPage({
               >
                 {saved ? (
                   <>
-                    <Check size={16} /> Saved
+                    <SavedBookmarkIcon size={16} className="shrink-0 mr-1.5" /> Saved
                   </>
                 ) : (
                   "Save changes"

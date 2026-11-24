@@ -41,6 +41,7 @@ export interface BillPreviewProps {
   layout: BillLayoutPreferences
   returnPage: "bill-form" | "settings" | "patient-profile"
   desktopSession?: DesktopSessionContext | null
+  onBackToPatient?: (patientId?: string) => void
 }
 
 export function BillPreview({
@@ -52,6 +53,7 @@ export function BillPreview({
   layout,
   returnPage,
   desktopSession,
+  onBackToPatient,
 }: BillPreviewProps) {
   const [whatsapp, setWhatsapp] = useState(false)
   const [delivery, setDelivery] = useState<"confirm" | "sending" | "queued">(
@@ -61,6 +63,19 @@ export function BillPreview({
   const [clinicProfile, setClinicProfile] = useState<ClinicProfile | null>(null)
   const [doctorProfile, setDoctorProfile] = useState<DoctorProfile | null>(null)
   const [clinicLogo, setClinicLogo] = useState<string | null>(null)
+
+  const handleBack = (e?: React.MouseEvent) => {
+    e?.preventDefault()
+    if (returnPage === "settings") {
+      go("settings")
+      return
+    }
+    if (onBackToPatient) {
+      onBackToPatient(bill.patientId || patient.id)
+      return
+    }
+    go("patient-profile")
+  }
 
   useEffect(() => {
     if (desktopSession?.clinic_id) {
@@ -144,9 +159,13 @@ export function BillPreview({
         <IconButton
           className="topbar-back"
           label={
-            returnPage === "settings" ? "Back to bill settings" : "Back to bill"
+            returnPage === "settings"
+              ? "Back to bill settings"
+              : returnPage === "patient-profile" || isFinalized
+                ? "Back to patient profile"
+                : "Back to bill"
           }
-          onClick={() => go(returnPage)}
+          onClick={handleBack}
         >
           <ArrowLeft size={18} />
         </IconButton>

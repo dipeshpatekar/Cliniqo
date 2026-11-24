@@ -28,7 +28,7 @@ import {
 } from "../../types"
 import { cn } from "../../utils/cn"
 import { getGenuineAllergies } from "../../utils/allergy"
-import { Button, IconButton, Modal } from "../common"
+import { Button, IconButton, Modal, SavedBookmarkIcon } from "../common"
 import { AppHeader } from "../layout"
 import {
   getClinicProfile,
@@ -39,6 +39,8 @@ import {
   type LocalPrescriptionRecord,
 } from "../../desktop/desktop-bridge"
 import { PrescriptionEditModal } from "./PrescriptionEditModal"
+
+export const BookmarkSuccessIcon = SavedBookmarkIcon
 
 export interface PrescriptionPreviewProps {
   go: (page: Page) => void
@@ -167,10 +169,17 @@ export function PrescriptionPreview({
         e.key.toLowerCase() === "p" &&
         !e.shiftKey
       ) {
-        if (!e.defaultPrevented) {
-          e.preventDefault()
-          handlePrint()
-        }
+        e.preventDefault()
+        e.stopPropagation()
+        handlePrint()
+      } else if (
+        (e.ctrlKey || e.metaKey) &&
+        e.key.toLowerCase() === "f" &&
+        !e.shiftKey
+      ) {
+        // Explicitly block Ctrl+F on Prescription Preview from triggering finalization
+        e.preventDefault()
+        e.stopPropagation()
       }
     }
 
@@ -297,7 +306,11 @@ export function PrescriptionPreview({
         )}
         {prescriptionRecord ? (
           <div className="preview-note">
-            <AlertCircle size={17} />
+            {!isViewingHistorical ? (
+              <SavedBookmarkIcon className="preview-note-bookmark-icon shrink-0" />
+            ) : (
+              <AlertCircle size={17} />
+            )}
             <span>
               {isViewingHistorical ? (
                 <>
@@ -315,18 +328,6 @@ export function PrescriptionPreview({
                 <>Prescription saved</>
               )}
             </span>
-            {returnPage === "patient-profile" &&
-              prescriptionRecord.status === "ACTIVE" &&
-              onRevisePrescription && (
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  onClick={() => setShowEditModal(true)}
-                  icon={Edit3}
-                >
-                  Edit prescription
-                </Button>
-              )}
           </div>
         ) : (
           <div className="preview-note">

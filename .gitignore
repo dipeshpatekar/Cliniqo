@@ -73,3 +73,7 @@ backend/data/catalogue_backup/
 
 # Temporary Issue & Discussion Assets
 issues/
+
+# Temporary Font Source Archives
+font/*.zip
+

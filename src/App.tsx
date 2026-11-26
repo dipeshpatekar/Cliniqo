@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback, type ReactNode } from "react"
-import { Menu, RefreshCw } from "lucide-react"
+import { Menu, RefreshCw, AlertCircle, Download, X } from "lucide-react"
 
 // Re-export utility functions for backward compatibility with existing tests
 export { computeBillTotals, validateMedicineFormulation } from "./utils/billing"
@@ -55,7 +55,7 @@ import {
 import { cn } from "./utils/cn"
 
 // Components
-import { IconButton, ShortcutGuideModal } from "./components/common"
+import { Button, IconButton, SavedBookmarkIcon, ShortcutGuideModal } from "./components/common"
 import { Sidebar, Logo } from "./components/layout"
 import { Login, Register, Setup } from "./components/auth"
 import { Dashboard } from "./components/dashboard"
@@ -95,11 +95,19 @@ import {
   reviseLocalPrescription,
   getLatestPatientMedicalHistory,
   getNextInvoiceNumber,
+  checkAppUpdate,
+  downloadAndVerifyUpdate,
+  installStagedUpdate,
+  getUpdateCompletionStatus,
+  onUpdaterProgress,
   type DesktopSessionContext,
   type LocalInvoiceRecord,
   type LocalPrescriptionRecord,
   PatientSaveError,
   type LocalConsultationRecord,
+  type UpdateCheckResult,
+  type UpdateProgressEvent,
+  type UpdateCompletionStatus,
 } from "./desktop/desktop-bridge"
 import stockReportData from "./data/stock-report-18-10-26.json"
 import {
@@ -255,6 +263,15 @@ export default function App({
   const isSavingPatientRef = useRef(false)
   const [isRestoringSession, setIsRestoringSession] =
     useState<boolean>(isTauriDesktop)
+  const [availableUpdate, setAvailableUpdate] =
+    useState<UpdateCheckResult | null>(null)
+  const [updateBannerDismissed, setUpdateBannerDismissed] = useState(false)
+  const [isInstallingAppUpdate, setIsInstallingAppUpdate] = useState(false)
+  const [appUpdateProgress, setAppUpdateProgress] =
+    useState<UpdateProgressEvent | null>(null)
+  const [appUpdateError, setAppUpdateError] = useState<string | null>(null)
+  const [updateCompletionNotice, setUpdateCompletionNotice] =
+    useState<UpdateCompletionStatus | null>(null)
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(true)
   const [patientRecords, setPatientRecords] = useState<Patient[]>(() =>
@@ -986,6 +1003,94 @@ export default function App({
       mounted = false
     }
   }, [])
+
+  // Startup auto-update check and post-update completion/recovery detection (desktop only)
+  useEffect(() => {
+    if (!isTauriDesktop()) return
+    let mounted = true
+    let unlistenFn: (() => void) | null = null
+
+    onUpdaterProgress((evt) => {
+      if (!mounted) return
+      setAppUpdateProgress(evt)
+      if (evt.stage === "error" || evt.stage === "cancelled") {
+        setIsInstallingAppUpdate(false)
+      }
+    }).then((fn) => {
+      if (mounted) {
+        unlistenFn = fn
+      } else {
+        fn()
+      }
+    })
+
+    const runStartupUpdateChecks = async () => {
+      try {
+        const completion = await getUpdateCompletionStatus()
+        if (mounted && completion && completion.status !== "none") {
+          setUpdateCompletionNotice(completion)
+        }
+      } catch {}
+
+      try {
+        const update = await checkAppUpdate()
+        if (mounted && update?.available && update.download_url && update.target_version) {
+          setAvailableUpdate(update)
+        }
+      } catch {
+        // Silent ignore on startup when offline
+      }
+    }
+
+    const timer = setTimeout(runStartupUpdateChecks, 1500)
+    return () => {
+      mounted = false
+      clearTimeout(timer)
+      if (unlistenFn) unlistenFn()
+    }
+  }, [])
+
+  const handleTriggerStartupUpdate = useCallback(async () => {
+    if (!availableUpdate?.download_url || !availableUpdate?.target_version) return
+    setIsInstallingAppUpdate(true)
+    setAppUpdateError(null)
+    setAppUpdateProgress({
+      stage: "downloading",
+      target_version: availableUpdate.target_version,
+      downloaded_bytes: 0,
+      total_bytes: null,
+      percent: 0,
+      message: `Downloading Cliniqo v${availableUpdate.target_version}...`,
+    })
+    try {
+      // Flush active consultation or patient draft before downloading
+      if (navigationInterceptorRef.current) {
+        await navigationInterceptorRef.current("dashboard")
+      }
+
+      // Phase 1: Download & verify cryptographic signature (app remains responsive)
+      await downloadAndVerifyUpdate(
+        availableUpdate.download_url,
+        availableUpdate.target_version,
+        availableUpdate.signature,
+      )
+
+      // Flush again immediately before terminating process so edits made during download are saved to SQLite
+      if (navigationInterceptorRef.current) {
+        await navigationInterceptorRef.current("dashboard")
+      }
+
+      // Phase 2: Stop workers, checkpoint WAL, elevate via UAC, exit cleanly & install silently
+      const res = await installStagedUpdate(availableUpdate.target_version)
+      if (!res.install_initiated) {
+        setIsInstallingAppUpdate(false)
+      }
+    } catch (err: unknown) {
+      setAppUpdateError(err instanceof Error ? err.message : String(err))
+      setAppUpdateProgress(null)
+      setIsInstallingAppUpdate(false)
+    }
+  }, [availableUpdate])
 
   // Proactive background session renewal before access token expiry
   useEffect(() => {
@@ -3018,6 +3123,105 @@ export default function App({
           <Logo />
           <span className="sync-dot" />
         </div>
+        {updateCompletionNotice && updateCompletionNotice.status !== "none" && (
+          <div
+            role="status"
+            aria-live="polite"
+            className={cn(
+              "mx-6 mt-3 px-4 py-2.5 rounded-lg border flex items-center justify-between gap-3 text-xs print:hidden",
+              updateCompletionNotice.status === "completed"
+                ? "bg-emerald-50 border-emerald-200 text-emerald-900 dark:bg-emerald-950/40 dark:border-emerald-900 dark:text-emerald-200"
+                : "bg-amber-50 border-amber-200 text-amber-900 dark:bg-amber-950/40 dark:border-amber-900 dark:text-amber-200",
+            )}
+          >
+            <div className="flex items-center gap-2.5">
+              {updateCompletionNotice.status === "completed" ? (
+                <SavedBookmarkIcon size={17} className="text-emerald-600 shrink-0" />
+              ) : (
+                <AlertCircle size={17} className="text-amber-600 shrink-0" />
+              )}
+              <span>{updateCompletionNotice.message}</span>
+            </div>
+            <button
+              type="button"
+              aria-label="Dismiss update status"
+              className="p-1 rounded hover:bg-black/5 dark:hover:bg-white/10"
+              onClick={() => setUpdateCompletionNotice(null)}
+            >
+              <X size={14} />
+            </button>
+          </div>
+        )}
+        {availableUpdate?.available && !updateBannerDismissed && (
+          <div
+            role="region"
+            aria-label="Software update available"
+            className="mx-6 mt-3 px-4 py-3 rounded-lg border border-teal-200 bg-teal-50/90 text-teal-950 dark:border-teal-900 dark:bg-teal-950/50 dark:text-teal-100 flex flex-col gap-2 print:hidden"
+          >
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="flex items-center gap-2.5 text-xs">
+                <Download size={16} className="text-teal-700 dark:text-teal-300 shrink-0" />
+                <div>
+                  <strong>
+                    Update Available: Cliniqo v{availableUpdate.target_version}
+                  </strong>{" "}
+                  <span className="opacity-80">
+                    (Current: v{availableUpdate.current_version})
+                  </span>
+                  {page === "consultation" && (
+                    <span className="ml-2 opacity-90">
+                      • Active consultation draft will be auto-saved before restart.
+                    </span>
+                  )}
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <Button
+                  size="sm"
+                  variant="primary"
+                  onClick={handleTriggerStartupUpdate}
+                  loading={isInstallingAppUpdate}
+                  disabled={isInstallingAppUpdate}
+                >
+                  {isInstallingAppUpdate ? "Updating..." : "Update Now"}
+                </Button>
+                {!isInstallingAppUpdate && (
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => setUpdateBannerDismissed(true)}
+                  >
+                    Later
+                  </Button>
+                )}
+              </div>
+            </div>
+            {isInstallingAppUpdate && appUpdateProgress && (
+              <div className="space-y-1">
+                <div className="flex items-center justify-between text-[11px]">
+                  <span>{appUpdateProgress.message}</span>
+                  {typeof appUpdateProgress.percent === "number" && (
+                    <span className="font-semibold">{appUpdateProgress.percent}%</span>
+                  )}
+                </div>
+                <div className="w-full h-1.5 rounded-full bg-teal-200/80 dark:bg-teal-900 overflow-hidden">
+                  <div
+                    className="h-full bg-teal-600 transition-all duration-200"
+                    style={{
+                      width: `${Math.min(100, Math.max(5, appUpdateProgress.percent ?? 15))}%`,
+                    }}
+                  />
+                </div>
+              </div>
+            )}
+            {appUpdateError && (
+              <div className="text-xs text-rose-700 dark:text-rose-300 flex items-center gap-1.5">
+                <AlertCircle size={14} className="shrink-0" />
+                <span>{appUpdateError}</span>
+              </div>
+            )}
+          </div>
+        )}
         {content}
       </div>
       <ConflictResolutionModal

@@ -146,4 +146,19 @@ describe("Cliniqo Updater Manifest & Release Packaging", () => {
       }),
     ).toThrowError(/Signature file .* is empty/)
   })
+
+  it("enforces consistent version, app identifier, perMachine installMode, and updater configuration", () => {
+    const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"))
+    const tauriConf = JSON.parse(fs.readFileSync("src-tauri/tauri.conf.json", "utf8"))
+    const cargoToml = fs.readFileSync("src-tauri/Cargo.toml", "utf8")
+    const cargoVersionMatch = cargoToml.match(/^version\s*=\s*"([^"]+)"/m)
+
+    expect(cargoVersionMatch).not.toBeNull()
+    expect(pkg.version).toBe(tauriConf.version)
+    expect(pkg.version).toBe(cargoVersionMatch![1])
+    expect(tauriConf.identifier).toBe("com.cliniqo.desktop")
+    expect(tauriConf.bundle?.windows?.nsis?.installMode).toBe("perMachine")
+    expect(tauriConf.bundle?.createUpdaterArtifacts).toBe(true)
+    expect(tauriConf.plugins?.updater?.endpoints?.[0]).toContain("/releases/latest/download/latest.json")
+  })
 })

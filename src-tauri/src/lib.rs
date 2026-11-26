@@ -149,7 +149,10 @@ pub fn run() {
             commands::export_encrypted_backup,
             commands::restore_encrypted_backup,
             commands::check_app_update,
+            commands::download_and_verify_update,
+            commands::install_staged_update,
             commands::download_and_launch_update,
+            commands::get_update_completion_status,
         ])
         .run(tauri::generate_context!())
         .expect("error while building tauri application");

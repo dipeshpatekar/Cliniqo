@@ -21,10 +21,14 @@ import {
   restoreEncryptedBackup,
   checkAppUpdate,
   downloadAndLaunchUpdate,
+  getUpdateCompletionStatus,
+  onUpdaterProgress,
   getDesktopInfo,
   type BackupExportResult,
   type BackupRestoreResult,
   type UpdateCheckResult,
+  type UpdateProgressEvent,
+  type UpdateCompletionStatus,
 } from "../../desktop/desktop-bridge"
 
 export interface SyncSettingsProps {
@@ -60,6 +64,8 @@ export function SyncSettings({ onOpenConflictModal }: SyncSettingsProps) {
   const [updateError, setUpdateError] = useState<string | null>(null)
   const [isInstallingUpdate, setIsInstallingUpdate] = useState(false)
   const [updateStatusMessage, setUpdateStatusMessage] = useState<string | null>(null)
+  const [updateProgress, setUpdateProgress] = useState<UpdateProgressEvent | null>(null)
+  const [updateCompletion, setUpdateCompletion] = useState<UpdateCompletionStatus | null>(null)
 
   useEffect(() => {
     if (isTauriDesktop()) {
@@ -68,6 +74,36 @@ export function SyncSettings({ onOpenConflictModal }: SyncSettingsProps) {
           if (info?.app_version) setAppVersion(info.app_version)
         })
         .catch(() => {})
+      getUpdateCompletionStatus()
+        .then((completion) => {
+          if (completion && completion.status !== "none") {
+            setUpdateCompletion(completion)
+          }
+        })
+        .catch(() => {})
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!isTauriDesktop()) return
+    let active = true
+    let unlistenFn: (() => void) | null = null
+    onUpdaterProgress((evt) => {
+      if (!active) return
+      setUpdateProgress(evt)
+      if (evt.stage === "error" || evt.stage === "cancelled") {
+        setIsInstallingUpdate(false)
+      }
+    }).then((fn) => {
+      if (active) {
+        unlistenFn = fn
+      } else {
+        fn()
+      }
+    })
+    return () => {
+      active = false
+      if (unlistenFn) unlistenFn()
     }
   }, [])
 
@@ -222,6 +258,14 @@ export function SyncSettings({ onOpenConflictModal }: SyncSettingsProps) {
     if (!updateResult?.download_url || !updateResult?.target_version) return
     setIsInstallingUpdate(true)
     setUpdateError(null)
+    setUpdateProgress({
+      stage: "downloading",
+      target_version: updateResult.target_version,
+      downloaded_bytes: 0,
+      total_bytes: null,
+      percent: 0,
+      message: `Downloading Cliniqo v${updateResult.target_version}...`,
+    })
 
     try {
       const res = await downloadAndLaunchUpdate(
@@ -230,10 +274,13 @@ export function SyncSettings({ onOpenConflictModal }: SyncSettingsProps) {
         updateResult.signature,
       )
       setUpdateStatusMessage(res.status_message)
+      if (!res.install_initiated) {
+        setIsInstallingUpdate(false)
+      }
     } catch (err: unknown) {
       console.error("Update installation failed:", err)
       setUpdateError(err instanceof Error ? err.message : String(err))
-    } finally {
+      setUpdateProgress(null)
       setIsInstallingUpdate(false)
     }
   }
@@ -401,6 +448,20 @@ export function SyncSettings({ onOpenConflictModal }: SyncSettingsProps) {
             </Button>
           </div>
 
+          {updateCompletion?.status === "completed" && updateCompletion.message && (
+            <div className="p-3 bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-900 rounded text-xs text-emerald-800 dark:text-emerald-200 flex items-center gap-2">
+              <CheckCircle2 size={16} className="text-emerald-600 shrink-0" />
+              <span>{updateCompletion.message}</span>
+            </div>
+          )}
+
+          {updateCompletion?.status === "failed" && updateCompletion.message && (
+            <div className="p-3 bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-900 rounded text-xs text-amber-800 dark:text-amber-200 flex items-start gap-2">
+              <AlertCircle size={16} className="mt-0.5 text-amber-600 shrink-0" />
+              <span>{updateCompletion.message}</span>
+            </div>
+          )}
+
           {updateStatusMessage && !updateResult?.available && (
             <div className="p-3 bg-slate-100 dark:bg-slate-800/80 rounded text-xs text-slate-700 dark:text-slate-200 flex items-center gap-2">
               <CheckCircle2 size={16} className="text-emerald-500 shrink-0" />
@@ -423,10 +484,36 @@ export function SyncSettings({ onOpenConflictModal }: SyncSettingsProps) {
                   variant="primary"
                   onClick={handleInstallUpdate}
                   loading={isInstallingUpdate}
+                  disabled={isInstallingUpdate}
                 >
-                  Download & Install
+                  Update Now
                 </Button>
               </div>
+
+              {isInstallingUpdate && updateProgress && (
+                <div className="space-y-1.5 pt-1">
+                  <div className="flex items-center justify-between text-xs text-teal-800 dark:text-teal-200">
+                    <span>{updateProgress.message}</span>
+                    {typeof updateProgress.percent === "number" && (
+                      <span className="font-semibold">{updateProgress.percent}%</span>
+                    )}
+                  </div>
+                  <div className="w-full h-2 rounded-full bg-teal-200/70 dark:bg-teal-900 overflow-hidden">
+                    <div
+                      className="h-full bg-teal-600 transition-all duration-200"
+                      style={{
+                        width: `${Math.min(100, Math.max(5, updateProgress.percent ?? 15))}%`,
+                      }}
+                    />
+                  </div>
+                </div>
+              )}
+
+              {!isInstallingUpdate && updateStatusMessage && (
+                <div className="text-xs text-teal-800 dark:text-teal-200">
+                  {updateStatusMessage}
+                </div>
+              )}
 
               {updateResult.release_notes && (
                 <div className="text-xs text-slate-600 dark:text-slate-300 border-t border-teal-200 dark:border-teal-900/60 pt-2">

@@ -2587,6 +2587,26 @@ export interface UpdateInstallResult {
   target_version: string
   installer_path: string
   status_message: string
+  install_initiated?: boolean
+  requires_restart?: boolean
+  cancelled?: boolean
+}
+
+export interface UpdateProgressEvent {
+  stage: "downloading" | "verifying" | "installing" | "restarting" | "cancelled" | "error" | string
+  target_version: string
+  downloaded_bytes: number
+  total_bytes: number | null
+  percent: number | null
+  message: string
+}
+
+export interface UpdateCompletionStatus {
+  status: "none" | "completed" | "failed" | string
+  from_version: string | null
+  current_version: string
+  target_version: string | null
+  message: string | null
 }
 
 export async function checkAppUpdate(endpoint?: string): Promise<UpdateCheckResult> {
@@ -2611,6 +2631,90 @@ export async function checkAppUpdate(endpoint?: string): Promise<UpdateCheckResu
   }
 }
 
+export async function getUpdateCompletionStatus(): Promise<UpdateCompletionStatus> {
+  if (isTauriDesktop()) {
+    const res = await invokeTauri<UpdateCompletionStatus>("get_update_completion_status")
+    if (res) return res
+  }
+
+  return {
+    status: "none",
+    from_version: null,
+    current_version: "1.0.4",
+    target_version: null,
+    message: null,
+  }
+}
+
+export async function onUpdaterProgress(
+  handler: (event: UpdateProgressEvent) => void,
+): Promise<() => void> {
+  if (!isTauriDesktop()) {
+    return () => {}
+  }
+
+  try {
+    const { listen } = await import("@tauri-apps/api/event")
+    const unlisten = await listen<UpdateProgressEvent>("updater://progress", (event) => {
+      if (event?.payload) {
+        handler(event.payload)
+      }
+    })
+    return unlisten
+  } catch {
+    return () => {}
+  }
+}
+
+export async function downloadAndVerifyUpdate(
+  downloadUrl: string,
+  targetVersion: string,
+  signature?: string | null,
+): Promise<UpdateInstallResult> {
+  if (isTauriDesktop()) {
+    const res = await invokeTauri<UpdateInstallResult>("download_and_verify_update", {
+      downloadUrl,
+      targetVersion,
+      signature: signature ?? null,
+    })
+    if (res) return res
+    throw new Error("Download and verification failed: desktop invocation returned no result")
+  }
+
+  return {
+    success: true,
+    target_version: targetVersion,
+    installer_path: "/tmp/Cliniqo-Setup.exe",
+    status_message: `Update v${targetVersion} verified in demo mode.`,
+    install_initiated: false,
+    requires_restart: false,
+    cancelled: false,
+  }
+}
+
+export async function installStagedUpdate(
+  targetVersion: string,
+): Promise<UpdateInstallResult> {
+  if (isTauriDesktop()) {
+    const res = await invokeTauri<UpdateInstallResult>("install_staged_update", {
+      targetVersion,
+    })
+    if (res) return res
+    throw new Error("Staged update installation failed: desktop invocation returned no result")
+  }
+
+  return {
+    success: true,
+    target_version: targetVersion,
+    installer_path: "/tmp/Cliniqo-Setup.exe",
+    status_message:
+      "Demo mode: Update simulated. Existing local SQLite database and keys are preserved.",
+    install_initiated: true,
+    requires_restart: true,
+    cancelled: false,
+  }
+}
+
 export async function downloadAndLaunchUpdate(
   downloadUrl: string,
   targetVersion: string,
@@ -2632,5 +2736,8 @@ export async function downloadAndLaunchUpdate(
     installer_path: "/tmp/Cliniqo-Setup.exe",
     status_message:
       "Demo mode: Update simulated. Existing local SQLite database and keys are preserved.",
+    install_initiated: true,
+    requires_restart: true,
+    cancelled: false,
   }
 }

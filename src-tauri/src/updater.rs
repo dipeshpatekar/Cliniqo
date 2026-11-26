@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 use base64::Engine;
 use minisign_verify::{PublicKey, Signature};
@@ -37,6 +37,12 @@ pub enum UpdaterError {
 
     #[error("No update target found for platform: {0}")]
     UnsupportedPlatform(String),
+
+    #[error("Update cancelled by user: {0}")]
+    UserCancelled(String),
+
+    #[error("Installer execution failed: {0}")]
+    InstallerFailed(String),
 }
 
 fn describe_reqwest_error(err: &reqwest::Error, url: &str) -> String {
@@ -97,6 +103,36 @@ pub struct UpdateInstallResult {
     pub target_version: String,
     pub installer_path: String,
     pub status_message: String,
+    pub install_initiated: bool,
+    pub requires_restart: bool,
+    pub cancelled: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdateProgressEvent {
+    pub stage: String,
+    pub target_version: String,
+    pub downloaded_bytes: u64,
+    pub total_bytes: Option<u64>,
+    pub percent: Option<u8>,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PendingUpdateMarker {
+    pub from_version: String,
+    pub target_version: String,
+    pub installer_path: String,
+    pub started_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdateCompletionStatus {
+    pub status: String, // "none" | "completed" | "failed"
+    pub from_version: Option<String>,
+    pub current_version: String,
+    pub target_version: Option<String>,
+    pub message: Option<String>,
 }
 
 pub struct AppUpdater;
@@ -307,6 +343,40 @@ impl AppUpdater {
         })
     }
 
+    /// Returns the deterministic staging path for a target version's installer binary.
+    pub fn staged_installer_path(target_version: &str) -> PathBuf {
+        let temp_dir = std::env::temp_dir().join("cliniqo_updates");
+        let sanitized_ver: String = target_version
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric() || *c == '.' || *c == '-' || *c == '_')
+            .collect();
+        let filename = if cfg!(target_os = "windows") {
+            format!("Cliniqo_{}_x64-setup.exe", sanitized_ver)
+        } else {
+            format!("Cliniqo-Update-{}.tar.gz", sanitized_ver)
+        };
+        temp_dir.join(filename)
+    }
+
+    /// Writes verified installer bytes atomically into `target_file` using a temporary file + rename.
+    pub fn write_verified_installer_atomic(target_file: &Path, bytes: &[u8]) -> Result<(), UpdaterError> {
+        if let Some(parent) = target_file.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let tmp_path = target_file.with_extension("tmp");
+        {
+            use std::io::Write;
+            let mut file = fs::File::create(&tmp_path)?;
+            file.write_all(bytes)?;
+            file.sync_all()?;
+        }
+        if target_file.exists() {
+            let _ = fs::remove_file(target_file);
+        }
+        fs::rename(&tmp_path, target_file)?;
+        Ok(())
+    }
+
     /// Resolves and securely verifies the update against the manifest and signature before downloading and staging.
     /// Returns the verified installer PathBuf.
     pub async fn download_and_verify_update(
@@ -315,6 +385,28 @@ impl AppUpdater {
         signature: Option<&str>,
         custom_endpoint: Option<&str>,
     ) -> Result<PathBuf, UpdaterError> {
+        Self::download_and_verify_update_with_progress(
+            download_url,
+            target_version,
+            signature,
+            custom_endpoint,
+            |_| {},
+        )
+        .await
+    }
+
+    /// Streams download with progress reporting, verifies Minisign signature before writing `.exe`,
+    /// and reuses a previously verified staged installer if present and intact.
+    pub async fn download_and_verify_update_with_progress<F>(
+        download_url: &str,
+        target_version: &str,
+        signature: Option<&str>,
+        custom_endpoint: Option<&str>,
+        mut on_progress: F,
+    ) -> Result<PathBuf, UpdaterError>
+    where
+        F: FnMut(UpdateProgressEvent),
+    {
         let parsed_url = reqwest::Url::parse(download_url)
             .map_err(|e| UpdaterError::VerificationFailed(format!("Invalid download URL: {e}")))?;
 
@@ -340,6 +432,11 @@ impl AppUpdater {
 
         // 1. If signature was not directly provided, verify against the latest manifest at the official/trusted endpoint
         let expected_signature = if let Some(sig) = signature {
+            if sig.trim().is_empty() {
+                return Err(UpdaterError::VerificationFailed(
+                    "Signature is missing or empty. Unsigned updates are strictly rejected.".to_string(),
+                ));
+            }
             sig.to_string()
         } else {
             let check = Self::check_for_updates(custom_endpoint).await?;
@@ -366,9 +463,41 @@ impl AppUpdater {
             })?
         };
 
-        // 2. Download package bytes using dedicated updater HTTP client with redirect support
-        let client = create_updater_http_client(Duration::from_secs(180)).map_err(UpdaterError::ClientInit)?;
-        let resp = client.get(download_url).send().await?;
+        let target_file = Self::staged_installer_path(target_version);
+
+        // 1b. Reuse previously downloaded installer ONLY if it passes cryptographic verification
+        if target_file.exists() {
+            if let Ok(existing_bytes) = fs::read(&target_file) {
+                if Self::verify_installer_signature(&existing_bytes, &expected_signature).is_ok() {
+                    let total = existing_bytes.len() as u64;
+                    on_progress(UpdateProgressEvent {
+                        stage: "verifying".to_string(),
+                        target_version: target_version.to_string(),
+                        downloaded_bytes: total,
+                        total_bytes: Some(total),
+                        percent: Some(100),
+                        message: format!("Verified cached update package for v{}.", target_version),
+                    });
+                    log::info!("Reusing cryptographically verified staged installer: {:?}", target_file);
+                    return Ok(target_file);
+                }
+            }
+            // Cached file is invalid/tampered — delete before fresh download
+            let _ = fs::remove_file(&target_file);
+        }
+
+        on_progress(UpdateProgressEvent {
+            stage: "downloading".to_string(),
+            target_version: target_version.to_string(),
+            downloaded_bytes: 0,
+            total_bytes: None,
+            percent: Some(0),
+            message: format!("Downloading Cliniqo v{}...", target_version),
+        });
+
+        // 2. Download package chunks using dedicated updater HTTP client with redirect support
+        let client = create_updater_http_client(Duration::from_secs(300)).map_err(UpdaterError::ClientInit)?;
+        let mut resp = client.get(download_url).send().await?;
 
         if !resp.status().is_success() {
             return Err(UpdaterError::VerificationFailed(format!(
@@ -377,23 +506,70 @@ impl AppUpdater {
             )));
         }
 
-        let bytes = resp.bytes().await?;
+        let total_bytes = resp.content_length();
+        let mut bytes: Vec<u8> = match total_bytes {
+            Some(len) if len <= 512 * 1024 * 1024 => Vec::with_capacity(len as usize),
+            _ => Vec::new(),
+        };
+        let mut downloaded_bytes: u64 = 0;
+        let mut last_percent: Option<u8> = Some(0);
+
+        while let Some(chunk) = resp.chunk().await? {
+            downloaded_bytes += chunk.len() as u64;
+            bytes.extend_from_slice(&chunk);
+
+            let percent = total_bytes.and_then(|total| {
+                if total > 0 {
+                    Some(((downloaded_bytes.saturating_mul(100)) / total).min(100) as u8)
+                } else {
+                    None
+                }
+            });
+
+            if percent != last_percent || total_bytes.is_none() {
+                last_percent = percent;
+                on_progress(UpdateProgressEvent {
+                    stage: "downloading".to_string(),
+                    target_version: target_version.to_string(),
+                    downloaded_bytes,
+                    total_bytes,
+                    percent,
+                    message: match percent {
+                        Some(p) => format!("Downloading Cliniqo v{} ({}%)...", target_version, p),
+                        None => format!("Downloading Cliniqo v{} ({} KB)...", target_version, downloaded_bytes / 1024),
+                    },
+                });
+            }
+        }
+
+        if let Some(expected_len) = total_bytes {
+            if downloaded_bytes != expected_len {
+                return Err(UpdaterError::Network(format!(
+                    "Downloaded update package was truncated ({} of {} bytes received). Please try again.",
+                    downloaded_bytes, expected_len
+                )));
+            }
+        }
+
+        if bytes.is_empty() {
+            return Err(UpdaterError::VerificationFailed(
+                "Downloaded update package is empty.".to_string(),
+            ));
+        }
 
         // 3. Cryptographically verify signature with Minisign before writing to disk
+        on_progress(UpdateProgressEvent {
+            stage: "verifying".to_string(),
+            target_version: target_version.to_string(),
+            downloaded_bytes,
+            total_bytes: total_bytes.or(Some(downloaded_bytes)),
+            percent: Some(100),
+            message: "Verifying installer cryptographic signature...".to_string(),
+        });
         Self::verify_installer_signature(&bytes, &expected_signature)?;
 
-        // 4. Write verified package to secure temp directory
-        let temp_dir = std::env::temp_dir().join("cliniqo_updates");
-        fs::create_dir_all(&temp_dir)?;
-
-        let filename = if cfg!(target_os = "windows") {
-            format!("Cliniqo-Setup-{}-x64.exe", target_version)
-        } else {
-            format!("Cliniqo-Update-{}.tar.gz", target_version)
-        };
-
-        let target_file = temp_dir.join(filename);
-        fs::write(&target_file, &bytes)?;
+        // 4. Write verified package atomically to secure temp directory
+        Self::write_verified_installer_atomic(&target_file, &bytes)?;
 
         log::info!("Verified update package staged securely to: {:?}", target_file);
         Ok(target_file)
@@ -407,26 +583,326 @@ impl AppUpdater {
         Self::download_and_verify_update(download_url, target_version, None, None).await
     }
 
-    /// Prepares and executes the NSIS upgrade installer while preserving existing local SQLite data and DPAPI keys.
-    pub fn launch_installer_non_destructive(installer_path: &PathBuf) -> Result<(), UpdaterError> {
+    /// Returns path for the pending update marker inside `%LOCALAPPDATA%/com.cliniqo.desktop/updates/`.
+    /// Never modifies `data/` (SQLite) or `keys/` (DPAPI).
+    pub fn pending_update_marker_path(app_data_dir: &Path) -> PathBuf {
+        app_data_dir.join("updates").join("pending_update.json")
+    }
+
+    /// Records an in-progress update marker atomically before shutting down for NSIS installation.
+    pub fn record_pending_update(
+        app_data_dir: &Path,
+        from_version: &str,
+        target_version: &str,
+        installer_path: &Path,
+    ) -> Result<(), UpdaterError> {
+        let marker_path = Self::pending_update_marker_path(app_data_dir);
+        if let Some(parent) = marker_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let marker = PendingUpdateMarker {
+            from_version: from_version.to_string(),
+            target_version: target_version.to_string(),
+            installer_path: installer_path.to_string_lossy().to_string(),
+            started_at: chrono::Utc::now().to_rfc3339(),
+        };
+        let json = serde_json::to_string_pretty(&marker)?;
+        let tmp_path = marker_path.with_extension("json.tmp");
+        fs::write(&tmp_path, json.as_bytes())?;
+        if marker_path.exists() {
+            let _ = fs::remove_file(&marker_path);
+        }
+        fs::rename(&tmp_path, &marker_path)?;
+        Ok(())
+    }
+
+    /// Evaluates whether a previously initiated update succeeded or failed/interrupted on relaunch.
+    /// Cleans up the marker file (and temp installer on completion) without touching database or keys.
+    pub fn evaluate_update_completion(
+        app_data_dir: &Path,
+        current_version: &str,
+    ) -> UpdateCompletionStatus {
+        let marker_path = Self::pending_update_marker_path(app_data_dir);
+        if !marker_path.exists() {
+            return UpdateCompletionStatus {
+                status: "none".to_string(),
+                from_version: None,
+                current_version: current_version.to_string(),
+                target_version: None,
+                message: None,
+            };
+        }
+
+        let marker_content = match fs::read_to_string(&marker_path) {
+            Ok(c) => c,
+            Err(_) => {
+                let _ = fs::remove_file(&marker_path);
+                return UpdateCompletionStatus {
+                    status: "none".to_string(),
+                    from_version: None,
+                    current_version: current_version.to_string(),
+                    target_version: None,
+                    message: None,
+                };
+            }
+        };
+
+        let marker: PendingUpdateMarker = match serde_json::from_str(&marker_content) {
+            Ok(m) => m,
+            Err(_) => {
+                let _ = fs::remove_file(&marker_path);
+                return UpdateCompletionStatus {
+                    status: "none".to_string(),
+                    from_version: None,
+                    current_version: current_version.to_string(),
+                    target_version: None,
+                    message: None,
+                };
+            }
+        };
+
+        let _ = fs::remove_file(&marker_path);
+
+        let norm_curr = current_version.trim_start_matches('v');
+        let norm_from = marker.from_version.trim_start_matches('v');
+        let norm_target = marker.target_version.trim_start_matches('v');
+
+        let reached_target =
+            !Self::is_newer_version(norm_curr, norm_target) && norm_curr != norm_from;
+
+        if reached_target {
+            if !marker.installer_path.trim().is_empty() {
+                let _ = fs::remove_file(&marker.installer_path);
+            }
+            UpdateCompletionStatus {
+                status: "completed".to_string(),
+                from_version: Some(marker.from_version),
+                current_version: current_version.to_string(),
+                target_version: Some(marker.target_version),
+                message: Some(format!(
+                    "Cliniqo successfully updated to v{}. All clinical records and encryption keys were preserved.",
+                    norm_curr
+                )),
+            }
+        } else {
+            UpdateCompletionStatus {
+                status: "failed".to_string(),
+                from_version: Some(marker.from_version),
+                current_version: current_version.to_string(),
+                target_version: Some(marker.target_version.clone()),
+                message: Some(format!(
+                    "Previous update to v{} did not complete. Cliniqo v{} recovered safely with all local patient data intact.",
+                    marker.target_version, norm_curr
+                )),
+            }
+        }
+    }
+
+    /// Validates whether a candidate executable directory is an actual installed Cliniqo directory
+    /// rather than a local development/Cargo build directory.
+    pub fn is_valid_installed_dir(
+        dir: &Path,
+        has_uninstaller: bool,
+        registry_dir: Option<&Path>,
+    ) -> bool {
+        if !dir.is_absolute() {
+            return false;
+        }
+        let lower = dir.to_string_lossy().to_lowercase();
+        if lower.contains("\\target\\debug")
+            || lower.contains("\\target\\release")
+            || lower.contains("/target/debug")
+            || lower.contains("/target/release")
+        {
+            return false;
+        }
+        if has_uninstaller {
+            return true;
+        }
+        if let Some(reg) = registry_dir {
+            let reg_norm = reg.to_string_lossy().trim_matches('"').trim_end_matches(['\\', '/']).to_lowercase();
+            let dir_norm = lower.trim_matches('"').trim_end_matches(['\\', '/']).to_string();
+            return !reg_norm.is_empty() && reg_norm == dir_norm;
+        }
+        false
+    }
+
+    /// Builds exact NSIS command-line arguments for silent in-place upgrades with automatic relaunch.
+    /// Follows Tauri NSIS rules: `/S /UPDATE /R` and, if known, unquoted `/D=<dir>` as the final parameter.
+    pub fn build_silent_update_args(install_dir: Option<&Path>) -> String {
+        let mut args = String::from("/S /UPDATE /R");
+        if let Some(dir) = install_dir {
+            let cleaned = dir
+                .to_string_lossy()
+                .trim()
+                .trim_matches('"')
+                .trim_end_matches(['\\', '/'])
+                .to_string();
+            if !cleaned.is_empty() {
+                // NSIS requires `/D=` to be the very last argument and WITHOUT quotes even for paths with spaces
+                args.push_str(&format!(" /D={}", cleaned));
+            }
+        }
+        args
+    }
+
+    /// Detects the active Windows installation directory (from HKLM uninstall registry or current exe dir).
+    pub fn detect_existing_install_dir() -> Option<PathBuf> {
+        #[cfg(target_os = "windows")]
+        {
+            let reg_dir = Self::read_windows_install_location_from_registry();
+            if let Ok(exe_path) = std::env::current_exe() {
+                if let Some(exe_dir) = exe_path.parent() {
+                    let has_uninstaller = exe_dir.join("uninstall.exe").exists();
+                    if Self::is_valid_installed_dir(exe_dir, has_uninstaller, reg_dir.as_deref()) {
+                        return Some(exe_dir.to_path_buf());
+                    }
+                }
+            }
+            if let Some(reg) = reg_dir {
+                if reg.exists() && Self::is_valid_installed_dir(&reg, reg.join("uninstall.exe").exists(), Some(&reg)) {
+                    return Some(reg);
+                }
+            }
+        }
+        None
+    }
+
+    #[cfg(target_os = "windows")]
+    fn read_windows_install_location_from_registry() -> Option<PathBuf> {
+        use std::ffi::OsStr;
+        use std::os::windows::ffi::OsStrExt;
+        use windows_sys::Win32::System::Registry::{
+            RegCloseKey, RegOpenKeyExW, RegQueryValueExW, HKEY, HKEY_LOCAL_MACHINE, KEY_READ,
+        };
+
+        fn query_reg_sz(subkey: &str, value_name: &str) -> Option<String> {
+            let subkey_w: Vec<u16> = OsStr::new(subkey).encode_wide().chain(std::iter::once(0)).collect();
+            let val_w: Vec<u16> = OsStr::new(value_name).encode_wide().chain(std::iter::once(0)).collect();
+            let mut hkey: HKEY = std::ptr::null_mut();
+            let open_status = unsafe {
+                RegOpenKeyExW(
+                    HKEY_LOCAL_MACHINE,
+                    subkey_w.as_ptr(),
+                    0,
+                    KEY_READ,
+                    &mut hkey,
+                )
+            };
+            if open_status != 0 {
+                return None;
+            }
+
+            let mut buf = vec![0u16; 1024];
+            let mut byte_len = (buf.len() * 2) as u32;
+            let mut reg_type: u32 = 0;
+            let query_status = unsafe {
+                RegQueryValueExW(
+                    hkey,
+                    val_w.as_ptr(),
+                    std::ptr::null(),
+                    &mut reg_type,
+                    buf.as_mut_ptr() as *mut u8,
+                    &mut byte_len,
+                )
+            };
+            unsafe {
+                RegCloseKey(hkey);
+            }
+            if query_status != 0 || byte_len == 0 {
+                return None;
+            }
+            let wchar_len = (byte_len as usize) / 2;
+            let s = String::from_utf16_lossy(&buf[..wchar_len])
+                .trim_end_matches('\0')
+                .trim()
+                .trim_matches('"')
+                .to_string();
+            if s.is_empty() {
+                None
+            } else {
+                Some(s)
+            }
+        }
+
+        if let Some(loc) = query_reg_sz(r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Cliniqo", "InstallLocation") {
+            return Some(PathBuf::from(loc));
+        }
+        None
+    }
+
+    /// Launches the verified NSIS installer silently and elevated via Windows `ShellExecuteExW`
+    /// with `/S /UPDATE /R` (and `/D=<install_dir>` if detected), ensuring in-place upgrade,
+    /// UAC elevation for `perMachine`, and preservation of `%LOCALAPPDATA%/com.cliniqo.desktop`.
+    pub fn launch_silent_in_place_installer(
+        installer_path: &Path,
+        install_dir: Option<&Path>,
+    ) -> Result<(), UpdaterError> {
         if !installer_path.exists() {
             return Err(UpdaterError::VerificationFailed(
                 "Installer file does not exist at specified path".to_string(),
             ));
         }
 
-        // On Windows, the NSIS perMachine installer installs to Program Files,
-        // leaving %LOCALAPPDATA%\com.cliniqo.desktop (SQLite DB and DPAPI keys) untouched.
+        let args = Self::build_silent_update_args(install_dir);
+
         #[cfg(target_os = "windows")]
         {
-            use std::process::Command;
-            Command::new(installer_path)
-                .spawn()
-                .map_err(|e| UpdaterError::Io(e))?;
+            use std::ffi::OsStr;
+            use std::os::windows::ffi::OsStrExt;
+            use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, ERROR_CANCELLED};
+            use windows_sys::Win32::UI::Shell::{ShellExecuteExW, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW};
+            use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+
+            let verb_w: Vec<u16> = OsStr::new("runas").encode_wide().chain(std::iter::once(0)).collect();
+            let file_w: Vec<u16> = installer_path
+                .as_os_str()
+                .encode_wide()
+                .chain(std::iter::once(0))
+                .collect();
+            let params_w: Vec<u16> = OsStr::new(&args).encode_wide().chain(std::iter::once(0)).collect();
+
+            let mut sei: SHELLEXECUTEINFOW = unsafe { std::mem::zeroed() };
+            sei.cbSize = std::mem::size_of::<SHELLEXECUTEINFOW>() as u32;
+            sei.fMask = SEE_MASK_NOCLOSEPROCESS;
+            sei.lpVerb = verb_w.as_ptr();
+            sei.lpFile = file_w.as_ptr();
+            sei.lpParameters = params_w.as_ptr();
+            sei.nShow = SW_SHOWNORMAL;
+
+            let ok = unsafe { ShellExecuteExW(&mut sei) };
+            if ok == 0 {
+                let err = unsafe { GetLastError() };
+                if err == ERROR_CANCELLED {
+                    return Err(UpdaterError::UserCancelled(
+                        "Administrator permission (UAC) was cancelled. The update was not installed.".to_string(),
+                    ));
+                }
+                return Err(UpdaterError::InstallerFailed(format!(
+                    "Failed to launch elevated installer (Windows error {err}): {}",
+                    std::io::Error::from_raw_os_error(err as i32)
+                )));
+            }
+
+            if !sei.hProcess.is_null() {
+                unsafe {
+                    CloseHandle(sei.hProcess);
+                }
+            }
         }
 
-        log::info!("Installer launched: {:?}", installer_path);
+        log::info!(
+            "Silent in-place installer launched: {:?} with args: {}",
+            installer_path,
+            args
+        );
         Ok(())
+    }
+
+    /// Prepares and executes the NSIS upgrade installer while preserving existing local SQLite data and DPAPI keys.
+    pub fn launch_installer_non_destructive(installer_path: &PathBuf) -> Result<(), UpdaterError> {
+        let install_dir = Self::detect_existing_install_dir();
+        Self::launch_silent_in_place_installer(installer_path, install_dir.as_deref())
     }
 }
 
@@ -792,5 +1268,137 @@ wLMDjy9FLAuxZ3q4NlEvkgtyhrr0gtTu6KC4KBJdITbbOeAi1zBIYo0v4iTgt8jJpIidRJnp94ABQkJA
             Ok(val) => panic!("Failed network request must never return Ok or report up-to-date, got: {:?}", val),
             Err(other) => panic!("Expected UpdaterError::Network, got: {:?}", other),
         }
+    }
+
+    #[test]
+    fn test_silent_nsis_update_args_formatting() {
+        // Without explicit install dir -> silent update + auto restart
+        assert_eq!(AppUpdater::build_silent_update_args(None), "/S /UPDATE /R");
+
+        // With Program Files path containing spaces -> /D= MUST be last and unquoted per NSIS spec
+        let pf = Path::new(r"C:\Program Files\Cliniqo");
+        assert_eq!(
+            AppUpdater::build_silent_update_args(Some(pf)),
+            r"/S /UPDATE /R /D=C:\Program Files\Cliniqo"
+        );
+
+        // Strips any accidental quotes or trailing slashes
+        let quoted = Path::new(r#""C:\Custom Dir\Cliniqo\" "#);
+        assert_eq!(
+            AppUpdater::build_silent_update_args(Some(quoted)),
+            r"/S /UPDATE /R /D=C:\Custom Dir\Cliniqo"
+        );
+    }
+
+    #[test]
+    fn test_is_valid_installed_dir_rejects_dev_targets_and_accepts_installed_paths() {
+        let dev_debug = Path::new("/Users/dev/Cliniqo/src-tauri/target/debug");
+        assert!(!AppUpdater::is_valid_installed_dir(dev_debug, true, None));
+
+        let win_dev = Path::new(r"C:\repo\src-tauri\target\release");
+        assert!(!AppUpdater::is_valid_installed_dir(win_dev, true, None));
+
+        let prod_with_uninst = Path::new("/opt/Cliniqo");
+        assert!(AppUpdater::is_valid_installed_dir(prod_with_uninst, true, None));
+
+        let reg_matched = Path::new("/opt/CustomCliniqo");
+        assert!(AppUpdater::is_valid_installed_dir(
+            reg_matched,
+            false,
+            Some(Path::new("/opt/CustomCliniqo/"))
+        ));
+    }
+
+    #[test]
+    fn test_pending_update_marker_completed_and_failed_recovery_preserves_data() {
+        let temp_root = std::env::temp_dir().join(format!(
+            "cliniqo_updater_marker_test_{}",
+            uuid::Uuid::new_v4()
+        ));
+        let data_dir = temp_root.join("data");
+        let keys_dir = temp_root.join("keys");
+        fs::create_dir_all(&data_dir).unwrap();
+        fs::create_dir_all(&keys_dir).unwrap();
+
+        // Simulate existing SQLite database and DPAPI key files
+        let db_file = data_dir.join("cliniqo_local.db");
+        let dek_file = keys_dir.join("dek.protected");
+        fs::write(&db_file, b"ENCRYPTED_SQLITE_CLINICAL_DATA").unwrap();
+        fs::write(&dek_file, b"DPAPI_PROTECTED_KEY_BYTES").unwrap();
+
+        let staged_installer = temp_root.join("Cliniqo_1.0.5_x64-setup.exe");
+        fs::write(&staged_installer, b"MOCK_VERIFIED_INSTALLER").unwrap();
+
+        // 1. Record pending update 1.0.4 -> 1.0.5
+        AppUpdater::record_pending_update(&temp_root, "1.0.4", "1.0.5", &staged_installer)
+            .expect("marker recorded");
+        assert!(AppUpdater::pending_update_marker_path(&temp_root).exists());
+
+        // 2. Simulate failed/interrupted installation (reopened at 1.0.4)
+        let failed_status = AppUpdater::evaluate_update_completion(&temp_root, "1.0.4");
+        assert_eq!(failed_status.status, "failed");
+        assert_eq!(failed_status.target_version.as_deref(), Some("1.0.5"));
+        assert!(failed_status.message.unwrap().contains("did not complete"));
+        // Staged installer is preserved on failed attempt so user can retry without re-download
+        assert!(staged_installer.exists());
+        // Clinical data and DPAPI keys remain completely untouched
+        assert_eq!(fs::read(&db_file).unwrap(), b"ENCRYPTED_SQLITE_CLINICAL_DATA");
+        assert_eq!(fs::read(&dek_file).unwrap(), b"DPAPI_PROTECTED_KEY_BYTES");
+
+        // 3. Record pending update again and simulate successful restart at 1.0.5
+        AppUpdater::record_pending_update(&temp_root, "1.0.4", "1.0.5", &staged_installer)
+            .expect("marker re-recorded");
+        let completed_status = AppUpdater::evaluate_update_completion(&temp_root, "1.0.5");
+        assert_eq!(completed_status.status, "completed");
+        assert_eq!(completed_status.current_version, "1.0.5");
+        assert!(completed_status.message.unwrap().contains("successfully updated to v1.0.5"));
+        // Marker and temp installer are cleaned up on completion
+        assert!(!AppUpdater::pending_update_marker_path(&temp_root).exists());
+        assert!(!staged_installer.exists());
+        // Clinical data and DPAPI keys are STILL completely untouched
+        assert_eq!(fs::read(&db_file).unwrap(), b"ENCRYPTED_SQLITE_CLINICAL_DATA");
+        assert_eq!(fs::read(&dek_file).unwrap(), b"DPAPI_PROTECTED_KEY_BYTES");
+
+        let _ = fs::remove_dir_all(&temp_root);
+    }
+
+    #[tokio::test]
+    async fn test_download_with_progress_never_writes_exe_on_invalid_signature_or_http_error() {
+        let ver = format!("99.0.{}", uuid::Uuid::new_v4().simple());
+        let expected_path = AppUpdater::staged_installer_path(&ver);
+        let _ = fs::remove_file(&expected_path);
+
+        let (mock_url, server_handle) = setup_mock_updater_server(|_method, path| {
+            if path == "/installer.exe" {
+                (
+                    200,
+                    vec![("Content-Type", "application/octet-stream".to_string())],
+                    b"MZ_FAKE_TAMPERED_PAYLOAD_DATA".to_vec(),
+                )
+            } else {
+                (500, Vec::new(), b"Server Error".to_vec())
+            }
+        })
+        .await;
+
+        let mut observed_stages: Vec<String> = Vec::new();
+        let res = AppUpdater::download_and_verify_update_with_progress(
+            &format!("{}/installer.exe", mock_url),
+            &ver,
+            Some("tampered_invalid_signature"),
+            None,
+            |evt| observed_stages.push(evt.stage),
+        )
+        .await;
+
+        assert!(matches!(res, Err(UpdaterError::VerificationFailed(_))));
+        assert!(observed_stages.contains(&"downloading".to_string()));
+        assert!(observed_stages.contains(&"verifying".to_string()));
+        assert!(
+            !expected_path.exists(),
+            "Unverified or invalid-signature payload must never be written to staged .exe path"
+        );
+
+        server_handle.abort();
     }
 }

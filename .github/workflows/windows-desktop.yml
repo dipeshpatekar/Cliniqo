@@ -72,6 +72,25 @@ jobs:
       - name: Install backend dependencies
         run: pnpm --prefix backend install --frozen-lockfile
 
+      - name: Verify Version Consistency Across Manifests & Tags
+        shell: bash
+        run: |
+          PKG_VER=$(node -p "require('./package.json').version")
+          TAURI_VER=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          CARGO_VER=$(grep -m1 '^version\s*=' src-tauri/Cargo.toml | sed -E 's/version\s*=\s*"([^"]+)"/\1/')
+          echo "package.json=$PKG_VER tauri.conf.json=$TAURI_VER Cargo.toml=$CARGO_VER"
+          if [ "$PKG_VER" != "$TAURI_VER" ] || [ "$PKG_VER" != "$CARGO_VER" ]; then
+            echo "::error::Version mismatch across package.json ($PKG_VER), tauri.conf.json ($TAURI_VER), and Cargo.toml ($CARGO_VER)"
+            exit 1
+          fi
+          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            TAG_VER="${GITHUB_REF_NAME#v}"
+            if [ "$TAG_VER" != "$PKG_VER" ]; then
+              echo "::error::Release tag ${GITHUB_REF_NAME} does not match package version ${PKG_VER}"
+              exit 1
+            fi
+          fi
+
       - name: Run Rust Security & DPAPI Tests (Native Windows Kernel)
         # Note: Runs native Windows DPAPI CryptProtectData, CryptUnprotectData,
         # zero-plaintext SQLite encryption, and session auth tests directly against LSASS.

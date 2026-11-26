@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use tauri::State;
+use tauri::{Emitter, Manager, State};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use rusqlite::{params, OptionalExtension};
@@ -2884,29 +2884,264 @@ pub async fn check_app_update(
 }
 
 #[tauri::command]
-pub async fn download_and_launch_update(
+pub fn get_update_completion_status(
+    app: tauri::AppHandle,
+) -> Result<crate::updater::UpdateCompletionStatus, String> {
+    let app_data_dir = app
+        .path()
+        .app_local_data_dir()
+        .map_err(|e| format!("Failed to resolve app data directory: {e}"))?;
+    Ok(crate::updater::AppUpdater::evaluate_update_completion(
+        &app_data_dir,
+        env!("CARGO_PKG_VERSION"),
+    ))
+}
+
+static UPDATE_IN_FLIGHT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+struct UpdateInFlightGuard;
+
+impl UpdateInFlightGuard {
+    fn acquire() -> Result<Self, String> {
+        if UPDATE_IN_FLIGHT
+            .compare_exchange(
+                false,
+                true,
+                std::sync::atomic::Ordering::SeqCst,
+                std::sync::atomic::Ordering::SeqCst,
+            )
+            .is_err()
+        {
+            return Err("An application update is already in progress.".to_string());
+        }
+        Ok(Self)
+    }
+}
+
+impl Drop for UpdateInFlightGuard {
+    fn drop(&mut self) {
+        UPDATE_IN_FLIGHT.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+async fn perform_staged_install(
+    app: &tauri::AppHandle,
+    state: &State<'_, AppState>,
+    installer_path: &std::path::Path,
+    target_version: &str,
+) -> Result<crate::updater::UpdateInstallResult, String> {
+    if !installer_path.exists() {
+        return Err("Verified update package not found at staged path.".to_string());
+    }
+
+    let _ = app.emit(
+        "updater://progress",
+        crate::updater::UpdateProgressEvent {
+            stage: "installing".to_string(),
+            target_version: target_version.to_string(),
+            downloaded_bytes: 0,
+            total_bytes: None,
+            percent: Some(100),
+            message: "Preparing local database and launching installer...".to_string(),
+        },
+    );
+
+    // Pause background sync & checkpoint SQLite WAL cleanly AFTER workers stop
+    let prev_sync_status = state.sync_handle.get_status().await;
+    state.sync_handle.stop().await;
+    {
+        let conn = state.db.get_connection();
+        let _ = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");
+    }
+
+    let install_dir = crate::updater::AppUpdater::detect_existing_install_dir();
+    if let Err(err) = crate::updater::AppUpdater::launch_silent_in_place_installer(
+        installer_path,
+        install_dir.as_deref(),
+    ) {
+        // Elevation cancelled or failed — resume sync worker cleanly and keep Cliniqo open
+        if let Some(clinic_id) = prev_sync_status.active_clinic_id {
+            if !clinic_id.trim().is_empty() {
+                state
+                    .sync_handle
+                    .start(
+                        clinic_id,
+                        state.db.clone(),
+                        state.session_mgr.clone(),
+                        state.key_mgr.clone(),
+                        state.refresh_coordinator.clone(),
+                    )
+                    .await;
+            }
+        }
+
+        let is_cancelled = matches!(err, crate::updater::UpdaterError::UserCancelled(_));
+        let msg = err.to_string();
+        let _ = app.emit(
+            "updater://progress",
+            crate::updater::UpdateProgressEvent {
+                stage: if is_cancelled { "cancelled" } else { "error" }.to_string(),
+                target_version: target_version.to_string(),
+                downloaded_bytes: 0,
+                total_bytes: None,
+                percent: None,
+                message: msg.clone(),
+            },
+        );
+        return Err(msg);
+    }
+
+    if let Ok(app_data_dir) = app.path().app_local_data_dir() {
+        if let Err(e) = crate::updater::AppUpdater::record_pending_update(
+            &app_data_dir,
+            env!("CARGO_PKG_VERSION"),
+            target_version,
+            installer_path,
+        ) {
+            log::warn!("Failed to persist pending update marker: {e}");
+        }
+    }
+
+    let _ = app.emit(
+        "updater://progress",
+        crate::updater::UpdateProgressEvent {
+            stage: "restarting".to_string(),
+            target_version: target_version.to_string(),
+            downloaded_bytes: 0,
+            total_bytes: None,
+            percent: Some(100),
+            message: format!(
+                "Closing Cliniqo to apply v{} silently and restart automatically...",
+                target_version
+            ),
+        },
+    );
+
+    // Give IPC response a brief moment to reach WebView2, then exit cleanly so NSIS can replace binaries
+    let app_for_exit = app.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        log::info!("Exiting Cliniqo desktop process cleanly for silent in-place update...");
+        app_for_exit.exit(0);
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        std::process::exit(0);
+    });
+
+    Ok(crate::updater::UpdateInstallResult {
+        success: true,
+        target_version: target_version.to_string(),
+        installer_path: installer_path.to_string_lossy().to_string(),
+        status_message: format!(
+            "Installer verified and launched. Closing Cliniqo to install v{} silently and restart...",
+            target_version
+        ),
+        install_initiated: true,
+        requires_restart: true,
+        cancelled: false,
+    })
+}
+
+#[tauri::command]
+pub async fn download_and_verify_update(
+    app: tauri::AppHandle,
     download_url: String,
     target_version: String,
     signature: Option<String>,
 ) -> Result<crate::updater::UpdateInstallResult, String> {
-    let installer_path = crate::updater::AppUpdater::download_and_verify_update(
+    let _guard = UpdateInFlightGuard::acquire()?;
+    let app_for_progress = app.clone();
+    match crate::updater::AppUpdater::download_and_verify_update_with_progress(
         &download_url,
         &target_version,
         signature.as_deref(),
         None,
+        move |evt| {
+            let _ = app_for_progress.emit("updater://progress", evt);
+        },
     )
     .await
-    .map_err(|e| e.to_string())?;
+    {
+        Ok(installer_path) => Ok(crate::updater::UpdateInstallResult {
+            success: true,
+            target_version: target_version.clone(),
+            installer_path: installer_path.to_string_lossy().to_string(),
+            status_message: format!(
+                "Update v{} downloaded and cryptographically verified.",
+                target_version
+            ),
+            install_initiated: false,
+            requires_restart: false,
+            cancelled: false,
+        }),
+        Err(e) => {
+            let msg = e.to_string();
+            let _ = app.emit(
+                "updater://progress",
+                crate::updater::UpdateProgressEvent {
+                    stage: "error".to_string(),
+                    target_version,
+                    downloaded_bytes: 0,
+                    total_bytes: None,
+                    percent: None,
+                    message: msg.clone(),
+                },
+            );
+            Err(msg)
+        }
+    }
+}
 
-    crate::updater::AppUpdater::launch_installer_non_destructive(&installer_path)
-        .map_err(|e| e.to_string())?;
+#[tauri::command]
+pub async fn install_staged_update(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    target_version: String,
+) -> Result<crate::updater::UpdateInstallResult, String> {
+    let _guard = UpdateInFlightGuard::acquire()?;
+    let expected_path = crate::updater::AppUpdater::staged_installer_path(&target_version);
+    perform_staged_install(&app, &state, &expected_path, &target_version).await
+}
 
-    Ok(crate::updater::UpdateInstallResult {
-        success: true,
-        target_version,
-        installer_path: installer_path.to_string_lossy().to_string(),
-        status_message: "Update verified and installer launched. Your local clinical database and encryption keys are safely preserved.".to_string(),
-    })
+#[tauri::command]
+pub async fn download_and_launch_update(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    download_url: String,
+    target_version: String,
+    signature: Option<String>,
+) -> Result<crate::updater::UpdateInstallResult, String> {
+    let _guard = UpdateInFlightGuard::acquire()?;
+    let app_for_progress = app.clone();
+    let installer_path = match crate::updater::AppUpdater::download_and_verify_update_with_progress(
+        &download_url,
+        &target_version,
+        signature.as_deref(),
+        None,
+        move |evt| {
+            let _ = app_for_progress.emit("updater://progress", evt);
+        },
+    )
+    .await
+    {
+        Ok(p) => p,
+        Err(e) => {
+            let msg = e.to_string();
+            let _ = app.emit(
+                "updater://progress",
+                crate::updater::UpdateProgressEvent {
+                    stage: "error".to_string(),
+                    target_version: target_version.clone(),
+                    downloaded_bytes: 0,
+                    total_bytes: None,
+                    percent: None,
+                    message: msg.clone(),
+                },
+            );
+            return Err(msg);
+        }
+    };
+
+    perform_staged_install(&app, &state, &installer_path, &target_version).await
 }
 
 

@@ -1246,6 +1246,91 @@ describe("Desktop Bridge (Tauri 2 Frontend Integration)", () => {
       expect(result.success).toBe(true)
       expect(result.target_version).toBe("1.0.1")
       expect(result.status_message).toContain("preserved")
+      expect(result.install_initiated).toBe(true)
+      expect(result.requires_restart).toBe(true)
+    })
+
+    it("getUpdateCompletionStatus invokes desktop command and falls back cleanly in browser mode", async () => {
+      const { getUpdateCompletionStatus: webCheck } = await import("./desktop-bridge")
+
+      // Browser mode fallback
+      const webStatus = await webCheck()
+      expect(webStatus.status).toBe("none")
+
+      // Desktop mode IPC
+      win.__TAURI_INTERNALS__ = {}
+      const invokeMock = vi.fn().mockResolvedValueOnce({
+        status: "completed",
+        from_version: "1.0.4",
+        current_version: "1.0.5",
+        target_version: "1.0.5",
+        message: "Cliniqo successfully updated to v1.0.5.",
+      })
+      vi.doMock("@tauri-apps/api/core", () => ({
+        invoke: invokeMock,
+      }))
+      vi.resetModules()
+
+      const { getUpdateCompletionStatus: desktopCheck } = await import("./desktop-bridge")
+      const desktopStatus = await desktopCheck()
+      expect(invokeMock).toHaveBeenCalledWith("get_update_completion_status", undefined)
+      expect(desktopStatus.status).toBe("completed")
+      expect(desktopStatus.current_version).toBe("1.0.5")
+      vi.doUnmock("@tauri-apps/api/core")
+      vi.resetModules()
+    })
+
+    it("supports two-phase downloadAndVerifyUpdate then installStagedUpdate for draft-safe restarts", async () => {
+      win.__TAURI_INTERNALS__ = {}
+      const invokeMock = vi
+        .fn()
+        .mockResolvedValueOnce({
+          success: true,
+          target_version: "1.0.5",
+          installer_path: "C:\\Users\\Doc\\AppData\\Local\\Temp\\cliniqo_updates\\Cliniqo_1.0.5_x64-setup.exe",
+          status_message: "Update v1.0.5 downloaded and cryptographically verified.",
+          install_initiated: false,
+          requires_restart: false,
+          cancelled: false,
+        })
+        .mockResolvedValueOnce({
+          success: true,
+          target_version: "1.0.5",
+          installer_path: "C:\\Users\\Doc\\AppData\\Local\\Temp\\cliniqo_updates\\Cliniqo_1.0.5_x64-setup.exe",
+          status_message: "Installer verified and launched. Closing Cliniqo to install v1.0.5 silently and restart...",
+          install_initiated: true,
+          requires_restart: true,
+          cancelled: false,
+        })
+
+      vi.doMock("@tauri-apps/api/core", () => ({
+        invoke: invokeMock,
+      }))
+      vi.resetModules()
+
+      const { downloadAndVerifyUpdate, installStagedUpdate } = await import("./desktop-bridge")
+      const verifyRes = await downloadAndVerifyUpdate(
+        "https://github.com/dipeshpatekar/Cliniqo/releases/download/v1.0.5/Cliniqo_1.0.5_x64-setup.exe",
+        "1.0.5",
+        "BASE64_SIG",
+      )
+      expect(verifyRes.success).toBe(true)
+      expect(verifyRes.install_initiated).toBe(false)
+
+      const installRes = await installStagedUpdate("1.0.5")
+      expect(installRes.install_initiated).toBe(true)
+      expect(installRes.requires_restart).toBe(true)
+      expect(invokeMock).toHaveBeenNthCalledWith(1, "download_and_verify_update", {
+        downloadUrl: "https://github.com/dipeshpatekar/Cliniqo/releases/download/v1.0.5/Cliniqo_1.0.5_x64-setup.exe",
+        targetVersion: "1.0.5",
+        signature: "BASE64_SIG",
+      })
+      expect(invokeMock).toHaveBeenNthCalledWith(2, "install_staged_update", {
+        targetVersion: "1.0.5",
+      })
+
+      vi.doUnmock("@tauri-apps/api/core")
+      vi.resetModules()
     })
   })
 

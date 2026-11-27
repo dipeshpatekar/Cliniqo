@@ -15,9 +15,15 @@ import type { Page, Patient, PatientFormFieldPreferences } from "../../types"
 import {
   defaultPatientFormFieldPreferences,
   getIndiaDateTimeLocalString,
+  mapLocalRecordToPatient,
 } from "../../types"
 import { AlertCircle, ArrowLeft, Stethoscope, UserRound, Check, Loader2 } from "lucide-react"
-import type { PatientSaveDiagnostic, DesktopSessionContext } from "../../desktop/desktop-bridge"
+import {
+  getLocalPatientsPage,
+  isTauriDesktop,
+  type PatientSaveDiagnostic,
+  type DesktopSessionContext,
+} from "../../desktop/desktop-bridge"
 
 export function PatientForm({
   go,
@@ -55,6 +61,8 @@ export function PatientForm({
   const [phone, setPhone] = useState(patient?.phone || "")
   const [dirty, setDirty] = useState(false)
   const [autoSaveStatus, setAutoSaveStatus] = useState<"idle" | "saving" | "saved" | "error">("idle")
+  const [remoteDuplicatePatient, setRemoteDuplicatePatient] = useState<Patient | undefined>(undefined)
+  const duplicateLookupSeqRef = useRef(0)
   const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const isInitialDraftLoadedRef = useRef(false)
   const createdPatientIdRef = useRef<string | null>(patient?.id || null)
@@ -281,7 +289,7 @@ export function PatientForm({
   const showAddress = editing || fieldPreferences.showAddress
   const normalizedPhone = phone.replace(/\D/g, "").slice(-10)
 
-  const duplicatePatient = useMemo(
+  const localDuplicatePatient = useMemo(
     () =>
       phone.trim() && normalizedPhone.length === 10
         ? patients.find(
@@ -292,6 +300,47 @@ export function PatientForm({
         : undefined,
     [normalizedPhone, patient?.id, patients, phone],
   )
+
+  // Query SQLite blind-index when desktop patientRecords only holds a 50-row slice
+  useEffect(() => {
+    if (
+      !isTauriDesktop() ||
+      !desktopSession?.clinic_id ||
+      normalizedPhone.length !== 10 ||
+      localDuplicatePatient
+    ) {
+      setRemoteDuplicatePatient(undefined)
+      return
+    }
+    const seq = ++duplicateLookupSeqRef.current
+    const clinicId = desktopSession.clinic_id
+    const timer = window.setTimeout(() => {
+      getLocalPatientsPage({
+        clinic_id: clinicId,
+        query: normalizedPhone,
+        limit: 1,
+        offset: 0,
+      })
+        .then((res) => {
+          if (duplicateLookupSeqRef.current !== seq) return
+          const matched = res.items.find((rec) => rec.id !== patient?.id)
+          setRemoteDuplicatePatient(
+            matched ? mapLocalRecordToPatient(matched) : undefined,
+          )
+        })
+        .catch(() => {
+          if (duplicateLookupSeqRef.current === seq) {
+            setRemoteDuplicatePatient(undefined)
+          }
+        })
+    }, 150)
+
+    return () => {
+      window.clearTimeout(timer)
+    }
+  }, [desktopSession?.clinic_id, localDuplicatePatient, normalizedPhone, patient?.id])
+
+  const duplicatePatient = localDuplicatePatient || remoteDuplicatePatient
 
   useEffect(() => {
     if (!registerNavigationInterceptor) return

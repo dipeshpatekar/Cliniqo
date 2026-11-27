@@ -245,14 +245,28 @@ impl SessionManager {
         Self::new(DEFAULT_BACKEND_PUBLIC_KEY_PEM)
     }
 
+    fn read_lock<'a, T>(lock: &'a RwLock<T>, name: &str) -> std::sync::RwLockReadGuard<'a, T> {
+        lock.read().unwrap_or_else(|e| {
+            log::error!("SessionManager {name} RwLock read-poisoned; recovering.");
+            e.into_inner()
+        })
+    }
+
+    fn write_lock<'a, T>(lock: &'a RwLock<T>, name: &str) -> std::sync::RwLockWriteGuard<'a, T> {
+        lock.write().unwrap_or_else(|e| {
+            log::error!("SessionManager {name} RwLock write-poisoned; recovering.");
+            e.into_inner()
+        })
+    }
+
     /// Returns the currently active public key PEM
     pub fn get_public_key_pem(&self) -> String {
-        self.public_key_pem.read().unwrap().clone()
+        Self::read_lock(&self.public_key_pem, "public_key_pem").clone()
     }
 
     /// Returns the active public key version
     pub fn get_key_version(&self) -> u32 {
-        *self.key_version.read().unwrap()
+        *Self::read_lock(&self.key_version, "key_version")
     }
 
     /// Securely updates the active RSA decoding key from a verified RSA-2048 SPKI PEM
@@ -262,8 +276,8 @@ impl SessionManager {
         let new_key = DecodingKey::from_rsa_pem(trimmed.as_bytes())
             .map_err(|e| AuthError::PublicKeyError(format!("Invalid RSA public key PEM: {e}")))?;
 
-        let mut key_lock = self.decoding_key.write().unwrap();
-        let mut pem_lock = self.public_key_pem.write().unwrap();
+        let mut key_lock = Self::write_lock(&self.decoding_key, "decoding_key");
+        let mut pem_lock = Self::write_lock(&self.public_key_pem, "public_key_pem");
         *key_lock = new_key;
         *pem_lock = trimmed.to_string();
 
@@ -360,9 +374,9 @@ impl SessionManager {
         let new_key = DecodingKey::from_rsa_pem(claims.public_key_pem.as_bytes())
             .map_err(|e| AuthError::PublicKeyError(format!("Invalid RSA public key PEM in certificate: {e}")))?;
 
-        let mut key_lock = self.decoding_key.write().unwrap();
-        let mut pem_lock = self.public_key_pem.write().unwrap();
-        let mut ver_lock = self.key_version.write().unwrap();
+        let mut key_lock = Self::write_lock(&self.decoding_key, "decoding_key");
+        let mut pem_lock = Self::write_lock(&self.public_key_pem, "public_key_pem");
+        let mut ver_lock = Self::write_lock(&self.key_version, "key_version");
 
         *key_lock = new_key;
         *pem_lock = claims.public_key_pem;
@@ -409,7 +423,7 @@ impl SessionManager {
         validation.validate_exp = true;
         validation.leeway = 0; // strict expiration
 
-        let decoding_key = self.decoding_key.read().unwrap();
+        let decoding_key = Self::read_lock(&self.decoding_key, "decoding_key");
         let token_data = decode::<JwtPayload>(trimmed, &decoding_key, &validation).map_err(|err| {
             match err.kind() {
                 jsonwebtoken::errors::ErrorKind::ExpiredSignature => AuthError::SessionExpired,
@@ -492,10 +506,10 @@ impl SessionManager {
             is_offline: false,
         };
 
-        let mut lock = self.current_session.write().unwrap();
+        let mut lock = Self::write_lock(&self.current_session, "current_session");
         *lock = Some(context.clone());
 
-        let mut token_lock = self.current_access_token.write().unwrap();
+        let mut token_lock = Self::write_lock(&self.current_access_token, "current_access_token");
         *token_lock = Some(token.to_string());
 
         log::info!(
@@ -511,7 +525,7 @@ impl SessionManager {
     /// Establishes a permitted offline session context when backend is unreachable but valid persisted credentials exist
     pub fn set_offline_session(&self, mut context: SessionContext) {
         context.is_offline = true;
-        let mut lock = self.current_session.write().unwrap();
+        let mut lock = Self::write_lock(&self.current_session, "current_session");
         *lock = Some(context.clone());
         log::info!(
             "Permitted offline desktop session established for doctor '{}' in clinic '{}'",
@@ -522,7 +536,7 @@ impl SessionManager {
 
     /// Dynamically updates the doctor name in the active session context
     pub fn update_doctor_name(&self, new_name: &str) {
-        let mut lock = self.current_session.write().unwrap();
+        let mut lock = Self::write_lock(&self.current_session, "current_session");
         if let Some(ref mut session) = *lock {
             session.doctor_name = new_name.trim().to_string();
         }
@@ -543,15 +557,15 @@ impl SessionManager {
             expires_at: now + 3600,
             is_offline: false,
         };
-        *self.current_session.write().unwrap() = Some(context);
-        *self.current_access_token.write().unwrap() = Some(token.to_string());
+        *Self::write_lock(&self.current_session, "current_session") = Some(context);
+        *Self::write_lock(&self.current_access_token, "current_access_token") = Some(token.to_string());
     }
 
     /// Invalidates the active desktop session and securely zeroes the access token upon logout
     pub fn logout(&self) {
-        let mut lock = self.current_session.write().unwrap();
+        let mut lock = Self::write_lock(&self.current_session, "current_session");
         *lock = None;
-        let mut token_lock = self.current_access_token.write().unwrap();
+        let mut token_lock = Self::write_lock(&self.current_access_token, "current_access_token");
         if let Some(mut tok) = token_lock.take() {
             use zeroize::Zeroize;
             tok.zeroize();
@@ -561,13 +575,13 @@ impl SessionManager {
 
     /// Returns the current access token for internal native Rust HTTP requests (never exposed over IPC)
     pub fn get_access_token(&self) -> Option<String> {
-        let lock = self.current_access_token.read().unwrap();
+        let lock = Self::read_lock(&self.current_access_token, "current_access_token");
         lock.clone()
     }
 
     /// Returns the current session context if valid and unexpired or permitted offline
     pub fn get_session(&self) -> Option<SessionContext> {
-        let lock = self.current_session.read().unwrap();
+        let lock = Self::read_lock(&self.current_session, "current_session");
         if let Some(ref session) = *lock {
             if session.is_offline {
                 return Some(session.clone());
@@ -590,7 +604,7 @@ impl SessionManager {
         &self,
         required_clinic_id: Option<&str>,
     ) -> Result<SessionContext, AuthError> {
-        let lock = self.current_session.read().unwrap();
+        let lock = Self::read_lock(&self.current_session, "current_session");
         match *lock {
             None => Err(AuthError::Unauthenticated),
             Some(ref session) => {

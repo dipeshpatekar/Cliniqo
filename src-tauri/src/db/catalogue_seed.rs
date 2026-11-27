@@ -785,7 +785,7 @@ mod tests {
         assert_eq!(consults[0].diagnosis, "Acute Bronchitis");
 
         // 4. SEARCH WHEN NO CDCI PRESENT
-        let results = DbOperations::search_local_catalogue(&conn, "NonExistentDrug", 5, None).unwrap();
+        let results = DbOperations::search_local_catalogue(&conn, clinic_id, "NonExistentDrug", 5, None).unwrap();
         assert!(results.is_empty(), "Empty search cleanly handled");
     }
 }

@@ -15,6 +15,7 @@ import {
   CliniqoLogoIcon,
   SavedBookmarkIcon,
   BookmarkSuccessIcon,
+  StartupSplash,
 } from "./index"
 import { User } from "lucide-react"
 
@@ -386,6 +387,32 @@ describe("Common Components", () => {
 
     it("BookmarkSuccessIcon alias exports the same standardized component", () => {
       expect(BookmarkSuccessIcon).toBe(SavedBookmarkIcon)
+    })
+  })
+
+  describe("StartupSplash", () => {
+    it("renders branded Cliniqo identity without technical session verification copy", () => {
+      const html = renderToString(<StartupSplash />)
+      expect(html).toContain("Cliniqo")
+      expect(html).toContain("Clinic Management, Simplified.")
+      expect(html).toContain('viewBox="0 0 1296 1296"')
+      expect(html).toContain("cliniqo-splash-bar")
+      expect(html).not.toContain("Verifying desktop security session...")
+    })
+
+    it("renders clean recovery actions when a fatal startup error is present", () => {
+      const html = renderToString(
+        <StartupSplash
+          error="Local keystore unavailable."
+          onRetry={() => {}}
+          onContinue={() => {}}
+        />,
+      )
+      expect(html).toContain("Unable to start local workspace")
+      expect(html).toContain("Local keystore unavailable.")
+      expect(html).toContain("Retry")
+      expect(html).toContain("Sign in manually")
+      expect(html).not.toContain("cliniqo-splash-bar")
     })
   })
 })

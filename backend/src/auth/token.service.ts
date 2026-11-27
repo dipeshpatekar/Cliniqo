@@ -1,7 +1,6 @@
 import {
   Injectable,
   UnauthorizedException,
-  ConflictException,
   Logger,
   Optional,
 } from "@nestjs/common"
@@ -592,7 +591,9 @@ export class TokenService {
         ipAddress: meta?.ipAddress || null,
       })
     } catch (createErr) {
-      this.logger.error(`Failed to create successor session document: ${createErr}`)
+      this.logger.error(
+        `Failed to create successor session document: ${(createErr as Error)?.message || String(createErr)}`,
+      )
       throw createErr
     }
 

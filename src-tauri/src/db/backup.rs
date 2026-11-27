@@ -1,4 +1,5 @@
-use std::fs;
+use std::fs::{self, File};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use aes_gcm::aead::OsRng;
 use aes_gcm::aead::rand_core::RngCore;
@@ -19,7 +20,10 @@ type HmacSha256 = Hmac<Sha256>;
 pub const BACKUP_MAGIC_V1: &[u8; 18] = b"CLINIQO_BACKUP_V1\0";
 pub const FLAG_CLINIC_KEY: u8 = 0;
 pub const FLAG_PASSPHRASE: u8 = 1;
-pub const CURRENT_SCHEMA_VERSION: i32 = 13;
+pub const CURRENT_SCHEMA_VERSION: i32 = 14;
+pub const AUTO_BACKUP_PREFIX: &str = "cliniqo_autobackup_";
+pub const MANUAL_BACKUP_PREFIX: &str = "cliniqo_backup_";
+const MIN_FREE_DISK_MARGIN_BYTES: u64 = 5 * 1024 * 1024;
 
 #[derive(Error, Debug)]
 pub enum BackupError {
@@ -55,6 +59,12 @@ pub enum BackupError {
 
     #[error("Authentication failed: {0}")]
     AuthFailed(String),
+
+    #[error("Backup operation already in progress")]
+    AlreadyRunning,
+
+    #[error("Insufficient disk space for encrypted backup: {0}")]
+    LowDiskSpace(String),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -93,6 +103,65 @@ pub struct BackupRestoreResult {
     pub consultations_count: u64,
     pub prescriptions_count: u64,
     pub invoices_count: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AutoBackupConfig {
+    pub enabled: bool,
+    pub interval_hours: u32,
+    pub max_retained: usize,
+}
+
+impl Default for AutoBackupConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            interval_hours: 24,
+            max_retained: 7,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LocalBackupEntry {
+    pub file_name: String,
+    pub file_path: String,
+    pub size_bytes: u64,
+    pub created_at: String,
+    pub is_auto: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AutoBackupPersistedState {
+    pub last_backup_at: Option<String>,
+    pub last_status: String,
+    pub last_error: Option<String>,
+    pub last_file_path: Option<String>,
+}
+
+impl Default for AutoBackupPersistedState {
+    fn default() -> Self {
+        Self {
+            last_backup_at: None,
+            last_status: "idle".to_string(),
+            last_error: None,
+            last_file_path: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AutoBackupStatus {
+    pub config: AutoBackupConfig,
+    pub is_running: bool,
+    pub last_backup_at: Option<String>,
+    pub last_status: String,
+    pub last_error: Option<String>,
+    pub last_file_path: Option<String>,
+    pub retained_count: usize,
+    pub manual_count: usize,
+    pub backup_directory: String,
+    pub backups: Vec<LocalBackupEntry>,
 }
 
 pub struct BackupManager;
@@ -193,26 +262,73 @@ impl BackupManager {
         destination_path: Option<&Path>,
         documents_dir: Option<&Path>,
     ) -> Result<BackupExportResult, BackupError> {
+        let _lock = db.try_acquire_backup_lock().ok_or(BackupError::AlreadyRunning)?;
+        Self::export_backup_internal(
+            db,
+            clinic_id,
+            passphrase,
+            destination_path,
+            documents_dir,
+            MANUAL_BACKUP_PREFIX,
+            None,
+        )
+    }
+
+    fn export_backup_internal(
+        db: &DatabaseManager,
+        clinic_id: &str,
+        passphrase: Option<&str>,
+        destination_path: Option<&Path>,
+        documents_dir: Option<&Path>,
+        file_prefix: &str,
+        available_space_override: Option<u64>,
+    ) -> Result<BackupExportResult, BackupError> {
         if clinic_id.trim().is_empty() {
             return Err(BackupError::AuthFailed("Clinic ID cannot be empty".to_string()));
+        }
+
+        let target_dir_for_space = if let Some(p) = destination_path {
+            p.parent().unwrap_or_else(|| Path::new(".")).to_path_buf()
+        } else {
+            Self::resolve_default_backup_directory(documents_dir)
+        };
+        fs::create_dir_all(&target_dir_for_space)?;
+        Self::cleanup_stale_temp_files(&target_dir_for_space);
+
+        // Estimate required disk space cleanly before creating temporary snapshots
+        let estimated_db_size = fs::metadata(db.get_db_path()).map(|m| m.len()).unwrap_or(0);
+        let min_required = estimated_db_size.saturating_add(MIN_FREE_DISK_MARGIN_BYTES);
+        if let Some(avail) = available_space_override.or_else(|| Self::get_available_disk_bytes(&target_dir_for_space)) {
+            if avail < min_required {
+                return Err(BackupError::LowDiskSpace(format!(
+                    "Only {} bytes available on backup drive; at least {} bytes required.",
+                    avail, min_required
+                )));
+            }
         }
 
         let temp_dir = std::env::temp_dir().join(format!("cliniqo_export_{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&temp_dir)?;
         let vacuum_path = temp_dir.join("vacuumed.db");
 
-        // 1. Take a safe point-in-time snapshot of the database using VACUUM INTO
+        // 1. Take a safe point-in-time WAL-flushed snapshot of the database using VACUUM INTO
         {
             let conn = db.get_connection();
-            // SQLite VACUUM INTO flushes and merges WAL journal into a single consistent standalone file
+            let _ = conn.execute_batch("PRAGMA wal_checkpoint(PASSIVE);");
             let vacuum_path_str = vacuum_path.to_str().ok_or_else(|| {
                 BackupError::InvalidFormat("Vacuum destination path contains invalid UTF-8".to_string())
             })?;
-            conn.execute("VACUUM INTO ?", rusqlite::params![vacuum_path_str])?;
+            if let Err(e) = conn.execute("VACUUM INTO ?", rusqlite::params![vacuum_path_str]) {
+                let _ = fs::remove_dir_all(&temp_dir);
+                return Err(BackupError::Database(e));
+            }
         }
 
         // 2. Read the vacuumed database bytes and compute SHA-256 checksum
-        let db_bytes = fs::read(&vacuum_path)?;
+        let db_bytes = fs::read(&vacuum_path).map_err(|e| {
+            let _ = fs::remove_dir_all(&temp_dir);
+            BackupError::Io(e)
+        })?;
         let mut sha256_hasher = Sha256::new();
         sha256_hasher.update(&db_bytes);
         let db_sha256 = format!("{:x}", sha256_hasher.finalize());
@@ -246,11 +362,18 @@ impl BackupManager {
 
             let inv_count: i64 = conn
                 .query_row(
-                    "SELECT COUNT(*) FROM local_invoices WHERE clinic_id = ?",
+                    "SELECT COUNT(*) FROM local_invoices_v2 WHERE clinic_id = ?",
                     [clinic_id],
                     |r| r.get(0),
                 )
-                .unwrap_or(0);
+                .unwrap_or_else(|_| {
+                    conn.query_row(
+                        "SELECT COUNT(*) FROM local_invoices WHERE clinic_id = ?",
+                        [clinic_id],
+                        |r| r.get(0),
+                    )
+                    .unwrap_or(0)
+                });
 
             let ob_count: i64 = conn
                 .query_row(
@@ -326,15 +449,27 @@ impl BackupManager {
         container.extend_from_slice(&nonce);
         container.extend_from_slice(&ciphertext);
 
-        // 9. Save backup file to destination or default backup path (Documents/Cliniqo/Backups/)
+        // Verify actual container bytes fit on target filesystem before staging write
+        if let Some(avail) = available_space_override.or_else(|| Self::get_available_disk_bytes(&target_dir_for_space)) {
+            let needed = (container.len() as u64).saturating_add(1024 * 1024);
+            if avail < needed {
+                let _ = fs::remove_dir_all(&temp_dir);
+                return Err(BackupError::LowDiskSpace(format!(
+                    "Only {} bytes available on backup drive; backup requires {} bytes.",
+                    avail, needed
+                )));
+            }
+        }
+
+        // 9. Atomically save backup file to destination or default backup path (Documents/Cliniqo/Backups/)
         let timestamp_str = chrono::Utc::now().format("%Y%m%d_%H%M%S").to_string();
-        let mut backup_file_name = format!("cliniqo_backup_{}_{}.clxbk", clinic_id, timestamp_str);
+        let mut backup_file_name = format!("{}{}_{}.clxbk", file_prefix, clinic_id, timestamp_str);
 
         let final_path = if let Some(p) = destination_path {
             if let Some(parent) = p.parent() {
                 fs::create_dir_all(parent)?;
             }
-            fs::write(p, &container)?;
+            Self::write_container_atomically(p, &container)?;
             Some(p.to_string_lossy().to_string())
         } else {
             let backup_dir = Self::resolve_default_backup_directory(documents_dir);
@@ -344,7 +479,7 @@ impl BackupManager {
             if final_file_path.exists() {
                 let mut counter = 1;
                 loop {
-                    let candidate_name = format!("cliniqo_backup_{}_{}_{}.clxbk", clinic_id, timestamp_str, counter);
+                    let candidate_name = format!("{}{}_{}_{}.clxbk", file_prefix, clinic_id, timestamp_str, counter);
                     let candidate_path = backup_dir.join(&candidate_name);
                     if !candidate_path.exists() {
                         final_file_path = candidate_path;
@@ -355,8 +490,8 @@ impl BackupManager {
                 }
             }
 
-            fs::write(&final_file_path, &container)?;
-            log::info!("Encrypted backup successfully exported to: {:?}", final_file_path);
+            Self::write_container_atomically(&final_file_path, &container)?;
+            log::info!("Encrypted backup successfully exported atomically to: {:?}", final_file_path);
             Some(final_file_path.to_string_lossy().to_string())
         };
 
@@ -376,13 +511,100 @@ impl BackupManager {
         })
     }
 
-    /// Verifies and restores an encrypted SQLite backup package.
-    pub fn restore_backup(
+    fn write_container_atomically(target_path: &Path, bytes: &[u8]) -> Result<(), BackupError> {
+        let tmp_name = format!(
+            "{}.tmp.{}",
+            target_path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("backup.clxbk"),
+            uuid::Uuid::new_v4()
+        );
+        let tmp_path = target_path.with_file_name(tmp_name);
+
+        let write_result: Result<(), BackupError> = (|| {
+            let mut file = File::create(&tmp_path).map_err(Self::map_disk_io_error)?;
+            file.write_all(bytes).map_err(Self::map_disk_io_error)?;
+            file.sync_all().map_err(Self::map_disk_io_error)?;
+            drop(file);
+
+            let meta = fs::metadata(&tmp_path).map_err(Self::map_disk_io_error)?;
+            if meta.len() != bytes.len() as u64 {
+                return Err(BackupError::Io(std::io::Error::new(
+                    std::io::ErrorKind::WriteZero,
+                    "Staged backup file length mismatch",
+                )));
+            }
+            fs::rename(&tmp_path, target_path).map_err(Self::map_disk_io_error)?;
+            Ok(())
+        })();
+
+        if let Err(err) = write_result {
+            let _ = fs::remove_file(&tmp_path);
+            return Err(err);
+        }
+        Ok(())
+    }
+
+    fn map_disk_io_error(err: std::io::Error) -> BackupError {
+        let raw = err.raw_os_error();
+        let is_disk_full = raw == Some(28) || raw == Some(112) || raw == Some(39);
+        if is_disk_full || err.to_string().to_lowercase().contains("no space left") {
+            BackupError::LowDiskSpace(err.to_string())
+        } else {
+            BackupError::Io(err)
+        }
+    }
+
+    fn cleanup_stale_temp_files(backup_dir: &Path) {
+        if let Ok(entries) = fs::read_dir(backup_dir) {
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                if name.contains(".clxbk.tmp.") {
+                    let _ = fs::remove_file(entry.path());
+                }
+            }
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    fn get_available_disk_bytes(dir: &Path) -> Option<u64> {
+        use std::os::windows::ffi::OsStrExt;
+        use windows_sys::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
+
+        let wide: Vec<u16> = dir
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        let mut free_bytes: u64 = 0;
+        let ok = unsafe {
+            GetDiskFreeSpaceExW(
+                wide.as_ptr(),
+                &mut free_bytes as *mut u64,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            )
+        };
+        if ok != 0 {
+            Some(free_bytes)
+        } else {
+            None
+        }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    fn get_available_disk_bytes(_dir: &Path) -> Option<u64> {
+        None
+    }
+
+    /// Validates an encrypted backup package without modifying the active database.
+    pub fn verify_backup_package(
         db: &DatabaseManager,
         backup_bytes: &[u8],
         expected_clinic_id: Option<&str>,
         passphrase: Option<&str>,
-    ) -> Result<BackupRestoreResult, BackupError> {
+    ) -> Result<(BackupManifest, Vec<u8>), BackupError> {
         // Minimum container length: magic(18) + flag(1) + salt(16) + nonce(12) + tag(16) = 63 bytes
         if backup_bytes.len() < 63 {
             return Err(BackupError::InvalidFormat(
@@ -456,11 +678,20 @@ impl BackupManager {
 
         let manifest_bytes = &decrypted_bundle[4..4 + manifest_len];
         let manifest: BackupManifest = serde_json::from_slice(manifest_bytes)?;
-        let db_bytes = &decrypted_bundle[4 + manifest_len..];
+        let db_bytes = decrypted_bundle[4 + manifest_len..].to_vec();
+
+        if let Some(expected_clinic) = expected_clinic_id.map(str::trim).filter(|c| !c.is_empty()) {
+            if manifest.clinic_id != expected_clinic {
+                return Err(BackupError::AuthFailed(format!(
+                    "Backup belongs to clinic '{}' and cannot overwrite active clinic '{}'.",
+                    manifest.clinic_id, expected_clinic
+                )));
+            }
+        }
 
         // 5. Verify database SHA-256 checksum against manifest
         let mut sha256_hasher = Sha256::new();
-        sha256_hasher.update(db_bytes);
+        sha256_hasher.update(&db_bytes);
         let actual_db_sha256 = format!("{:x}", sha256_hasher.finalize());
 
         if actual_db_sha256 != manifest.db_sha256 {
@@ -471,31 +702,81 @@ impl BackupManager {
         }
 
         // 6. Verify schema version compatibility
-        if manifest.schema_version > CURRENT_SCHEMA_VERSION {
+        if manifest.schema_version < 1 || manifest.schema_version > CURRENT_SCHEMA_VERSION {
             return Err(BackupError::UnsupportedVersion(
                 manifest.schema_version,
                 CURRENT_SCHEMA_VERSION,
             ));
         }
 
-        // 7. Test SQLite file integrity in an isolated temporary connection
+        Ok((manifest, db_bytes))
+    }
+
+    fn verify_staged_database_integrity_and_dek(
+        temp_test_db: &Path,
+        db: &DatabaseManager,
+    ) -> Result<(), BackupError> {
+        let test_conn = Connection::open(temp_test_db)?;
+        let integrity_status: String = test_conn.query_row("PRAGMA integrity_check", [], |r| r.get(0))?;
+        if !integrity_status.eq_ignore_ascii_case("ok") {
+            return Err(BackupError::IntegrityCheckFailed(format!(
+                "SQLite integrity check failed on backup database: {integrity_status}"
+            )));
+        }
+
+        let fk_violations = {
+            let mut stmt = test_conn.prepare("PRAGMA foreign_key_check")?;
+            let count = stmt.query_map([], |_| Ok(()))?.count();
+            count
+        };
+        if fk_violations > 0 {
+            return Err(BackupError::IntegrityCheckFailed(format!(
+                "Foreign key consistency check failed on backup database ({fk_violations} violation(s))"
+            )));
+        }
+
+        // Verify local DPAPI DEK can decrypt inner SQLite rows before touching live database
+        let dek = &db.get_dek().key;
+        if let Ok(mut stmt) = test_conn.prepare("SELECT encrypted_demographics, nonce FROM local_patients LIMIT 1") {
+            if let Ok(mut rows) = stmt.query([]) {
+                if let Ok(Some(row)) = rows.next() {
+                    let enc: Vec<u8> = row.get(0)?;
+                    let nonce: Vec<u8> = row.get(1)?;
+                    if decrypt_payload(dek, &enc, &nonce).is_err() {
+                        return Err(BackupError::AuthFailed(
+                            "Database encryption key mismatch: this backup was encrypted with a different local DPAPI installation key and cannot be decrypted on this machine without the original key."
+                                .to_string(),
+                        ));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Verifies and restores an encrypted SQLite backup package atomically with rollback safety.
+    pub fn restore_backup(
+        db: &DatabaseManager,
+        backup_bytes: &[u8],
+        expected_clinic_id: Option<&str>,
+        passphrase: Option<&str>,
+    ) -> Result<BackupRestoreResult, BackupError> {
+        let _lock = db.try_acquire_backup_lock().ok_or(BackupError::AlreadyRunning)?;
+        let (manifest, db_bytes) =
+            Self::verify_backup_package(db, backup_bytes, expected_clinic_id, passphrase)?;
+
+        // 7. Test SQLite file integrity, foreign keys, and DEK compatibility in an isolated staging DB
         let temp_dir = std::env::temp_dir().join(format!("cliniqo_restore_val_{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&temp_dir)?;
         let temp_test_db = temp_dir.join("test_restore.db");
-        fs::write(&temp_test_db, db_bytes)?;
+        fs::write(&temp_test_db, &db_bytes)?;
 
-        {
-            let test_conn = Connection::open(&temp_test_db)?;
-            let integrity_status: String = test_conn.query_row("PRAGMA integrity_check", [], |r| r.get(0))?;
-            if integrity_status.to_lowercase() != "ok" {
-                let _ = fs::remove_dir_all(&temp_dir);
-                return Err(BackupError::IntegrityCheckFailed(format!(
-                    "SQLite integrity check failed on backup database: {integrity_status}"
-                )));
-            }
+        if let Err(err) = Self::verify_staged_database_integrity_and_dek(&temp_test_db, db) {
+            let _ = fs::remove_dir_all(&temp_dir);
+            return Err(err);
         }
 
-        // 8. Safely perform in-place atomic restore using SQLite's online backup API
+        // 8. Safely perform in-place atomic restore using SQLite's online backup API (with rollback net)
         db.replace_database(&temp_test_db).map_err(|e| {
             let _ = fs::remove_dir_all(&temp_dir);
             BackupError::RestoreFailed(format!("Failed to replace database: {e}"))
@@ -513,6 +794,234 @@ impl BackupManager {
             invoices_count: manifest.invoices_count,
             manifest,
         })
+    }
+
+    pub fn load_auto_backup_config(app_data_dir: &Path) -> AutoBackupConfig {
+        let path = app_data_dir.join("auto_backup_config.json");
+        if let Ok(raw) = fs::read_to_string(path) {
+            if let Ok(mut cfg) = serde_json::from_str::<AutoBackupConfig>(&raw) {
+                cfg.interval_hours = cfg.interval_hours.clamp(1, 168);
+                cfg.max_retained = cfg.max_retained.clamp(1, 30);
+                return cfg;
+            }
+        }
+        AutoBackupConfig::default()
+    }
+
+    pub fn save_auto_backup_config(app_data_dir: &Path, config: &AutoBackupConfig) -> Result<AutoBackupConfig, BackupError> {
+        let normalized = AutoBackupConfig {
+            enabled: config.enabled,
+            interval_hours: config.interval_hours.clamp(1, 168),
+            max_retained: config.max_retained.clamp(1, 30),
+        };
+        fs::create_dir_all(app_data_dir)?;
+        let path = app_data_dir.join("auto_backup_config.json");
+        let bytes = serde_json::to_vec_pretty(&normalized)?;
+        Self::write_container_atomically(&path, &bytes)?;
+        Ok(normalized)
+    }
+
+    pub fn load_auto_backup_state(app_data_dir: &Path) -> AutoBackupPersistedState {
+        let path = app_data_dir.join("auto_backup_status.json");
+        if let Ok(raw) = fs::read_to_string(path) {
+            if let Ok(st) = serde_json::from_str::<AutoBackupPersistedState>(&raw) {
+                return st;
+            }
+        }
+        AutoBackupPersistedState::default()
+    }
+
+    fn save_auto_backup_state(app_data_dir: &Path, state: &AutoBackupPersistedState) {
+        let _ = fs::create_dir_all(app_data_dir);
+        let path = app_data_dir.join("auto_backup_status.json");
+        if let Ok(bytes) = serde_json::to_vec_pretty(state) {
+            let _ = Self::write_container_atomically(&path, &bytes);
+        }
+    }
+
+    pub fn list_clinic_backups(backup_dir: &Path, clinic_id: &str) -> Vec<LocalBackupEntry> {
+        let mut entries = Vec::new();
+        let auto_prefix = format!("{AUTO_BACKUP_PREFIX}{clinic_id}_");
+        let manual_prefix = format!("{MANUAL_BACKUP_PREFIX}{clinic_id}_");
+        if let Ok(read) = fs::read_dir(backup_dir) {
+            for item in read.flatten() {
+                let path = item.path();
+                if !path.is_file() {
+                    continue;
+                }
+                let name = item.file_name().to_string_lossy().to_string();
+                if !name.ends_with(".clxbk") {
+                    continue;
+                }
+                let is_auto = name.starts_with(&auto_prefix);
+                let is_manual = name.starts_with(&manual_prefix);
+                if !is_auto && !is_manual {
+                    continue;
+                }
+                if let Ok(meta) = item.metadata() {
+                    let created_at = meta
+                        .modified()
+                        .ok()
+                        .map(|t| chrono::DateTime::<chrono::Utc>::from(t).to_rfc3339())
+                        .unwrap_or_default();
+                    entries.push(LocalBackupEntry {
+                        file_name: name,
+                        file_path: path.to_string_lossy().to_string(),
+                        size_bytes: meta.len(),
+                        created_at,
+                        is_auto,
+                    });
+                }
+            }
+        }
+        entries.sort_by(|a, b| b.file_name.cmp(&a.file_name));
+        entries
+    }
+
+    pub fn get_auto_backup_status(
+        db: &DatabaseManager,
+        clinic_id: &str,
+        app_data_dir: &Path,
+        documents_dir: Option<&Path>,
+    ) -> AutoBackupStatus {
+        let config = Self::load_auto_backup_config(app_data_dir);
+        let persisted = Self::load_auto_backup_state(app_data_dir);
+        let backup_dir = Self::resolve_default_backup_directory(documents_dir);
+        let backups = Self::list_clinic_backups(&backup_dir, clinic_id);
+        let retained_count = backups.iter().filter(|b| b.is_auto).count();
+        let manual_count = backups.iter().filter(|b| !b.is_auto).count();
+
+        AutoBackupStatus {
+            config,
+            is_running: db.is_backup_in_progress(),
+            last_backup_at: persisted.last_backup_at,
+            last_status: persisted.last_status,
+            last_error: persisted.last_error,
+            last_file_path: persisted.last_file_path,
+            retained_count,
+            manual_count,
+            backup_directory: backup_dir.to_string_lossy().to_string(),
+            backups,
+        }
+    }
+
+    /// Runs scheduled/on-demand local auto-backup with verification BEFORE rotating older auto-backups.
+    /// Never deletes manual user exports (`cliniqo_backup_*`) and never deletes the sole valid backup.
+    pub fn run_auto_backup_with_dirs(
+        db: &DatabaseManager,
+        clinic_id: &str,
+        app_data_dir: &Path,
+        documents_dir: Option<&Path>,
+        is_consultation_active: bool,
+        force: bool,
+    ) -> Result<AutoBackupStatus, BackupError> {
+        Self::run_auto_backup_with_space_override(
+            db,
+            clinic_id,
+            app_data_dir,
+            documents_dir,
+            is_consultation_active,
+            force,
+            None,
+        )
+    }
+
+    fn run_auto_backup_with_space_override(
+        db: &DatabaseManager,
+        clinic_id: &str,
+        app_data_dir: &Path,
+        documents_dir: Option<&Path>,
+        is_consultation_active: bool,
+        force: bool,
+        available_space_override: Option<u64>,
+    ) -> Result<AutoBackupStatus, BackupError> {
+        let config = Self::load_auto_backup_config(app_data_dir);
+        let mut persisted = Self::load_auto_backup_state(app_data_dir);
+
+        if !force && !config.enabled {
+            return Ok(Self::get_auto_backup_status(db, clinic_id, app_data_dir, documents_dir));
+        }
+        if !force && is_consultation_active {
+            persisted.last_status = "skipped".to_string();
+            persisted.last_error = Some("Deferred while active consultation is in progress.".to_string());
+            Self::save_auto_backup_state(app_data_dir, &persisted);
+            return Ok(Self::get_auto_backup_status(db, clinic_id, app_data_dir, documents_dir));
+        }
+        if !force {
+            if let Some(ref last_at) = persisted.last_backup_at {
+                if let Ok(parsed) = chrono::DateTime::parse_from_rfc3339(last_at) {
+                    let elapsed = chrono::Utc::now().signed_duration_since(parsed.with_timezone(&chrono::Utc));
+                    if elapsed < chrono::Duration::hours(config.interval_hours as i64) {
+                        return Ok(Self::get_auto_backup_status(db, clinic_id, app_data_dir, documents_dir));
+                    }
+                }
+            }
+        }
+
+        let _lock = match db.try_acquire_backup_lock() {
+            Some(g) => g,
+            None => return Err(BackupError::AlreadyRunning),
+        };
+
+        let export_res = Self::export_backup_internal(
+            db,
+            clinic_id,
+            None,
+            None,
+            documents_dir,
+            AUTO_BACKUP_PREFIX,
+            available_space_override,
+        );
+
+        let result = match export_res {
+            Ok(res) => res,
+            Err(err) => {
+                persisted.last_status = "error".to_string();
+                persisted.last_error = Some(err.to_string());
+                Self::save_auto_backup_state(app_data_dir, &persisted);
+                return Err(err);
+            }
+        };
+
+        // Validate newly written auto-backup BEFORE deleting any old auto-backups
+        if let Some(ref path_str) = result.backup_file_path {
+            let written_bytes = fs::read(path_str)?;
+            if let Err(err) = Self::verify_backup_package(db, &written_bytes, Some(clinic_id), None) {
+                let _ = fs::remove_file(path_str);
+                persisted.last_status = "error".to_string();
+                persisted.last_error = Some(format!("Auto-backup validation failed: {err}"));
+                Self::save_auto_backup_state(app_data_dir, &persisted);
+                return Err(err);
+            }
+            let backup_dir = Self::resolve_default_backup_directory(documents_dir);
+            Self::rotate_auto_backups(&backup_dir, clinic_id, config.max_retained);
+        }
+
+        persisted.last_backup_at = Some(chrono::Utc::now().to_rfc3339());
+        persisted.last_status = "success".to_string();
+        persisted.last_error = None;
+        persisted.last_file_path = result.backup_file_path;
+        Self::save_auto_backup_state(app_data_dir, &persisted);
+
+        Ok(Self::get_auto_backup_status(db, clinic_id, app_data_dir, documents_dir))
+    }
+
+    /// Safely rotates automatic backups, keeping at least max(1, max_retained) newest valid backups
+    /// and NEVER deleting manual `cliniqo_backup_*` exports.
+    pub fn rotate_auto_backups(backup_dir: &Path, clinic_id: &str, max_retained: usize) {
+        let keep_count = max_retained.max(1);
+        let auto_backups: Vec<LocalBackupEntry> = Self::list_clinic_backups(backup_dir, clinic_id)
+            .into_iter()
+            .filter(|e| e.is_auto)
+            .collect();
+
+        if auto_backups.len() <= keep_count || auto_backups.len() <= 1 {
+            return;
+        }
+
+        for old in auto_backups.into_iter().skip(keep_count) {
+            let _ = fs::remove_file(old.file_path);
+        }
     }
 }
 
@@ -845,5 +1354,233 @@ mod tests {
         assert_eq!(fs::read(&prior_file).unwrap(), b"prior_backup_content", "Prior backup must not be modified or deleted");
 
         let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_auto_backup_scheduling_rotation_low_disk_and_overlap_protection() {
+        let (db, temp_dir) = setup_test_db("cliniqo_test_autobk");
+        let clinic_id = "clinic_auto_1";
+        let docs_dir = temp_dir.join("Docs");
+        let backup_dir = BackupManager::resolve_default_backup_directory(Some(&docs_dir));
+
+        {
+            let mut conn = db.get_connection();
+            DbOperations::insert_patient(
+                &mut conn,
+                db.get_dek(),
+                clinic_id,
+                "PT-INIT",
+                "AutoBackup Patient",
+                "+919800112233",
+                "Female",
+                None,
+                32,
+                &[],
+                &[],
+                None,
+            )
+            .unwrap();
+        }
+
+        // 1. Save custom retention policy (keep 2 auto backups)
+        BackupManager::save_auto_backup_config(
+            db.get_app_data_dir(),
+            &AutoBackupConfig {
+                enabled: true,
+                interval_hours: 12,
+                max_retained: 2,
+            },
+        )
+        .unwrap();
+
+        // 2. Active consultation defers non-forced auto-backup cleanly
+        let skipped = BackupManager::run_auto_backup_with_dirs(
+            &db,
+            clinic_id,
+            db.get_app_data_dir(),
+            Some(&docs_dir),
+            true,
+            false,
+        )
+        .unwrap();
+        assert_eq!(skipped.last_status, "skipped");
+        assert_eq!(skipped.retained_count, 0);
+
+        // 3. Low disk space fails safely with BackupError::LowDiskSpace and leaves zero temp files
+        let low_disk = BackupManager::run_auto_backup_with_space_override(
+            &db,
+            clinic_id,
+            db.get_app_data_dir(),
+            Some(&docs_dir),
+            false,
+            true,
+            Some(1024),
+        );
+        assert!(matches!(low_disk, Err(BackupError::LowDiskSpace(_))));
+
+        // 4. Overlap guard prevents concurrent overlapping backup executions
+        {
+            let _held = db.try_acquire_backup_lock().unwrap();
+            let overlap = BackupManager::run_auto_backup_with_dirs(
+                &db,
+                clinic_id,
+                db.get_app_data_dir(),
+                Some(&docs_dir),
+                false,
+                true,
+            );
+            assert!(matches!(overlap, Err(BackupError::AlreadyRunning)));
+        }
+
+        // 5. Create 1 manual export + 3 forced auto-backups; verify rotation keeps 2 newest auto-backups
+        //    and NEVER deletes the manual backup!
+        let manual = BackupManager::export_backup_with_documents_dir(
+            &db,
+            clinic_id,
+            None,
+            None,
+            Some(&docs_dir),
+        )
+        .unwrap();
+        let manual_path = PathBuf::from(manual.backup_file_path.unwrap());
+
+        for _ in 0..3 {
+            let st = BackupManager::run_auto_backup_with_dirs(
+                &db,
+                clinic_id,
+                db.get_app_data_dir(),
+                Some(&docs_dir),
+                false,
+                true,
+            )
+            .unwrap();
+            assert_eq!(st.last_status, "success");
+        }
+
+        let final_status =
+            BackupManager::get_auto_backup_status(&db, clinic_id, db.get_app_data_dir(), Some(&docs_dir));
+        assert_eq!(final_status.retained_count, 2, "Rotation must retain max_retained=2 newest auto-backups");
+        assert_eq!(final_status.manual_count, 1, "Manual exports must never be deleted by auto-rotation");
+        assert!(manual_path.exists(), "Manual backup file must still exist on disk");
+
+        // Even if max_retained=1, never delete the sole remaining auto-backup
+        BackupManager::rotate_auto_backups(&backup_dir, clinic_id, 1);
+        let after_one =
+            BackupManager::get_auto_backup_status(&db, clinic_id, db.get_app_data_dir(), Some(&docs_dir));
+        assert_eq!(after_one.retained_count, 1);
+        BackupManager::rotate_auto_backups(&backup_dir, clinic_id, 0);
+        let never_zero =
+            BackupManager::get_auto_backup_status(&db, clinic_id, db.get_app_data_dir(), Some(&docs_dir));
+        assert_eq!(never_zero.retained_count, 1, "Rotation must never delete the only valid auto-backup");
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_restore_rejects_incomplete_unsupported_version_and_dek_mismatch_preserving_live_db() {
+        let (db1, dir1) = setup_test_db("cliniqo_test_rst_src");
+        let (db2, dir2) = setup_test_db("cliniqo_test_rst_dst");
+        let clinic = "clinic_iso_r";
+
+        {
+            let mut c1 = db1.get_connection();
+            DbOperations::insert_patient(
+                &mut c1,
+                db1.get_dek(),
+                clinic,
+                "PT-INIT",
+                "Source Machine Patient",
+                "+919811100001",
+                "Male",
+                None,
+                40,
+                &[],
+                &[],
+                None,
+            )
+            .unwrap();
+        }
+        {
+            let mut c2 = db2.get_connection();
+            DbOperations::insert_patient(
+                &mut c2,
+                db2.get_dek(),
+                clinic,
+                "PT-INIT",
+                "Existing Target Patient",
+                "+919822200002",
+                "Female",
+                None,
+                35,
+                &[],
+                &[],
+                None,
+            )
+            .unwrap();
+        }
+
+        // Export passphrase backup from db1 (different random DEK from db2!)
+        let pass = "SharedPass123!";
+        let exp = BackupManager::export_backup(&db1, clinic, Some(pass), Some(&dir1.join("b1.clxbk"))).unwrap();
+        let b1_bytes = fs::read(exp.backup_file_path.unwrap()).unwrap();
+
+        // 1. Incomplete backup rejected
+        let truncated = &b1_bytes[..b1_bytes.len() / 2];
+        assert!(BackupManager::restore_backup(&db2, truncated, Some(clinic), Some(pass)).is_err());
+
+        // 2. DEK mismatch across installations fails closed BEFORE modifying db2!
+        let dek_mismatch = BackupManager::restore_backup(&db2, &b1_bytes, Some(clinic), Some(pass));
+        assert!(
+            matches!(dek_mismatch, Err(BackupError::AuthFailed(_))),
+            "Passphrase backup with alien DEK must fail closed before overwriting live DB"
+        );
+        {
+            let c2 = db2.get_connection();
+            let pts = DbOperations::get_patients(&c2, db2.get_dek(), clinic).unwrap();
+            assert_eq!(pts.len(), 1);
+            assert_eq!(pts[0].name, "Existing Target Patient", "Live DB must remain intact after rejected restore");
+        }
+
+        // 3. Unsupported future schema version rejected cleanly
+        let future_manifest = BackupManifest {
+            magic: "CLINIQO_BACKUP".to_string(),
+            version: 1,
+            clinic_id: clinic.to_string(),
+            created_at: chrono::Utc::now().to_rfc3339(),
+            app_version: "9.9.9".to_string(),
+            schema_version: CURRENT_SCHEMA_VERSION + 5,
+            patients_count: 0,
+            consultations_count: 0,
+            prescriptions_count: 0,
+            invoices_count: 0,
+            outbox_count: 0,
+            db_sha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855".to_string(),
+        };
+        let fm_bytes = serde_json::to_vec(&future_manifest).unwrap();
+        let mut f_bundle = Vec::new();
+        f_bundle.extend_from_slice(&(fm_bytes.len() as u32).to_be_bytes());
+        f_bundle.extend_from_slice(&fm_bytes);
+        let salt = [0x11u8; 16];
+        let key = BackupManager::derive_key_from_passphrase(pass, &salt, 100_000);
+        let (fcipher, fnonce) = encrypt_payload(&key, &f_bundle).unwrap();
+        let mut future_container = Vec::new();
+        future_container.extend_from_slice(BACKUP_MAGIC_V1);
+        future_container.push(FLAG_PASSPHRASE);
+        future_container.extend_from_slice(&salt);
+        future_container.extend_from_slice(&fnonce);
+        future_container.extend_from_slice(&fcipher);
+
+        let ver_err = BackupManager::restore_backup(&db2, &future_container, Some(clinic), Some(pass));
+        assert!(matches!(ver_err, Err(BackupError::UnsupportedVersion(_, _))));
+
+        // 4. Diagnostics check passes cleanly on healthy DB and preserves read pool
+        let diag = db2.run_diagnostics().unwrap();
+        assert_eq!(diag.health_status, "healthy");
+        assert!(diag.integrity_ok);
+        assert_eq!(diag.foreign_key_violations, 0);
+        assert!(diag.encryption_key_compatible);
+
+        let _ = fs::remove_dir_all(&dir1);
+        let _ = fs::remove_dir_all(&dir2);
     }
 }

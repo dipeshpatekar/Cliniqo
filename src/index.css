@@ -3,7 +3,7 @@
 @variant dark (&:where(.dark, .dark *));
 
 /* ============================================================================
- * GOOGLE SANS LOCAL FONT REGISTRATION
+ * GOOGLE SANS LOCAL FONT REGISTRATION (Variable Fonts covering weights 100-900)
  * ============================================================================ */
 @font-face {
   font-family: 'Google Sans';
@@ -19,70 +19,6 @@
   src: url('./assets/fonts/GoogleSans/GoogleSans-Italic-VariableFont_GRAD,opsz,wght.ttf') format('truetype-variations'),
        url('./assets/fonts/GoogleSans/GoogleSans-Italic-VariableFont_GRAD,opsz,wght.ttf') format('truetype');
   font-weight: 100 900;
-  font-style: italic;
-  font-display: swap;
-}
-
-@font-face {
-  font-family: 'Google Sans';
-  src: url('./assets/fonts/GoogleSans/static/GoogleSans-Regular.ttf') format('truetype');
-  font-weight: 400;
-  font-style: normal;
-  font-display: swap;
-}
-
-@font-face {
-  font-family: 'Google Sans';
-  src: url('./assets/fonts/GoogleSans/static/GoogleSans-Italic.ttf') format('truetype');
-  font-weight: 400;
-  font-style: italic;
-  font-display: swap;
-}
-
-@font-face {
-  font-family: 'Google Sans';
-  src: url('./assets/fonts/GoogleSans/static/GoogleSans-Medium.ttf') format('truetype');
-  font-weight: 500;
-  font-style: normal;
-  font-display: swap;
-}
-
-@font-face {
-  font-family: 'Google Sans';
-  src: url('./assets/fonts/GoogleSans/static/GoogleSans-MediumItalic.ttf') format('truetype');
-  font-weight: 500;
-  font-style: italic;
-  font-display: swap;
-}
-
-@font-face {
-  font-family: 'Google Sans';
-  src: url('./assets/fonts/GoogleSans/static/GoogleSans-SemiBold.ttf') format('truetype');
-  font-weight: 600;
-  font-style: normal;
-  font-display: swap;
-}
-
-@font-face {
-  font-family: 'Google Sans';
-  src: url('./assets/fonts/GoogleSans/static/GoogleSans-SemiBoldItalic.ttf') format('truetype');
-  font-weight: 600;
-  font-style: italic;
-  font-display: swap;
-}
-
-@font-face {
-  font-family: 'Google Sans';
-  src: url('./assets/fonts/GoogleSans/static/GoogleSans-Bold.ttf') format('truetype');
-  font-weight: 700;
-  font-style: normal;
-  font-display: swap;
-}
-
-@font-face {
-  font-family: 'Google Sans';
-  src: url('./assets/fonts/GoogleSans/static/GoogleSans-BoldItalic.ttf') format('truetype');
-  font-weight: 700;
   font-style: italic;
   font-display: swap;
 }
@@ -9109,5 +9045,49 @@ body {
     align-items: flex-end !important;
     break-inside: avoid !important;
     page-break-inside: avoid !important;
+  }
+}
+
+@keyframes cliniqo-splash-reveal {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes cliniqo-splash-indeterminate {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(220%);
+  }
+}
+
+.cliniqo-splash-screen {
+  background-image: radial-gradient(circle at 50% 35%, rgba(6, 141, 148, 0.08), transparent 55%);
+}
+
+.cliniqo-splash-card {
+  animation: cliniqo-splash-reveal 0.28s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+
+.cliniqo-splash-bar {
+  animation: cliniqo-splash-indeterminate 1.4s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cliniqo-splash-card,
+  .cliniqo-splash-bar {
+    animation: none;
+  }
+  .cliniqo-splash-bar {
+    width: 100%;
+    transform: none;
+    opacity: 0.7;
   }
 }

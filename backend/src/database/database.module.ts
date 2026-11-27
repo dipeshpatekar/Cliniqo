@@ -30,6 +30,10 @@ export class DatabaseDiagnostics {
           serverSelectionTimeoutMS: 30000,
           connectTimeoutMS: 30000,
           socketTimeoutMS: 45000,
+          maxPoolSize: 20,
+          minPoolSize: 2,
+          maxIdleTimeMS: 60000,
+          waitQueueTimeoutMS: 10000,
           autoIndex: !configService.isProduction,
           // lazyConnection ensures the HTTP server boots immediately and remains accessible
           // while initial or background connections establish.

@@ -1,4 +1,4 @@
-import { useMemo, useState, useEffect } from "react"
+import { useMemo, useState, useEffect, useRef, memo } from "react"
 import {
   ArrowLeft,
   UserRoundPlus,
@@ -18,9 +18,15 @@ import {
   formatPatientAge,
   formatPatientGender,
   getPublicPatientId,
+  mapLocalRecordToPatient,
   type Page,
   type Patient,
 } from "../../types"
+import {
+  getLocalPatientsPage,
+  isTauriDesktop,
+  type DesktopSessionContext,
+} from "../../desktop/desktop-bridge"
 import { Button, IconButton, SelectInput, ConfirmDialog } from "../common"
 import { AppHeader } from "../layout"
 import { cn } from "../../utils/cn"
@@ -29,6 +35,8 @@ import { hasGenuineAllergies } from "../../utils/allergy"
 export interface PatientsPageProps {
   go: (page: Page) => void
   patients: Patient[]
+  desktopSession?: DesktopSessionContext | null
+  refreshTrigger?: number
   onOpenPatient: (patient: Patient) => void
   onStartConsultation: (patient: Patient) => void
   onCreateBill: (patient: Patient) => void
@@ -91,9 +99,11 @@ function parsePatientDate(patient: Patient): number {
   return 0
 }
 
-export function PatientsPage({
+export const PatientsPage = memo(function PatientsPage({
   go,
   patients,
+  desktopSession,
+  refreshTrigger = 0,
   onOpenPatient,
   onStartConsultation,
   onCreateBill,
@@ -109,11 +119,90 @@ export function PatientsPage({
   const [currentPage, setCurrentPage] = useState(1)
   const [patientPendingDelete, setPatientPendingDelete] =
     useState<Patient | null>(null)
+  const [remoteItems, setRemoteItems] = useState<Patient[] | null>(null)
+  const [remoteTotal, setRemoteTotal] = useState(0)
+  const [remoteClinicTotal, setRemoteClinicTotal] = useState(0)
+  const [isLoadingPage, setIsLoadingPage] = useState(false)
+  const [pageError, setPageError] = useState<string | null>(null)
+  const requestSeqRef = useRef(0)
+  const lastQueryRef = useRef(query)
 
   const pageSize = 50
   const hasDateFilter = Boolean(startDate || endDate)
+  const useDesktopPagination = Boolean(
+    desktopSession?.clinic_id && isTauriDesktop(),
+  )
+
+  useEffect(() => {
+    if (!useDesktopPagination || !desktopSession?.clinic_id) {
+      return
+    }
+    const seq = ++requestSeqRef.current
+    const queryChanged = lastQueryRef.current !== query
+    lastQueryRef.current = query
+    const delayMs = queryChanged && query.trim().length > 0 ? 150 : 0
+
+    const timer = window.setTimeout(() => {
+      setIsLoadingPage(true)
+      setPageError(null)
+      getLocalPatientsPage({
+        clinic_id: desktopSession.clinic_id,
+        query: query.trim() || null,
+        gender,
+        sort,
+        start_date: startDate || null,
+        end_date: endDate || null,
+        limit: pageSize,
+        offset: (currentPage - 1) * pageSize,
+      })
+        .then((res) => {
+          if (requestSeqRef.current !== seq) return
+          if (res.items.length === 0 && res.total > 0 && currentPage > 1) {
+            const clampedPage = Math.max(1, Math.ceil(res.total / pageSize))
+            if (clampedPage !== currentPage) {
+              setCurrentPage(clampedPage)
+              return
+            }
+          }
+          const mapped = res.items.map(mapLocalRecordToPatient)
+          setRemoteItems(mapped)
+          setRemoteTotal(res.total)
+          setRemoteClinicTotal(res.clinic_total)
+        })
+        .catch((err) => {
+          if (requestSeqRef.current !== seq) return
+          setPageError(
+            err instanceof Error
+              ? err.message
+              : "Failed to load patient records from local database.",
+          )
+        })
+        .finally(() => {
+          if (requestSeqRef.current === seq) {
+            setIsLoadingPage(false)
+          }
+        })
+    }, delayMs)
+
+    return () => {
+      window.clearTimeout(timer)
+    }
+  }, [
+    useDesktopPagination,
+    desktopSession?.clinic_id,
+    query,
+    gender,
+    sort,
+    startDate,
+    endDate,
+    currentPage,
+    refreshTrigger,
+  ])
 
   const filtered = useMemo(() => {
+    if (useDesktopPagination) {
+      return []
+    }
     const normalizedQuery = query.trim().toLowerCase()
     const matches = patients.filter((patient) => {
       const publicId = getPublicPatientId(patient)
@@ -199,17 +288,53 @@ export function PatientsPage({
       })
     }
     return matches
-  }, [patients, query, gender, sort, startDate, endDate])
+  }, [useDesktopPagination, patients, query, gender, sort, startDate, endDate])
 
-  const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize))
+  const totalMatching = useDesktopPagination
+    ? remoteItems !== null
+      ? remoteTotal
+      : patients.length
+    : filtered.length
+  const clinicTotal = useDesktopPagination
+    ? remoteItems !== null
+      ? remoteClinicTotal
+      : patients.length
+    : patients.length
+  const totalPages = Math.max(1, Math.ceil(totalMatching / pageSize))
   const page = Math.min(currentPage, totalPages)
-  const visiblePatients = filtered.slice((page - 1) * pageSize, page * pageSize)
+  const visiblePatients = useDesktopPagination
+    ? (remoteItems ?? patients.slice(0, pageSize))
+    : filtered.slice((page - 1) * pageSize, page * pageSize)
 
-  useEffect(() => setCurrentPage(1), [query, gender, sort, startDate, endDate])
+  const updateQuery = (next: string) => {
+    setCurrentPage(1)
+    setQuery(next)
+  }
+
+  const updateGender = (next: string) => {
+    setCurrentPage(1)
+    setGender(next)
+  }
+
+  const updateSort = (next: string) => {
+    setCurrentPage(1)
+    setSort(next)
+  }
+
+  const updateStartDate = (next: string) => {
+    setCurrentPage(1)
+    setStartDate(next)
+  }
+
+  const updateEndDate = (next: string) => {
+    setCurrentPage(1)
+    setEndDate(next)
+  }
 
   const applyPresetToday = () => {
     const now = new Date()
     const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`
+    setCurrentPage(1)
     setStartDate(todayStr)
     setEndDate(todayStr)
   }
@@ -219,6 +344,7 @@ export function PatientsPage({
     const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`
     const past = new Date(now.getTime() - 7 * 86400000)
     const pastStr = `${past.getFullYear()}-${String(past.getMonth() + 1).padStart(2, "0")}-${String(past.getDate()).padStart(2, "0")}`
+    setCurrentPage(1)
     setStartDate(pastStr)
     setEndDate(todayStr)
   }
@@ -228,6 +354,7 @@ export function PatientsPage({
     const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`
     const past = new Date(now.getTime() - 30 * 86400000)
     const pastStr = `${past.getFullYear()}-${String(past.getMonth() + 1).padStart(2, "0")}-${String(past.getDate()).padStart(2, "0")}`
+    setCurrentPage(1)
     setStartDate(pastStr)
     setEndDate(todayStr)
   }
@@ -236,11 +363,13 @@ export function PatientsPage({
     const now = new Date()
     const startStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-01`
     const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`
+    setCurrentPage(1)
     setStartDate(startStr)
     setEndDate(todayStr)
   }
 
   const clearDateRange = () => {
+    setCurrentPage(1)
     setStartDate("")
     setEndDate("")
   }
@@ -257,9 +386,11 @@ export function PatientsPage({
       <AppHeader
         title="Patients"
         subtitle={
-          hasDateFilter
-            ? `${filtered.length} of ${patients.length} patient records in selected date range`
-            : `${patients.length} patient records in this clinic`
+          `${
+            hasDateFilter
+              ? `${totalMatching} of ${clinicTotal} patient records in selected date range`
+              : `${clinicTotal} patient records in this clinic`
+          }${isLoadingPage && remoteItems !== null ? " · Updating..." : ""}`
         }
       >
         <IconButton
@@ -285,11 +416,11 @@ export function PatientsPage({
             <input
               aria-label="Search patients"
               value={query}
-              onChange={(e) => setQuery(e.target.value)}
+              onChange={(e) => updateQuery(e.target.value)}
               placeholder="Search by name, patient ID, or phone"
             />
             {query && (
-              <IconButton label="Clear search" onClick={() => setQuery("")}>
+              <IconButton label="Clear search" onClick={() => updateQuery("")}>
                 <X size={16} />
               </IconButton>
             )}
@@ -328,7 +459,7 @@ export function PatientsPage({
           <SelectInput
             aria-label="Filter patients"
             value={gender}
-            onChange={(e) => setGender(e.target.value)}
+            onChange={(e) => updateGender(e.target.value)}
           >
             <option>All patients</option>
             <option>Female</option>
@@ -337,7 +468,7 @@ export function PatientsPage({
           <SelectInput
             aria-label="Sort patients"
             value={sort}
-            onChange={(e) => setSort(e.target.value)}
+            onChange={(e) => updateSort(e.target.value)}
           >
             <option>Created Date (newest first)</option>
             <option>Created Date (oldest first)</option>
@@ -364,7 +495,7 @@ export function PatientsPage({
                   id="patient-filter-from"
                   type="date"
                   value={startDate}
-                  onChange={(e) => setStartDate(e.target.value)}
+                  onChange={(e) => updateStartDate(e.target.value)}
                 />
               </div>
               <div className="date-field">
@@ -373,7 +504,7 @@ export function PatientsPage({
                   id="patient-filter-to"
                   type="date"
                   value={endDate}
-                  onChange={(e) => setEndDate(e.target.value)}
+                  onChange={(e) => updateEndDate(e.target.value)}
                 />
               </div>
             </div>
@@ -420,7 +551,19 @@ export function PatientsPage({
         )}
 
         <section className="table-panel">
-          {filtered.length ? (
+          {pageError ? (
+            <div className="empty-state" role="alert">
+              <AlertCircle size={28} />
+              <h2>Unable to load patients</h2>
+              <p>{pageError}</p>
+            </div>
+          ) : isLoadingPage && remoteItems === null ? (
+            <div className="empty-state" role="status">
+              <Search size={28} />
+              <h2>Loading patients...</h2>
+              <p>Fetching clinic records from encrypted local storage.</p>
+            </div>
+          ) : visiblePatients.length ? (
             <div className="table-wrap">
               <table>
                 <caption className="sr-only">
@@ -548,6 +691,7 @@ export function PatientsPage({
               <Button
                 variant="secondary"
                 onClick={() => {
+                  setCurrentPage(1)
                   setQuery("")
                   setGender("All patients")
                   setStartDate("")
@@ -561,15 +705,15 @@ export function PatientsPage({
 
           <div className="table-footer">
             <span role="status" aria-live="polite">
-              Showing {filtered.length ? (page - 1) * pageSize + 1 : 0}–
-              {Math.min(page * pageSize, filtered.length)} of {filtered.length}{" "}
+              Showing {totalMatching ? (page - 1) * pageSize + 1 : 0}–
+              {Math.min(page * pageSize, totalMatching)} of {totalMatching}{" "}
               matching patients
             </span>
             <div>
               <Button
                 size="sm"
                 variant="ghost"
-                disabled={page === 1}
+                disabled={page === 1 || isLoadingPage}
                 onClick={() =>
                   setCurrentPage((value) => Math.max(1, value - 1))
                 }
@@ -585,7 +729,7 @@ export function PatientsPage({
               <Button
                 size="sm"
                 variant="ghost"
-                disabled={page === totalPages}
+                disabled={page === totalPages || isLoadingPage}
                 onClick={() =>
                   setCurrentPage((value) => Math.min(totalPages, value + 1))
                 }
@@ -612,6 +756,6 @@ export function PatientsPage({
       />
     </>
   )
-}
+})
 
 export default PatientsPage

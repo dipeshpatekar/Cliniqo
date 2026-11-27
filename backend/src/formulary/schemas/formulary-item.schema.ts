@@ -71,6 +71,7 @@ export class FormularyItem {
 
 export const FormularyItemSchema = SchemaFactory.createForClass(FormularyItem)
 
-// Index for tenant isolation and search
+// Index for tenant isolation, sorted pagination, and search
+FormularyItemSchema.index({ clinicId: 1, isActive: 1, name: 1 })
 FormularyItemSchema.index({ clinicId: 1, name: 1, formulation: 1 })
 FormularyItemSchema.index({ clinicId: 1, activeIngredient: 1 })

@@ -34,11 +34,35 @@ pub fn get_trusted_backend_url() -> Result<String, String> {
     }
 }
 
+/// Creates a shared, pooled HTTP client for backend API communication with
+/// automatic redirects disabled to prevent credential leakage and persistent
+/// TCP/TLS connection reuse across requests.
+pub fn create_shared_http_client() -> Result<reqwest::Client, String> {
+    reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(60))
+        .pool_idle_timeout(Duration::from_secs(90))
+        .pool_max_idle_per_host(6)
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|e| format!("Failed to create shared HTTP client: {e}"))
+}
+
+/// Returns a process-wide shared pooled HTTP client for helper functions that do not
+/// receive `AppState`.
+pub fn get_shared_http_client() -> Result<reqwest::Client, String> {
+    use std::sync::OnceLock;
+    static CLIENT: OnceLock<Result<reqwest::Client, String>> = OnceLock::new();
+    CLIENT.get_or_init(create_shared_http_client).clone()
+}
+
 /// Creates a hardened HTTP client with automatic redirects disabled
 /// to prevent token and credential leakage to third-party or untrusted hosts.
 pub fn create_secure_http_client(timeout: Duration) -> Result<reqwest::Client, String> {
     reqwest::Client::builder()
         .timeout(timeout)
+        .connect_timeout(std::cmp::min(Duration::from_secs(10), timeout))
+        .pool_idle_timeout(Duration::from_secs(60))
         .redirect(reqwest::redirect::Policy::none())
         .build()
         .map_err(|e| format!("Failed to create secure HTTP client: {e}"))

@@ -1,19 +1,22 @@
-import { useState, useMemo, useEffect, useRef } from "react"
+import { useState, useMemo, useEffect, useRef, memo } from "react"
 import { Search, X, User, ArrowRight } from "lucide-react"
 import type { Patient } from "../../types"
-import { getPublicPatientId } from "../../types"
+import { getPublicPatientId, mapLocalRecordToPatient } from "../../types"
+import { getLocalPatientsPage, isTauriDesktop } from "../../desktop/desktop-bridge"
 
 export interface GlobalPatientSearchProps {
   patients: Patient[]
   onSelectPatient: (patient: Patient) => void
+  clinicId?: string | null
   placeholder?: string
   className?: string
   initialOpen?: boolean
 }
 
-export function GlobalPatientSearch({
+export const GlobalPatientSearch = memo(function GlobalPatientSearch({
   patients,
   onSelectPatient,
+  clinicId,
   placeholder = "Search patient by name, ID, or phone...",
   className,
   initialOpen = false,
@@ -21,12 +24,55 @@ export function GlobalPatientSearch({
   const [query, setQuery] = useState("")
   const [isOpen, setIsOpen] = useState(initialOpen)
   const [selectedIndex, setSelectedIndex] = useState(0)
+  const [remoteResults, setRemoteResults] = useState<Patient[] | null>(null)
+  const [isSearching, setIsSearching] = useState(false)
   const containerRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
+  const requestSeqRef = useRef(0)
 
-  // Filter patients by name, ID, or phone
+  const useDesktopSearch = Boolean(clinicId && isTauriDesktop())
+
+  useEffect(() => {
+    if (!useDesktopSearch || !clinicId || !isOpen) {
+      return
+    }
+    const seq = ++requestSeqRef.current
+    const trimmed = query.trim()
+    const timer = window.setTimeout(() => {
+      setIsSearching(true)
+      getLocalPatientsPage({
+        clinic_id: clinicId,
+        query: trimmed || null,
+        sort: "Created Date (newest first)",
+        limit: trimmed ? 15 : 8,
+        offset: 0,
+      })
+        .then((res) => {
+          if (requestSeqRef.current !== seq) return
+          setRemoteResults(res.items.map(mapLocalRecordToPatient))
+        })
+        .catch(() => {
+          if (requestSeqRef.current !== seq) return
+          setRemoteResults(null)
+        })
+        .finally(() => {
+          if (requestSeqRef.current === seq) {
+            setIsSearching(false)
+          }
+        })
+    }, trimmed ? 140 : 0)
+
+    return () => {
+      window.clearTimeout(timer)
+    }
+  }, [useDesktopSearch, clinicId, isOpen, query])
+
+  // Filter patients by name, ID, or phone (uses SQLite-indexed search when running in Tauri desktop)
   const filteredPatients = useMemo(() => {
+    if (useDesktopSearch && remoteResults !== null) {
+      return remoteResults
+    }
     const q = query.trim().toLowerCase()
     if (!q) return patients.slice(0, 8)
     const qClean = q.replace(/\s+/g, "")
@@ -45,7 +91,7 @@ export function GlobalPatientSearch({
         )
       })
       .slice(0, 15)
-  }, [patients, query])
+  }, [useDesktopSearch, remoteResults, patients, query])
 
   // Reset selected index when results change
   useEffect(() => {
@@ -279,7 +325,9 @@ export function GlobalPatientSearch({
                   fontSize: "13px",
                 }}
               >
-                No patients found matching &quot;{query}&quot;.
+                {isSearching
+                  ? "Searching patients..."
+                  : `No patients found matching "${query}".`}
               </div>
             ) : (
               filteredPatients.map((p, idx) => {
@@ -395,7 +443,8 @@ export function GlobalPatientSearch({
       )}
     </div>
   )
-}
+})
 
 // Backward-compatible alias
 export const GlobalSearchModal = GlobalPatientSearch
+export default GlobalPatientSearch

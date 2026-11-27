@@ -112,6 +112,7 @@ pub struct SyncWorkerHandle {
     cancel_tx: Arc<Mutex<Option<watch::Sender<bool>>>>,
     active_task: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
     status_info: Arc<RwLock<SyncStatusInfo>>,
+    http_client: reqwest::Client,
 }
 
 impl Default for SyncWorkerHandle {
@@ -122,10 +123,13 @@ impl Default for SyncWorkerHandle {
 
 impl SyncWorkerHandle {
     pub fn new() -> Self {
+        let http_client = crate::config::get_shared_http_client()
+            .unwrap_or_else(|_| reqwest::Client::new());
         Self {
             cancel_tx: Arc::new(Mutex::new(None)),
             active_task: Arc::new(Mutex::new(None)),
             status_info: Arc::new(RwLock::new(SyncStatusInfo::default())),
+            http_client,
         }
     }
 
@@ -195,6 +199,7 @@ impl SyncWorkerHandle {
 
         let status_info = self.status_info.clone();
         let cid = clinic_id.clone();
+        let http_client = self.http_client.clone();
 
         let task = tokio::spawn(async move {
             log::info!("Native sync worker started for clinic '{cid}'.");
@@ -207,6 +212,7 @@ impl SyncWorkerHandle {
                 status_info,
                 rx,
                 backend_url_override,
+                http_client,
             )
             .await;
         });
@@ -236,18 +242,8 @@ async fn run_sync_loop(
     status_info: Arc<RwLock<SyncStatusInfo>>,
     mut cancel_rx: watch::Receiver<bool>,
     backend_url_override: Option<String>,
+    client: reqwest::Client,
 ) {
-    let client = match crate::config::create_secure_http_client(Duration::from_secs(15)) {
-        Ok(c) => c,
-        Err(e) => {
-            log::error!("Failed to create secure HTTP client for sync worker: {e}");
-            let mut s = status_info.write().await;
-            s.status = "ERROR".to_string();
-            s.last_error = Some(format!("HTTP client error: {e}"));
-            s.is_running = false;
-            return;
-        }
-    };
 
     let base_url = if let Some(u) = backend_url_override {
         u
@@ -383,6 +379,7 @@ async fn run_sync_loop(
                 let push_url = format!("{base_url}/sync/push");
                 let push_req = client
                     .post(&push_url)
+                    .timeout(Duration::from_secs(15))
                     .bearer_auth(&access_token)
                     .header("x-clinic-id", &clinic_id)
                     .json(&SyncPushRequest {
@@ -482,17 +479,27 @@ async fn run_sync_loop(
         // Change Feed Pull Phase
         // -------------------------------------------------------------------
         let current_since_seq = {
-            let conn = db.get_connection();
-            DbOperations::get_sync_state(&conn, &clinic_id)
-                .ok()
-                .flatten()
-                .map(|s| s.last_pulled_seq)
-                .unwrap_or(0)
+            match db.get_read_connection() {
+                Ok(conn) => DbOperations::get_sync_state(&conn, &clinic_id)
+                    .ok()
+                    .flatten()
+                    .map(|s| s.last_pulled_seq)
+                    .unwrap_or(0),
+                Err(_) => {
+                    let conn = db.get_connection();
+                    DbOperations::get_sync_state(&conn, &clinic_id)
+                        .ok()
+                        .flatten()
+                        .map(|s| s.last_pulled_seq)
+                        .unwrap_or(0)
+                }
+            }
         };
 
         let pull_url = format!("{base_url}/sync/pull?sinceSeq={current_since_seq}&limit=50");
         let pull_req = client
             .get(&pull_url)
+            .timeout(Duration::from_secs(15))
             .bearer_auth(&access_token)
             .header("x-clinic-id", &clinic_id)
             .send();

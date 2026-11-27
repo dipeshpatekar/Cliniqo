@@ -66,6 +66,47 @@ export interface SyncStatusInfo {
 export interface SavePatientResult {
   id: string
   patient_code: string
+  patient?: LocalPatientRecord | null
+}
+
+export interface PatientsPageQueryArgs {
+  clinic_id: string
+  query?: string | null
+  gender?: string | null
+  sort?: "newest" | "oldest" | "name_asc" | string | null
+  start_date?: string | null
+  end_date?: string | null
+  limit?: number
+  offset?: number
+}
+
+export interface PatientsPageResult {
+  items: LocalPatientRecord[]
+  total: number
+  clinic_total: number
+  limit: number
+  offset: number
+  has_more: boolean
+}
+
+export interface DashboardRecentConsultation {
+  id: string
+  patient_id: string
+  consultation_date: string
+  updated_at: string
+  status: string
+  chief_complaint: string
+  diagnosis: string
+  patient?: LocalPatientRecord | null
+}
+
+export interface DashboardSummaryRecord {
+  total_patients: number
+  seen_today: number
+  allergy_records: number
+  recorded_conditions: number
+  recent_consultations: DashboardRecentConsultation[]
+  recent_patients: LocalPatientRecord[]
 }
 
 export type DiagnosticCategory =
@@ -897,6 +938,47 @@ export async function getLocalPatients(
   return result ?? []
 }
 
+export async function getLocalPatientsPage(
+  args: PatientsPageQueryArgs,
+): Promise<PatientsPageResult> {
+  const limit = args.limit ?? 50
+  const offset = args.offset ?? 0
+  const result = await invokeTauri<PatientsPageResult>(
+    "get_local_patients_page",
+    { args },
+  )
+  return (
+    result ?? {
+      items: [],
+      total: 0,
+      clinic_total: 0,
+      limit,
+      offset,
+      has_more: false,
+    }
+  )
+}
+
+export async function getLocalPatientById(
+  clinicId: string,
+  patientId: string,
+): Promise<LocalPatientRecord | null> {
+  return invokeTauri<LocalPatientRecord | null>("get_local_patient_by_id", {
+    clinicId,
+    patientId,
+  })
+}
+
+export async function getDashboardSummary(
+  clinicId: string,
+  todayIso?: string | null,
+): Promise<DashboardSummaryRecord | null> {
+  return invokeTauri<DashboardSummaryRecord | null>("get_dashboard_summary", {
+    clinicId,
+    todayIso: todayIso || null,
+  })
+}
+
 export async function saveLocalConsultation(
   args: LocalConsultationArgs,
 ): Promise<string | null> {
@@ -1483,10 +1565,16 @@ export async function searchLocalCatalogueCache(
   query: string,
   limit = 20,
   formulation?: string,
+  clinicId?: string | null,
 ): Promise<CatalogueItem[]> {
   const result = await invokeTauri<LocalCatalogueCacheRecord[]>(
     "search_catalogue_cache",
-    { query, limit, formulation: formulation || null },
+    {
+      query,
+      limit,
+      formulation: formulation || null,
+      clinicId: clinicId || null,
+    },
   )
   if (!result) return []
   return result.map((r) => {
@@ -1529,10 +1617,12 @@ export async function searchLocalCatalogueCache(
 export async function getLocalCatalogueStrengthsCache(
   medicineName: string,
   formulation?: string,
+  clinicId?: string | null,
 ): Promise<string[]> {
   const result = await invokeTauri<string[]>("get_catalogue_strengths_cache", {
     medicineName,
     formulation: formulation || null,
+    clinicId: clinicId || null,
   })
   return result || []
 }
@@ -2496,7 +2586,7 @@ export async function exportEncryptedBackup(
     version: 1,
     clinic_id: clinicId,
     created_at: new Date().toISOString(),
-    app_version: "1.0.4",
+    app_version: "1.0.5",
     schema_version: 12,
     patients_count: 5,
     consultations_count: 8,
@@ -2550,8 +2640,8 @@ export async function restoreEncryptedBackup(options: {
       version: 1,
       clinic_id: options.clinicId || "clinic_demo",
       created_at: new Date().toISOString(),
-      app_version: "1.0.4",
-      schema_version: 12,
+      app_version: "1.0.5",
+      schema_version: 14,
       patients_count: 5,
       consultations_count: 8,
       prescriptions_count: 8,
@@ -2564,6 +2654,80 @@ export async function restoreEncryptedBackup(options: {
     prescriptions_count: 8,
     invoices_count: 4,
   }
+}
+
+export interface AutoBackupConfig {
+  enabled: boolean
+  interval_hours: number
+  max_retained: number
+}
+
+export interface LocalBackupEntry {
+  file_name: string
+  file_path: string
+  size_bytes: number
+  created_at: string
+  is_auto: boolean
+}
+
+export interface AutoBackupStatus {
+  config: AutoBackupConfig
+  is_running: boolean
+  last_backup_at: string | null
+  last_status: string
+  last_error: string | null
+  last_file_path: string | null
+  retained_count: number
+  manual_count: number
+  backup_directory: string
+  backups: LocalBackupEntry[]
+}
+
+export interface DatabaseDiagnosticsResult {
+  health_status: "healthy" | "warning" | "corrupted" | string
+  integrity_ok: boolean
+  integrity_details: string
+  foreign_key_violations: number
+  schema_version: number
+  wal_checkpoint_ok: boolean
+  outbox_recovered_count: number
+  encryption_key_compatible: boolean
+  messages: string[]
+}
+
+export async function setConsultationActiveState(active: boolean): Promise<void> {
+  if (!isTauriDesktop()) return
+  await invokeTauri<void>("set_consultation_active_state", { active })
+}
+
+export async function getAutoBackupStatus(
+  clinicId: string,
+): Promise<AutoBackupStatus | null> {
+  if (!isTauriDesktop()) return null
+  return invokeTauri<AutoBackupStatus>("get_auto_backup_status", { clinicId })
+}
+
+export async function updateAutoBackupConfig(
+  clinicId: string,
+  config: AutoBackupConfig,
+): Promise<AutoBackupStatus | null> {
+  if (!isTauriDesktop()) return null
+  return invokeTauri<AutoBackupStatus>("update_auto_backup_config", {
+    clinicId,
+    config,
+  })
+}
+
+export async function runAutoBackupNow(
+  clinicId: string,
+): Promise<AutoBackupStatus | null> {
+  if (!isTauriDesktop()) return null
+  return invokeTauri<AutoBackupStatus>("run_auto_backup_now", { clinicId })
+}
+
+export async function runDatabaseDiagnostics(): Promise<DatabaseDiagnosticsResult | null> {
+  if (!isTauriDesktop()) return null
+  return invokeTauri<DatabaseDiagnosticsResult>("run_database_diagnostics")
 }
 
 // ---------------------------------------------------------------------------
@@ -2620,7 +2784,7 @@ export async function checkAppUpdate(endpoint?: string): Promise<UpdateCheckResu
 
   return {
     available: false,
-    current_version: "1.0.4",
+    current_version: "1.0.5",
     target_version: null,
     release_notes: null,
     pub_date: null,
@@ -2640,7 +2804,7 @@ export async function getUpdateCompletionStatus(): Promise<UpdateCompletionStatu
   return {
     status: "none",
     from_version: null,
-    current_version: "1.0.4",
+    current_version: "1.0.5",
     target_version: null,
     message: null,
   }

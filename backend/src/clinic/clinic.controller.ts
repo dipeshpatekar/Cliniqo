@@ -287,8 +287,13 @@ export class ClinicController {
         "Audit logs can only be viewed by the clinic owner.",
       )
     }
-    const pageNum = page ? parseInt(page, 10) : 1
-    const limitNum = limit ? parseInt(limit, 10) : 50
+    const parsedPage = page ? parseInt(page, 10) : 1
+    const parsedLimit = limit ? parseInt(limit, 10) : 50
+    const pageNum = Number.isFinite(parsedPage) && parsedPage > 0 ? parsedPage : 1
+    const limitNum =
+      Number.isFinite(parsedLimit) && parsedLimit > 0
+        ? Math.min(100, parsedLimit)
+        : 50
     return this.auditService.listClinicAuditLogs(clinic._id, pageNum, limitNum)
   }
 }

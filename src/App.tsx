@@ -1,5 +1,13 @@
-import { useState, useEffect, useRef, useCallback, type ReactNode } from "react"
-import { Menu, RefreshCw, AlertCircle, Download, X } from "lucide-react"
+import {
+  useState,
+  useEffect,
+  useRef,
+  useCallback,
+  lazy,
+  Suspense,
+  type ReactNode,
+} from "react"
+import { Menu, AlertCircle, Download, X } from "lucide-react"
 
 // Re-export utility functions for backward compatibility with existing tests
 export { computeBillTotals, validateMedicineFormulation } from "./utils/billing"
@@ -55,20 +63,33 @@ import {
 import { cn } from "./utils/cn"
 
 // Components
-import { Button, IconButton, SavedBookmarkIcon, ShortcutGuideModal } from "./components/common"
+import {
+  Button,
+  IconButton,
+  SavedBookmarkIcon,
+  ShortcutGuideModal,
+  StartupSplash,
+} from "./components/common"
 import { Sidebar, Logo } from "./components/layout"
 import { Login, Register, Setup } from "./components/auth"
 import { Dashboard } from "./components/dashboard"
-import {
-  PatientsPage,
-  PatientProfile,
-  PatientForm,
-} from "./components/patients"
-import { Consultation, PrescriptionPreview } from "./components/consultation"
-import { BillForm, BillPreview } from "./components/billing"
-import { SettingsPage } from "./components/settings"
-import { ConflictResolutionModal } from "./components/ConflictResolutionModal"
+import { PatientProfile } from "./components/patients/PatientProfile"
+import { PrescriptionPreview } from "./components/consultation/PrescriptionPreview"
+import { BillPreview } from "./components/billing/BillPreview"
 import { dispatchShortcutEvent } from "./utils/keyboardShortcuts"
+
+const PatientsPage = lazy(() => import("./components/patients/PatientsPage"))
+const PatientForm = lazy(() =>
+  import("./components/patients/PatientForm").then((m) => ({
+    default: m.PatientForm,
+  })),
+)
+const Consultation = lazy(() => import("./components/consultation/Consultation"))
+const BillForm = lazy(() => import("./components/billing/BillForm"))
+const SettingsPage = lazy(() => import("./components/settings/SettingsPage"))
+const ConflictResolutionModal = lazy(
+  () => import("./components/ConflictResolutionModal"),
+)
 
 // Native Desktop Bridge
 import {
@@ -78,7 +99,8 @@ import {
   refreshDesktopSession,
   restoreOfflineDesktopSession,
   logoutDesktopSession,
-  getLocalPatients,
+  getLocalPatientsPage,
+  getLocalPatientById,
   getNextPatientCode,
   saveLocalPatient,
   deleteLocalPatient,
@@ -100,6 +122,7 @@ import {
   installStagedUpdate,
   getUpdateCompletionStatus,
   onUpdaterProgress,
+  setConsultationActiveState,
   type DesktopSessionContext,
   type LocalInvoiceRecord,
   type LocalPrescriptionRecord,
@@ -109,7 +132,6 @@ import {
   type UpdateProgressEvent,
   type UpdateCompletionStatus,
 } from "./desktop/desktop-bridge"
-import stockReportData from "./data/stock-report-18-10-26.json"
 import {
   resolvePrescriptionPreviewNavigation,
   resolveBillPreviewNavigation,
@@ -263,6 +285,8 @@ export default function App({
   const isSavingPatientRef = useRef(false)
   const [isRestoringSession, setIsRestoringSession] =
     useState<boolean>(isTauriDesktop)
+  const [startupError, setStartupError] = useState<string | null>(null)
+  const [bootstrapAttempt, setBootstrapAttempt] = useState(0)
   const [availableUpdate, setAvailableUpdate] =
     useState<UpdateCheckResult | null>(null)
   const [updateBannerDismissed, setUpdateBannerDismissed] = useState(false)
@@ -693,6 +717,29 @@ export default function App({
   const [showShortcutsModal, setShowShortcutsModal] = useState(false)
   const [targetConflictId, setTargetConflictId] = useState<string | null>(null)
   const [conflictsCount, setConflictsCount] = useState(0)
+  const [patientsRefreshTrigger, setPatientsRefreshTrigger] = useState(0)
+
+  const refreshInitialPatientSlice = useCallback(
+    async (clinicId: string, selectFirst = false) => {
+      const pageRes = await getLocalPatientsPage({
+        clinic_id: clinicId,
+        sort: "Created Date (newest first)",
+        limit: 50,
+        offset: 0,
+      })
+      if (pageRes.items.length > 0) {
+        const mapped = pageRes.items.map(mapLocalRecordToPatient)
+        setPatientRecords(mapped)
+        if (selectFirst) {
+          setSelectedPatient(mapped[0])
+        }
+        return mapped
+      }
+      setPatientRecords([])
+      return []
+    },
+    [],
+  )
 
   // Poll sync status to keep conflict count updated in desktop mode
   useEffect(() => {
@@ -724,14 +771,16 @@ export default function App({
   const handleConflictResolved = async () => {
     if (desktopSession?.clinic_id) {
       try {
-        const localPatients = await getLocalPatients(desktopSession.clinic_id)
-        if (localPatients) {
-          const mapped = localPatients.map(mapLocalRecordToPatient)
-          setPatientRecords(mapped)
-          setSelectedPatient((current) => {
-            const found = mapped.find((p) => p.id === current.id)
-            return found || current
-          })
+        await refreshInitialPatientSlice(desktopSession.clinic_id, false)
+        setPatientsRefreshTrigger((v) => v + 1)
+        if (selectedPatient?.id && selectedPatient.id !== "PT-INIT") {
+          const freshSelected = await getLocalPatientById(
+            desktopSession.clinic_id,
+            selectedPatient.id,
+          )
+          if (freshSelected) {
+            setSelectedPatient(mapLocalRecordToPatient(freshSelected))
+          }
         }
         const st = await getSyncStatus()
         if (st) {
@@ -752,6 +801,9 @@ export default function App({
         try {
           const summary = await getInventoryStockSummary(clinicId)
           if (!summary || summary.total_products === 0) {
+            const { default: stockReportData } = await import(
+              "./data/stock-report-18-10-26.json"
+            )
             await importInventoryStock(clinicId, stockReportData as any, false)
           }
         } catch {}
@@ -820,38 +872,10 @@ export default function App({
     }
   }
 
-  const loadAndMergeChiefComplaints = async (clinicId: string) => {
-    if (!isTauriDesktop()) return
-    try {
-      const consultations = await getLocalConsultations(clinicId)
-      if (Array.isArray(consultations) && consultations.length > 0) {
-        let changed = false
-        const currentCustom = loadCustomChiefComplaints(clinicId)
-        const currentSet = new Set([
-          ...complaintOptions.map((c) => c.trim().toLowerCase()),
-          ...currentCustom.map((c) => c.trim().toLowerCase()),
-        ])
-        const toAdd: string[] = []
-        for (const c of consultations) {
-          const comp = c.chief_complaint?.trim()
-          if (comp && !currentSet.has(comp.toLowerCase())) {
-            currentSet.add(comp.toLowerCase())
-            toAdd.push(comp)
-            changed = true
-          }
-        }
-        if (changed) {
-          const merged = [...currentCustom, ...toAdd]
-          saveCustomChiefComplaints(merged, clinicId)
-          setCustomChiefComplaints(merged)
-        }
-      }
-    } catch (err) {
-      console.warn(
-        "[Cliniqo Desktop] Failed to load local chief complaints:",
-        err,
-      )
-    }
+  const loadAndMergeChiefComplaints = async (_clinicId: string) => {
+    // Custom chief complaints are persisted incrementally on consultation finalization;
+    // avoid decrypting all clinic consultations eagerly during session startup.
+    return
   }
 
   // Desktop session bootstrap: check active in-memory session or restore via DPAPI refresh token
@@ -869,16 +893,7 @@ export default function App({
       setDesktopSession(restored.session)
       if (restored.clinics.length > 0 && restored.session.clinic_id) {
         try {
-          const localPatients = await getLocalPatients(
-            restored.session.clinic_id,
-          )
-          if (localPatients && localPatients.length > 0) {
-            const mapped = localPatients.map(mapLocalRecordToPatient)
-            setPatientRecords(mapped)
-            setSelectedPatient(mapped[0])
-          } else {
-            setPatientRecords([])
-          }
+          await refreshInitialPatientSlice(restored.session.clinic_id, true)
         } catch (err) {
           console.warn("[Cliniqo Desktop] Failed to load local patients:", err)
         }
@@ -886,7 +901,6 @@ export default function App({
           curr === "login" || curr === "register" ? "dashboard" : curr,
         )
         loadAndMergeLocalFormulary(restored.session.clinic_id).catch(() => {})
-        loadAndMergeChiefComplaints(restored.session.clinic_id).catch(() => {})
         startCatalogueSync().catch(() => {})
       } else {
         // Incomplete onboarding: restored refresh token valid, but 0 clinics -> resume setup!
@@ -904,6 +918,10 @@ export default function App({
     }
 
     async function bootstrapDesktopSession() {
+      if (mounted) {
+        setStartupError(null)
+        setIsRestoringSession(true)
+      }
       try {
         const active = await getDesktopSession()
         const nowSec = Math.floor(Date.now() / 1000)
@@ -913,14 +931,7 @@ export default function App({
             setDesktopSession(active)
             if (active.clinic_id) {
               try {
-                const localPatients = await getLocalPatients(active.clinic_id)
-                if (localPatients && localPatients.length > 0) {
-                  const mapped = localPatients.map(mapLocalRecordToPatient)
-                  setPatientRecords(mapped)
-                  setSelectedPatient(mapped[0])
-                } else {
-                  setPatientRecords([])
-                }
+                await refreshInitialPatientSlice(active.clinic_id, true)
               } catch (err) {
                 console.warn(
                   "[Cliniqo Desktop] Failed to load local patients:",
@@ -931,7 +942,6 @@ export default function App({
                 curr === "login" || curr === "register" ? "dashboard" : curr,
               )
               loadAndMergeLocalFormulary(active.clinic_id).catch(() => {})
-              loadAndMergeChiefComplaints(active.clinic_id).catch(() => {})
               startCatalogueSync().catch(() => {})
             } else {
               // Incomplete onboarding: session established but clinic not created yet
@@ -992,8 +1002,15 @@ export default function App({
             onboardingDoctorRef.current = null
             setOnboardingDoctor(null)
             setPage("login")
+            setIsRestoringSession(false)
+            return
           }
-          setIsRestoringSession(false)
+
+          setStartupError(
+            err instanceof Error && err.message
+              ? err.message
+              : "Could not unlock your local encrypted workspace. You can retry or sign in again.",
+          )
         }
       }
     }
@@ -1002,7 +1019,7 @@ export default function App({
     return () => {
       mounted = false
     }
-  }, [])
+  }, [bootstrapAttempt])
 
   // Startup auto-update check and post-update completion/recovery detection (desktop only)
   useEffect(() => {
@@ -1269,6 +1286,10 @@ export default function App({
     })
     go("login", null)
   }
+
+  useEffect(() => {
+    setConsultationActiveState(page === "consultation").catch(() => {})
+  }, [page])
 
   const openPatient = (patient: Patient) => {
     setSelectedPatient(patient)
@@ -2115,16 +2136,14 @@ export default function App({
             ageMonths: patient.ageMonths !== undefined ? patient.ageMonths : 0,
           }
           try {
-            const freshPatients = await getLocalPatients(
-              desktopSession.clinic_id,
-            )
-            if (freshPatients && freshPatients.length > 0) {
-              const mapped = freshPatients.map(mapLocalRecordToPatient)
-              setPatientRecords(mapped)
-              const matched = mapped.find((p) => p.id === canonicalId)
-              if (matched) effectivePatient = matched
+            const hydratedRecord =
+              saveRes.patient ??
+              (await getLocalPatientById(desktopSession.clinic_id, canonicalId))
+            if (hydratedRecord) {
+              effectivePatient = mapLocalRecordToPatient(hydratedRecord)
             }
           } catch {}
+          setPatientsRefreshTrigger((v) => v + 1)
         } else {
           throw new PatientSaveError({
             category: "UNKNOWN_SAVE_FAILURE",
@@ -2223,10 +2242,7 @@ export default function App({
     if (isTauriDesktop() && desktopSession?.clinic_id) {
       try {
         await deleteLocalPatient(desktopSession.clinic_id, patientId)
-        const freshPatients = await getLocalPatients(desktopSession.clinic_id)
-        if (freshPatients) {
-          setPatientRecords(freshPatients.map(mapLocalRecordToPatient))
-        }
+        setPatientsRefreshTrigger((v) => v + 1)
       } catch (err) {
         console.error(
           "[Cliniqo Desktop] Failed to delete patient from SQLite:",
@@ -2261,14 +2277,7 @@ export default function App({
     }
 
     try {
-      const localPatients = await getLocalPatients(session.clinic_id)
-      if (localPatients && localPatients.length > 0) {
-        const mapped = localPatients.map(mapLocalRecordToPatient)
-        setPatientRecords(mapped)
-        setSelectedPatient(mapped[0])
-      } else {
-        setPatientRecords([])
-      }
+      await refreshInitialPatientSlice(session.clinic_id, true)
     } catch (err) {
       console.warn(
         "[Cliniqo Desktop] Failed to load local patients on login:",
@@ -2278,7 +2287,6 @@ export default function App({
     setCustomDiagnoses(loadCustomDiagnoses(session.clinic_id))
     setClinicalLibrary(loadClinicalLibrary(session.clinic_id))
     loadAndMergeLocalFormulary(session.clinic_id).catch(() => {})
-    loadAndMergeChiefComplaints(session.clinic_id).catch(() => {})
     startCatalogueSync().catch(() => {})
     go("dashboard", session)
   }
@@ -2638,14 +2646,19 @@ export default function App({
 
   if (isRestoringSession) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-slate-50 dark:bg-slate-900 text-slate-700 dark:text-slate-200">
-        <div className="flex flex-col items-center gap-3">
-          <RefreshCw className="animate-spin text-teal-600" size={32} />
-          <p className="text-sm font-medium">
-            Verifying desktop security session...
-          </p>
-        </div>
-      </div>
+      <StartupSplash
+        error={startupError}
+        onRetry={() => setBootstrapAttempt((prev) => prev + 1)}
+        onContinue={() => {
+          desktopSessionRef.current = null
+          setDesktopSession(null)
+          onboardingDoctorRef.current = null
+          setOnboardingDoctor(null)
+          setStartupError(null)
+          setPage("login")
+          setIsRestoringSession(false)
+        }}
+      />
     )
   }
 
@@ -2725,6 +2738,8 @@ export default function App({
       <PatientsPage
         go={go}
         patients={patientRecords}
+        desktopSession={desktopSession}
+        refreshTrigger={patientsRefreshTrigger}
         onOpenPatient={openPatient}
         onStartConsultation={startConsultation}
         onCreateBill={startBill}
@@ -2900,19 +2915,16 @@ export default function App({
           setClinicalLibrary(currentLib)
 
           if (isTauriDesktop() && desktopSession?.clinic_id) {
-            getLocalPatients(desktopSession.clinic_id)
+            setPatientsRefreshTrigger((v) => v + 1)
+            getLocalPatientById(desktopSession.clinic_id, selectedPatient.id)
               .then((fresh) => {
-                if (fresh && fresh.length > 0) {
-                  const mapped = fresh.map(mapLocalRecordToPatient)
-                  setPatientRecords(mapped)
-                  const updated = mapped.find(
-                    (p) =>
-                      p.id === selectedPatient.id ||
-                      p.displayId === selectedPatient.displayId,
-                  )
-                  if (updated) {
-                    setSelectedPatient(updated)
-                  }
+                if (fresh) {
+                  const updated = mapLocalRecordToPatient(fresh)
+                  setSelectedPatient(updated)
+                  setPatientRecords((records) => [
+                    updated,
+                    ...records.filter((p) => p.id !== updated.id),
+                  ])
                 }
               })
               .catch(() => {})
@@ -3038,6 +3050,20 @@ export default function App({
             )
             if (matched) {
               setSelectedPatient(matched)
+            } else if (
+              selectedPatient?.id !== id &&
+              selectedPatient?.displayId !== id &&
+              selectedPatient?.patientCode !== id &&
+              isTauriDesktop() &&
+              desktopSession?.clinic_id
+            ) {
+              getLocalPatientById(desktopSession.clinic_id, id)
+                .then((rec) => {
+                  if (rec) {
+                    setSelectedPatient(mapLocalRecordToPatient(rec))
+                  }
+                })
+                .catch(() => {})
             }
           }
           setPatientProfileTab("Invoices")
@@ -3222,22 +3248,36 @@ export default function App({
             )}
           </div>
         )}
-        {content}
+        <Suspense
+          fallback={
+            <div className="p-8 text-center text-sm text-slate-500 dark:text-slate-400">
+              Loading workspace view...
+            </div>
+          }
+        >
+          {content}
+        </Suspense>
       </div>
-      <ConflictResolutionModal
-        isOpen={showConflictModal}
-        onClose={() => {
-          setShowConflictModal(false)
-          setTargetConflictId(null)
-        }}
-        activeClinicId={desktopSession?.clinic_id || ""}
-        initialConflictId={targetConflictId}
-        onConflictResolved={handleConflictResolved}
-      />
-      <ShortcutGuideModal
-        isOpen={showShortcutsModal}
-        onClose={() => setShowShortcutsModal(false)}
-      />
+      {showConflictModal && (
+        <Suspense fallback={null}>
+          <ConflictResolutionModal
+            isOpen={showConflictModal}
+            onClose={() => {
+              setShowConflictModal(false)
+              setTargetConflictId(null)
+            }}
+            activeClinicId={desktopSession?.clinic_id || ""}
+            initialConflictId={targetConflictId}
+            onConflictResolved={handleConflictResolved}
+          />
+        </Suspense>
+      )}
+      {showShortcutsModal && (
+        <ShortcutGuideModal
+          isOpen={showShortcutsModal}
+          onClose={() => setShowShortcutsModal(false)}
+        />
+      )}
     </div>
   )
 }

@@ -155,7 +155,7 @@ impl CatalogueSyncManager {
             crate::config::get_trusted_backend_url()?
         };
 
-        let client = crate::config::create_secure_http_client(Duration::from_secs(30))?;
+        let client = crate::config::get_shared_http_client()?;
 
         // Retrieve initial access token from canonical SessionManager
         let mut access_token = session_mgr
@@ -210,6 +210,7 @@ impl CatalogueSyncManager {
             let feed_data = loop {
                 let resp = client
                     .get(&feed_url)
+                    .timeout(Duration::from_secs(30))
                     .bearer_auth(&access_token)
                     .send()
                     .await

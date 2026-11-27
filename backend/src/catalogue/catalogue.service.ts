@@ -92,6 +92,9 @@ export class CatalogueService {
     const escaped = rawQuery.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
     const regex = new RegExp(escaped, "i")
     const searchType = dto.type || CatalogueSearchType.ALL
+    const escapedFormulation = dto.formulation
+      ? dto.formulation.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+      : ""
 
     const brandFilter: any = {
       $or: [
@@ -101,8 +104,8 @@ export class CatalogueService {
         { identifier: rawQuery },
       ],
     }
-    if (dto.formulation) {
-      const formRegex = new RegExp(dto.formulation, "i")
+    if (escapedFormulation) {
+      const formRegex = new RegExp(escapedFormulation, "i")
       brandFilter.$and = [
         {
           $or: [{ dosageForm: formRegex }, { brandName: formRegex }],
@@ -120,8 +123,8 @@ export class CatalogueService {
         { identifier: rawQuery },
       ],
     }
-    if (dto.formulation) {
-      const formRegex = new RegExp(dto.formulation, "i")
+    if (escapedFormulation) {
+      const formRegex = new RegExp(escapedFormulation, "i")
       genericFilter.$and = [
         {
           $or: [{ doseForm: formRegex }, { genericName: formRegex }],
@@ -290,6 +293,9 @@ export class CatalogueService {
     const escaped = rawName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
     const regex = new RegExp(`^${escaped}$`, "i")
     const partialRegex = new RegExp(escaped, "i")
+    const escapedFormulation = dto.formulation
+      ? dto.formulation.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+      : ""
 
     const brandFilter: any = {
       $or: [
@@ -298,8 +304,8 @@ export class CatalogueService {
         { genericName: regex },
       ],
     }
-    if (dto.formulation) {
-      const formRegex = new RegExp(dto.formulation, "i")
+    if (escapedFormulation) {
+      const formRegex = new RegExp(escapedFormulation, "i")
       brandFilter.$and = [
         {
           $or: [
@@ -314,8 +320,8 @@ export class CatalogueService {
     const genericFilter: any = {
       $or: [{ genericName: partialRegex }, { substances: regex }],
     }
-    if (dto.formulation) {
-      const formRegex = new RegExp(dto.formulation, "i")
+    if (escapedFormulation) {
+      const formRegex = new RegExp(escapedFormulation, "i")
       genericFilter.$and = [
         {
           $or: [{ doseForm: formRegex }, { genericName: formRegex }],
@@ -377,9 +383,17 @@ export class CatalogueService {
    */
   async getFeed(cursor?: string, limit = 100): Promise<CatalogueFeedResult> {
     const safeLimit = Math.min(500, Math.max(1, limit || 100))
+    const countGeneric =
+      typeof (this.genericModel as any).estimatedDocumentCount === "function"
+        ? (this.genericModel as any).estimatedDocumentCount().exec()
+        : this.genericModel.countDocuments().exec()
+    const countBrand =
+      typeof (this.brandModel as any).estimatedDocumentCount === "function"
+        ? (this.brandModel as any).estimatedDocumentCount().exec()
+        : this.brandModel.countDocuments().exec()
     const [genericCount, brandCount] = await Promise.all([
-      this.genericModel.countDocuments().exec(),
-      this.brandModel.countDocuments().exec(),
+      countGeneric,
+      countBrand,
     ])
     const total = genericCount + brandCount
 

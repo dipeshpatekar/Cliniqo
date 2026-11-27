@@ -450,6 +450,210 @@ CREATE TABLE IF NOT EXISTS local_mutation_idempotency (
 );
 "#;
 
+/// Migration V14: Composite performance indexes, phone_hmac blind-index, last_visit_at metadata
+/// triggers, and clinic-isolated FTS5 search indexes for local clinical library & stock.
+pub const MIGRATION_V14_SQL: &str = r#"
+-- 1. Patient query & blind-index indexes
+CREATE INDEX IF NOT EXISTS idx_patients_v14_created ON local_patients(clinic_id, created_at DESC, id DESC);
+CREATE INDEX IF NOT EXISTS idx_patients_v14_last_visit ON local_patients(clinic_id, last_visit_at DESC, created_at DESC, id DESC);
+CREATE INDEX IF NOT EXISTS idx_patients_v14_phone_hmac ON local_patients(clinic_id, phone_hmac);
+CREATE INDEX IF NOT EXISTS idx_patients_v14_server_id ON local_patients(clinic_id, server_id);
+
+-- 2. Consultation composite indexes
+CREATE INDEX IF NOT EXISTS idx_consultations_v14_patient_updated ON local_consultations(clinic_id, patient_id, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_consultations_v14_date ON local_consultations(clinic_id, consultation_date DESC, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_consultations_v14_server_id ON local_consultations(clinic_id, server_id);
+
+-- 3. Prescription composite indexes
+CREATE INDEX IF NOT EXISTS idx_prescriptions_v14_patient_created ON local_prescriptions(clinic_id, patient_id, created_at DESC, revision_number DESC);
+CREATE INDEX IF NOT EXISTS idx_prescriptions_v14_consult_status ON local_prescriptions(clinic_id, consultation_id, status);
+CREATE INDEX IF NOT EXISTS idx_prescriptions_v14_number ON local_prescriptions(clinic_id, prescription_number);
+
+-- 4. Invoice composite index (replaces prefix-redundant idx_invoices_v2_patient)
+DROP INDEX IF EXISTS idx_invoices_v2_patient;
+CREATE INDEX IF NOT EXISTS idx_invoices_v14_patient_created ON local_invoices_v2(clinic_id, patient_id, created_at DESC);
+
+-- 5. Triggers maintaining local_patients.last_visit_at incrementally on write
+CREATE TRIGGER IF NOT EXISTS trg_consultations_last_visit_ai
+AFTER INSERT ON local_consultations
+WHEN NEW.status IN ('FINALIZED', 'COMPLETED')
+BEGIN
+    UPDATE local_patients
+    SET last_visit_at = (
+        SELECT COALESCE(c.consultation_date, c.created_at)
+        FROM local_consultations c
+        LEFT JOIN local_prescriptions rx
+          ON (rx.consultation_id = c.id OR (c.server_id IS NOT NULL AND rx.consultation_id = c.server_id))
+         AND rx.clinic_id = c.clinic_id
+        WHERE c.clinic_id = local_patients.clinic_id
+          AND (
+              c.patient_id = local_patients.id
+              OR c.patient_id = local_patients.patient_code
+              OR (local_patients.server_id IS NOT NULL AND c.patient_id = local_patients.server_id)
+          )
+          AND (
+              rx.status = 'ACTIVE'
+              OR (c.status IN ('FINALIZED', 'COMPLETED') AND (rx.status IS NULL OR rx.status = 'ACTIVE'))
+              OR c.status = 'FINALIZED'
+          )
+        ORDER BY c.consultation_date DESC, c.created_at DESC
+        LIMIT 1
+    )
+    WHERE clinic_id = NEW.clinic_id
+      AND (id = NEW.patient_id OR patient_code = NEW.patient_id OR (server_id IS NOT NULL AND server_id = NEW.patient_id));
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_consultations_last_visit_au
+AFTER UPDATE OF status, consultation_date ON local_consultations
+WHEN NEW.status IN ('FINALIZED', 'COMPLETED') OR OLD.status IN ('FINALIZED', 'COMPLETED')
+BEGIN
+    UPDATE local_patients
+    SET last_visit_at = (
+        SELECT COALESCE(c.consultation_date, c.created_at)
+        FROM local_consultations c
+        LEFT JOIN local_prescriptions rx
+          ON (rx.consultation_id = c.id OR (c.server_id IS NOT NULL AND rx.consultation_id = c.server_id))
+         AND rx.clinic_id = c.clinic_id
+        WHERE c.clinic_id = local_patients.clinic_id
+          AND (
+              c.patient_id = local_patients.id
+              OR c.patient_id = local_patients.patient_code
+              OR (local_patients.server_id IS NOT NULL AND c.patient_id = local_patients.server_id)
+          )
+          AND (
+              rx.status = 'ACTIVE'
+              OR (c.status IN ('FINALIZED', 'COMPLETED') AND (rx.status IS NULL OR rx.status = 'ACTIVE'))
+              OR c.status = 'FINALIZED'
+          )
+        ORDER BY c.consultation_date DESC, c.created_at DESC
+        LIMIT 1
+    )
+    WHERE clinic_id = NEW.clinic_id
+      AND (id = NEW.patient_id OR patient_code = NEW.patient_id OR (server_id IS NOT NULL AND server_id = NEW.patient_id));
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_prescriptions_last_visit_ai
+AFTER INSERT ON local_prescriptions
+WHEN NEW.status = 'ACTIVE'
+BEGIN
+    UPDATE local_patients
+    SET last_visit_at = (
+        SELECT COALESCE(c.consultation_date, c.created_at)
+        FROM local_consultations c
+        LEFT JOIN local_prescriptions rx
+          ON (rx.consultation_id = c.id OR (c.server_id IS NOT NULL AND rx.consultation_id = c.server_id))
+         AND rx.clinic_id = c.clinic_id
+        WHERE c.clinic_id = local_patients.clinic_id
+          AND (
+              c.patient_id = local_patients.id
+              OR c.patient_id = local_patients.patient_code
+              OR (local_patients.server_id IS NOT NULL AND c.patient_id = local_patients.server_id)
+          )
+          AND (
+              rx.status = 'ACTIVE'
+              OR (c.status IN ('FINALIZED', 'COMPLETED') AND (rx.status IS NULL OR rx.status = 'ACTIVE'))
+              OR c.status = 'FINALIZED'
+          )
+        ORDER BY c.consultation_date DESC, c.created_at DESC
+        LIMIT 1
+    )
+    WHERE clinic_id = NEW.clinic_id
+      AND (id = NEW.patient_id OR patient_code = NEW.patient_id OR (server_id IS NOT NULL AND server_id = NEW.patient_id));
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_prescriptions_last_visit_au
+AFTER UPDATE OF status ON local_prescriptions
+WHEN NEW.status = 'ACTIVE' OR OLD.status = 'ACTIVE'
+BEGIN
+    UPDATE local_patients
+    SET last_visit_at = (
+        SELECT COALESCE(c.consultation_date, c.created_at)
+        FROM local_consultations c
+        LEFT JOIN local_prescriptions rx
+          ON (rx.consultation_id = c.id OR (c.server_id IS NOT NULL AND rx.consultation_id = c.server_id))
+         AND rx.clinic_id = c.clinic_id
+        WHERE c.clinic_id = local_patients.clinic_id
+          AND (
+              c.patient_id = local_patients.id
+              OR c.patient_id = local_patients.patient_code
+              OR (local_patients.server_id IS NOT NULL AND c.patient_id = local_patients.server_id)
+          )
+          AND (
+              rx.status = 'ACTIVE'
+              OR (c.status IN ('FINALIZED', 'COMPLETED') AND (rx.status IS NULL OR rx.status = 'ACTIVE'))
+              OR c.status = 'FINALIZED'
+          )
+        ORDER BY c.consultation_date DESC, c.created_at DESC
+        LIMIT 1
+    )
+    WHERE clinic_id = NEW.clinic_id
+      AND (id = NEW.patient_id OR patient_code = NEW.patient_id OR (server_id IS NOT NULL AND server_id = NEW.patient_id));
+END;
+
+-- 6. Clinic-scoped FTS5 search indexes for local clinical library and inventory stock
+CREATE VIRTUAL TABLE IF NOT EXISTS local_clinical_library_fts USING fts5(
+    item_id UNINDEXED,
+    clinic_id UNINDEXED,
+    name,
+    generic_name,
+    brand_name,
+    composition,
+    tokenize = 'unicode61'
+);
+
+CREATE TRIGGER IF NOT EXISTS trg_clinical_lib_fts_ai
+AFTER INSERT ON local_clinical_library_v1
+WHEN NEW.is_active = 1
+BEGIN
+    INSERT INTO local_clinical_library_fts (item_id, clinic_id, name, generic_name, brand_name, composition)
+    VALUES (NEW.id, NEW.clinic_id, NEW.name, COALESCE(NEW.generic_name, ''), COALESCE(NEW.brand_name, ''), COALESCE(NEW.composition, ''));
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_clinical_lib_fts_au
+AFTER UPDATE ON local_clinical_library_v1
+BEGIN
+    DELETE FROM local_clinical_library_fts WHERE item_id = OLD.id;
+    INSERT INTO local_clinical_library_fts (item_id, clinic_id, name, generic_name, brand_name, composition)
+    SELECT NEW.id, NEW.clinic_id, NEW.name, COALESCE(NEW.generic_name, ''), COALESCE(NEW.brand_name, ''), COALESCE(NEW.composition, '')
+    WHERE NEW.is_active = 1;
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_clinical_lib_fts_ad
+AFTER DELETE ON local_clinical_library_v1
+BEGIN
+    DELETE FROM local_clinical_library_fts WHERE item_id = OLD.id;
+END;
+
+CREATE VIRTUAL TABLE IF NOT EXISTS local_inventory_stock_fts USING fts5(
+    item_id UNINDEXED,
+    clinic_id UNINDEXED,
+    product_name,
+    company,
+    tokenize = 'unicode61'
+);
+
+CREATE TRIGGER IF NOT EXISTS trg_inventory_stock_fts_ai
+AFTER INSERT ON local_inventory_stock_v1
+BEGIN
+    INSERT INTO local_inventory_stock_fts (item_id, clinic_id, product_name, company)
+    VALUES (NEW.id, NEW.clinic_id, NEW.product_name, COALESCE(NEW.company, ''));
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_inventory_stock_fts_au
+AFTER UPDATE ON local_inventory_stock_v1
+BEGIN
+    DELETE FROM local_inventory_stock_fts WHERE item_id = OLD.id;
+    INSERT INTO local_inventory_stock_fts (item_id, clinic_id, product_name, company)
+    VALUES (NEW.id, NEW.clinic_id, NEW.product_name, COALESCE(NEW.company, ''));
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_inventory_stock_fts_ad
+AFTER DELETE ON local_inventory_stock_v1
+BEGIN
+    DELETE FROM local_inventory_stock_fts WHERE item_id = OLD.id;
+END;
+"#;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DoctorProfileRecord {
     pub doctor_id: String,
@@ -509,7 +713,7 @@ pub struct ClinicalData {
     pub clinical_snapshot_json: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PatientRecord {
     pub id: String,
     pub server_id: Option<String>,
@@ -963,6 +1167,121 @@ pub struct SaveClinicalMedicineArgs {
     pub default_instructions: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct PatientsPageQueryArgs {
+    pub clinic_id: String,
+    pub query: Option<String>,
+    pub gender: Option<String>,
+    pub sort: Option<String>,
+    pub start_date: Option<String>,
+    pub end_date: Option<String>,
+    pub limit: Option<usize>,
+    pub offset: Option<usize>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct PatientsPageResult {
+    pub items: Vec<PatientRecord>,
+    pub total: i64,
+    pub clinic_total: i64,
+    pub limit: usize,
+    pub offset: usize,
+    pub has_more: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct DashboardRecentConsultation {
+    pub id: String,
+    pub patient_id: String,
+    pub consultation_date: String,
+    pub updated_at: String,
+    pub status: String,
+    pub chief_complaint: String,
+    pub diagnosis: String,
+    pub patient: Option<PatientRecord>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct DashboardSummaryRecord {
+    pub total_patients: i64,
+    pub seen_today: i64,
+    pub allergy_records: i64,
+    pub recorded_conditions: i64,
+    pub recent_consultations: Vec<DashboardRecentConsultation>,
+    pub recent_patients: Vec<PatientRecord>,
+}
 
 
 
+
+
+pub fn has_genuine_allergy_entries(allergies: &[String]) -> bool {
+    const NON_OR_UNKNOWN: &[&str] = &[
+        "na",
+        "n/a",
+        "n.a.",
+        "n.a",
+        "nil",
+        "none",
+        "no",
+        "nothing",
+        "not applicable",
+        "not-applicable",
+        "nkda",
+        "n.k.d.a.",
+        "n.k.d.a",
+        "nka",
+        "n.k.a.",
+        "n.k.a",
+        "no known allergies",
+        "no known drug allergies",
+        "no allergy",
+        "no allergies",
+        "-",
+        "–",
+        "—",
+        "not known",
+        "not mentioned",
+        "not specified",
+        "unknown",
+        "unspecified",
+        "not recorded",
+    ];
+
+    allergies.iter().any(|entry| {
+        entry.split(',').any(|token| {
+            let trimmed = token.trim().to_lowercase();
+            if trimmed.is_empty() {
+                return false;
+            }
+            let normalized = trimmed
+                .replace(['\u{2013}', '\u{2014}'], "-")
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ");
+            let stripped = normalized.trim_end_matches('.').trim();
+            !NON_OR_UNKNOWN.contains(&normalized.as_str())
+                && !NON_OR_UNKNOWN.contains(&stripped)
+        })
+    })
+}
+
+pub fn parse_sequential_patient_id_code(code: &str) -> Option<u32> {
+    let trimmed = code.trim();
+    let (prefix, num_str) = trimmed.split_once('-')?;
+    if prefix.len() != 3 || num_str.len() != 4 {
+        return None;
+    }
+    let bytes = prefix.as_bytes();
+    if !bytes.iter().all(|b| b.is_ascii_uppercase()) {
+        return None;
+    }
+    let num: u32 = num_str.parse().ok()?;
+    if !(1..=9999).contains(&num) {
+        return None;
+    }
+    let p0 = (bytes[0] - b'A') as u32;
+    let p1 = (bytes[1] - b'A') as u32;
+    let p2 = (bytes[2] - b'A') as u32;
+    Some((p0 * 676 + p1 * 26 + p2) * 9999 + num)
+}

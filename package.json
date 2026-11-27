@@ -1,7 +1,7 @@
 {
   "name": "figma-make-app",
   "private": true,
-  "version": "1.0.4",
+  "version": "1.0.5",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -12,7 +12,8 @@
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build",
-    "tauri:build:windows": "tauri build --target x86_64-pc-windows-msvc"
+    "tauri:build:windows": "tauri build --target x86_64-pc-windows-msvc",
+    "benchmark:db": "cargo test --release --manifest-path src-tauri/Cargo.toml benchmark_v14_patient_scale_1k_to_100k -- --ignored --nocapture"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.12.4",

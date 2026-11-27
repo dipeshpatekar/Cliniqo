@@ -19,6 +19,10 @@ import {
   type SyncStatusInfo,
   exportEncryptedBackup,
   restoreEncryptedBackup,
+  getAutoBackupStatus,
+  updateAutoBackupConfig,
+  runAutoBackupNow,
+  runDatabaseDiagnostics,
   checkAppUpdate,
   downloadAndLaunchUpdate,
   getUpdateCompletionStatus,
@@ -26,6 +30,8 @@ import {
   getDesktopInfo,
   type BackupExportResult,
   type BackupRestoreResult,
+  type AutoBackupStatus,
+  type DatabaseDiagnosticsResult,
   type UpdateCheckResult,
   type UpdateProgressEvent,
   type UpdateCompletionStatus,
@@ -55,10 +61,18 @@ export function SyncSettings({ onOpenConflictModal }: SyncSettingsProps) {
   const [pendingRestoreBytes, setPendingRestoreBytes] = useState<string | null>(null)
   const [pendingFileName, setPendingFileName] = useState<string | null>(null)
 
+  // Automatic local backup & DB diagnostics state
+  const [autoBackupStatus, setAutoBackupStatus] = useState<AutoBackupStatus | null>(null)
+  const [isRunningAutoBackup, setIsRunningAutoBackup] = useState(false)
+  const [autoBackupError, setAutoBackupError] = useState<string | null>(null)
+  const [diagnostics, setDiagnostics] = useState<DatabaseDiagnosticsResult | null>(null)
+  const [isRunningDiagnostics, setIsRunningDiagnostics] = useState(false)
+  const [diagnosticsError, setDiagnosticsError] = useState<string | null>(null)
+
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   // Updater state
-  const [appVersion, setAppVersion] = useState<string>("1.0.4")
+  const [appVersion, setAppVersion] = useState<string>("1.0.5")
   const [isCheckingUpdate, setIsCheckingUpdate] = useState(false)
   const [updateResult, setUpdateResult] = useState<UpdateCheckResult | null>(null)
   const [updateError, setUpdateError] = useState<string | null>(null)
@@ -150,6 +164,87 @@ export function SyncSettings({ onOpenConflictModal }: SyncSettingsProps) {
       clearInterval(interval)
     }
   }, [])
+
+  useEffect(() => {
+    const cid = nativeStatus?.active_clinic_id
+    if (!cid || !isTauriDesktop()) return
+    let active = true
+    getAutoBackupStatus(cid)
+      .then((st) => {
+        if (active && st) setAutoBackupStatus(st)
+      })
+      .catch(() => {})
+    return () => {
+      active = false
+    }
+  }, [nativeStatus?.active_clinic_id, exportResult, restoreResult])
+
+  const handleToggleAutoBackup = async (enabled: boolean) => {
+    const cid = nativeStatus?.active_clinic_id || "clinic_default"
+    const current = autoBackupStatus?.config || {
+      enabled: true,
+      interval_hours: 24,
+      max_retained: 7,
+    }
+    setAutoBackupError(null)
+    try {
+      const updated = await updateAutoBackupConfig(cid, {
+        ...current,
+        enabled,
+      })
+      if (updated) setAutoBackupStatus(updated)
+    } catch (err: unknown) {
+      setAutoBackupError(err instanceof Error ? err.message : String(err))
+    }
+  }
+
+  const handleUpdateAutoBackupConfig = async (
+    patch: Partial<{ interval_hours: number; max_retained: number }>,
+  ) => {
+    const cid = nativeStatus?.active_clinic_id || "clinic_default"
+    const current = autoBackupStatus?.config || {
+      enabled: true,
+      interval_hours: 24,
+      max_retained: 7,
+    }
+    setAutoBackupError(null)
+    try {
+      const updated = await updateAutoBackupConfig(cid, {
+        ...current,
+        ...patch,
+      })
+      if (updated) setAutoBackupStatus(updated)
+    } catch (err: unknown) {
+      setAutoBackupError(err instanceof Error ? err.message : String(err))
+    }
+  }
+
+  const handleRunAutoBackupNow = async () => {
+    const cid = nativeStatus?.active_clinic_id || "clinic_default"
+    setIsRunningAutoBackup(true)
+    setAutoBackupError(null)
+    try {
+      const st = await runAutoBackupNow(cid)
+      if (st) setAutoBackupStatus(st)
+    } catch (err: unknown) {
+      setAutoBackupError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setIsRunningAutoBackup(false)
+    }
+  }
+
+  const handleRunDatabaseDiagnostics = async () => {
+    setIsRunningDiagnostics(true)
+    setDiagnosticsError(null)
+    try {
+      const res = await runDatabaseDiagnostics()
+      if (res) setDiagnostics(res)
+    } catch (err: unknown) {
+      setDiagnosticsError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setIsRunningDiagnostics(false)
+    }
+  }
 
   // 1. Handle One-Click Encrypted Backup Export
   const handleExportBackup = async () => {
@@ -418,6 +513,143 @@ export function SyncSettings({ onOpenConflictModal }: SyncSettingsProps) {
               </div>
             )}
           </div>
+
+          {isTauriDesktop() && (
+            <div className="p-4 rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900/40 space-y-3">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div className="flex items-start gap-2.5">
+                  <HardDrive size={18} className="mt-0.5 text-teal-600 shrink-0" />
+                  <div>
+                    <strong className="block text-sm font-semibold text-slate-800 dark:text-slate-100">
+                      Automatic Local Backups &amp; Rotation
+                    </strong>
+                    <p className="text-xs text-slate-500 dark:text-slate-400">
+                      Saved strictly on this PC in Documents/Cliniqo/Backups. Never uploaded to cloud.
+                    </p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    onClick={handleRunAutoBackupNow}
+                    loading={isRunningAutoBackup}
+                  >
+                    Run Auto-Backup Now
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={handleRunDatabaseDiagnostics}
+                    loading={isRunningDiagnostics}
+                    icon={ShieldCheck}
+                  >
+                    Verify DB Integrity
+                  </Button>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-2 border-t border-slate-200 dark:border-slate-800/80 text-xs">
+                <label className="flex items-center gap-2 text-slate-700 dark:text-slate-200 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={autoBackupStatus?.config.enabled ?? true}
+                    onChange={(e) => handleToggleAutoBackup(e.target.checked)}
+                    className="rounded border-slate-300 text-teal-600 focus:ring-teal-500"
+                  />
+                  Enable automatic local backups
+                </label>
+
+                <label className="flex items-center gap-2 text-slate-700 dark:text-slate-200">
+                  <span>Frequency:</span>
+                  <select
+                    aria-label="Auto-backup frequency"
+                    value={autoBackupStatus?.config.interval_hours ?? 24}
+                    onChange={(e) =>
+                      handleUpdateAutoBackupConfig({
+                        interval_hours: Number(e.target.value),
+                      })
+                    }
+                    className="px-2 py-1 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800"
+                  >
+                    <option value={6}>Every 6 hours</option>
+                    <option value={12}>Every 12 hours</option>
+                    <option value={24}>Every 24 hours</option>
+                    <option value={168}>Weekly</option>
+                  </select>
+                </label>
+
+                <label className="flex items-center gap-2 text-slate-700 dark:text-slate-200">
+                  <span>Keep recent:</span>
+                  <select
+                    aria-label="Auto-backup retention"
+                    value={autoBackupStatus?.config.max_retained ?? 7}
+                    onChange={(e) =>
+                      handleUpdateAutoBackupConfig({
+                        max_retained: Number(e.target.value),
+                      })
+                    }
+                    className="px-2 py-1 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800"
+                  >
+                    <option value={3}>3 backups</option>
+                    <option value={7}>7 backups</option>
+                    <option value={14}>14 backups</option>
+                    <option value={30}>30 backups</option>
+                  </select>
+                </label>
+              </div>
+
+              {autoBackupStatus && (
+                <div className="text-[11px] text-slate-600 dark:text-slate-300 flex flex-wrap gap-x-4 gap-y-1">
+                  <span>
+                    Status: <strong className="uppercase">{autoBackupStatus.last_status}</strong>
+                  </span>
+                  <span>
+                    Retained auto-backups: <strong>{autoBackupStatus.retained_count}</strong> •
+                    Manual backups: <strong>{autoBackupStatus.manual_count}</strong>
+                  </span>
+                  {autoBackupStatus.last_backup_at && (
+                    <span>
+                      Last backup: {formatDateTimeDDMMYYYY(new Date(autoBackupStatus.last_backup_at))}
+                    </span>
+                  )}
+                </div>
+              )}
+
+              {autoBackupError && (
+                <div className="p-2.5 bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-900 rounded text-xs text-rose-800 dark:text-rose-200">
+                  <strong>Auto-backup notice:</strong> {autoBackupError}
+                </div>
+              )}
+
+              {diagnostics && (
+                <div
+                  className={
+                    diagnostics.health_status === "healthy"
+                      ? "p-2.5 bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-900 rounded text-xs text-emerald-800 dark:text-emerald-200"
+                      : "p-2.5 bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-900 rounded text-xs text-amber-800 dark:text-amber-200"
+                  }
+                >
+                  <div>
+                    <strong>Database Health ({diagnostics.health_status.toUpperCase()}):</strong>{" "}
+                    Schema v{diagnostics.schema_version} • Integrity: {diagnostics.integrity_details} •
+                    FK violations: {diagnostics.foreign_key_violations}
+                  </div>
+                  {diagnostics.messages.map((m, i) => (
+                    <div key={i} className="mt-1 text-[11px]">
+                      {m}
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {diagnosticsError && (
+                <div className="p-2.5 bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-900 rounded text-xs text-rose-800 dark:text-rose-200">
+                  <strong>Diagnostics failed:</strong> {diagnosticsError}
+                </div>
+              )}
+            </div>
+          )}
         </div>
       </section>
 

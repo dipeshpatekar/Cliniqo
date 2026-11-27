@@ -219,6 +219,14 @@ export class AuthService {
     dto: RegisterDto,
     meta?: { ipAddress?: string; userAgent?: string },
   ) {
+    const clientIp = meta?.ipAddress || "unknown-client"
+    const rateLimitConfig = this.configService.rateLimitConfig
+    await this.rateLimiter.assertRateLimit(
+      `register:ip:${clientIp}`,
+      Math.max(10, rateLimitConfig.loginMax * 2),
+      rateLimitConfig.recoveryWindowSec,
+    )
+
     const email = dto.email.trim().toLowerCase()
 
     // 1. Fail-fast if database connection is temporarily unavailable
@@ -390,6 +398,13 @@ export class AuthService {
     dto: RefreshTokenDto,
     meta?: { ipAddress?: string; userAgent?: string },
   ) {
+    const clientIp = meta?.ipAddress || "unknown-client"
+    const rateLimitConfig = this.configService.rateLimitConfig
+    await this.rateLimiter.assertRateLimit(
+      `refresh:ip:${clientIp}`,
+      Math.max(30, rateLimitConfig.loginMax * 6),
+      rateLimitConfig.loginWindowSec,
+    )
     return this.tokenService.rotateRefreshSession(dto.refreshToken, meta, {
       deviceId: dto.deviceId,
       idempotencyKey: dto.idempotencyKey,

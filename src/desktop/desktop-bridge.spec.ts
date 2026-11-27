@@ -1525,4 +1525,120 @@ describe("Desktop Bridge (Tauri 2 Frontend Integration)", () => {
       vi.doUnmock("@tauri-apps/api/core")
     })
   })
+
+  describe("Phase 1-3 Pagination & Dashboard Summary IPC Bridges", () => {
+    it("getLocalPatientsPage invokes get_local_patients_page with query args and returns safe fallback", async () => {
+      win.__TAURI_INTERNALS__ = {}
+      let invokedCmd = ""
+      let invokedArgs: any = null
+
+      const mockPage = {
+        items: [
+          {
+            id: "pat-1",
+            server_id: null,
+            clinic_id: "clinic-p3",
+            patient_code: "AAA-0055",
+            name: "Kiran Rao",
+            phone: "9876543210",
+            gender: "Female",
+            date_of_birth: null,
+            age: 29,
+            allergies: [],
+            conditions: [],
+            sensitive_notes: null,
+            sync_status: "PENDING",
+            server_version: 1,
+            local_version: 1,
+            updated_at: "2026-11-26T10:00:00Z",
+          },
+        ],
+        total: 120,
+        clinic_total: 150,
+        limit: 50,
+        offset: 50,
+        has_more: true,
+      }
+
+      vi.doMock("@tauri-apps/api/core", () => ({
+        invoke: vi.fn().mockImplementation((cmd: string, args: any) => {
+          invokedCmd = cmd
+          invokedArgs = args
+          if (cmd === "get_local_patients_page") return Promise.resolve(mockPage)
+          return Promise.resolve(null)
+        }),
+      }))
+
+      const { getLocalPatientsPage } = await import("./desktop-bridge")
+      const page = await getLocalPatientsPage({
+        clinic_id: "clinic-p3",
+        query: "Kiran",
+        limit: 50,
+        offset: 50,
+      })
+
+      expect(invokedCmd).toBe("get_local_patients_page")
+      expect(invokedArgs).toEqual({
+        args: {
+          clinic_id: "clinic-p3",
+          query: "Kiran",
+          limit: 50,
+          offset: 50,
+        },
+      })
+      expect(page.total).toBe(120)
+      expect(page.clinic_total).toBe(150)
+      expect(page.has_more).toBe(true)
+      expect(page.items[0].patient_code).toBe("AAA-0055")
+
+      vi.doUnmock("@tauri-apps/api/core")
+    })
+
+    it("getLocalPatientById and getDashboardSummary invoke corresponding IPC commands", async () => {
+      win.__TAURI_INTERNALS__ = {}
+      const calls: Array<{ cmd: string; args: any }> = []
+
+      vi.doMock("@tauri-apps/api/core", () => ({
+        invoke: vi.fn().mockImplementation((cmd: string, args: any) => {
+          calls.push({ cmd, args })
+          if (cmd === "get_local_patient_by_id") {
+            return Promise.resolve({ id: "pat-9", patient_code: "AAA-0009" })
+          }
+          if (cmd === "get_dashboard_summary") {
+            return Promise.resolve({
+              total_patients: 4200,
+              seen_today: 18,
+              allergy_records: 310,
+              recorded_conditions: 940,
+              recent_consultations: [],
+              recent_patients: [],
+            })
+          }
+          return Promise.resolve(null)
+        }),
+      }))
+
+      const { getLocalPatientById, getDashboardSummary } = await import(
+        "./desktop-bridge"
+      )
+      const pt = await getLocalPatientById("clinic-p3", "pat-9")
+      const summary = await getDashboardSummary("clinic-p3", "2026-11-26")
+
+      expect(pt?.id).toBe("pat-9")
+      expect(summary?.total_patients).toBe(4200)
+      expect(summary?.seen_today).toBe(18)
+      expect(calls).toEqual([
+        {
+          cmd: "get_local_patient_by_id",
+          args: { clinicId: "clinic-p3", patientId: "pat-9" },
+        },
+        {
+          cmd: "get_dashboard_summary",
+          args: { clinicId: "clinic-p3", todayIso: "2026-11-26" },
+        },
+      ])
+
+      vi.doUnmock("@tauri-apps/api/core")
+    })
+  })
 })

@@ -755,3 +755,4 @@ export function SavedBookmarkIcon({
 }
 
 export const BookmarkSuccessIcon = SavedBookmarkIcon
+export { StartupSplash, type StartupSplashProps } from "./StartupSplash"

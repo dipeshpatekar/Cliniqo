@@ -1,9 +1,8 @@
 import { NestFactory } from "@nestjs/core"
-import { ValidationPipe } from "@nestjs/common"
 import { AppModule } from "./app.module.js"
 import { ConfigService } from "./config/config.service.js"
-import { HttpExceptionFilter } from "./common/filters/http-exception.filter.js"
 import { AppLogger } from "./common/logging/app-logger.service.js"
+import { configureHttpApp } from "./common/security-app.config.js"
 
 async function bootstrap() {
   // Automatically load local .env file in Node 20+ environments if present
@@ -30,34 +29,7 @@ async function bootstrap() {
     configService.validateEmailConfig()
   }
 
-  // Centralized safe exception handling
-  app.useGlobalFilters(new HttpExceptionFilter())
-
-  // Enforce runtime DTO validation, transformation, and rejection of unexpected fields
-  app.useGlobalPipes(
-    new ValidationPipe({
-      whitelist: true,
-      forbidNonWhitelisted: true,
-      transform: true,
-    }),
-  )
-
-  // Restrictive CORS using validated legitimate origins without wildcards
-  const allowedOrigins = configService.corsOrigins
-  app.enableCors({
-    origin: (
-      requestOrigin: string | undefined,
-      callback: (err: Error | null, allow?: boolean) => void,
-    ) => {
-      // Allow requests with no origin (like native desktop apps, mobile, curl)
-      if (!requestOrigin) return callback(null, true)
-      if (allowedOrigins.includes(requestOrigin)) {
-        return callback(null, true)
-      }
-      return callback(new Error(`Origin ${requestOrigin} not allowed by CORS`))
-    },
-    credentials: true,
-  })
+  configureHttpApp(app, configService)
 
   const port = configService.port
   await app.listen(port, "0.0.0.0")

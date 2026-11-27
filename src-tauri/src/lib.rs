@@ -6,6 +6,7 @@ pub mod db;
 pub mod sync;
 pub mod updater;
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tauri::Manager;
 use auth::SessionManager;
@@ -67,6 +68,8 @@ pub fn run() {
 
             let sync_handle = Arc::new(SyncWorkerHandle::new());
             let refresh_coordinator = Arc::new(RefreshCoordinator::new());
+            let http_client = config::create_shared_http_client()
+                .expect("Failed to initialize shared HTTP client");
             let db_arc = Arc::new(db_manager);
             let session_arc = Arc::new(session_manager);
             let key_arc = Arc::new(key_manager);
@@ -76,6 +79,48 @@ pub fn run() {
                 key_arc.clone(),
                 refresh_coordinator.clone(),
             ));
+            let consultation_active = Arc::new(AtomicBool::new(false));
+
+            // Background local encrypted auto-backup scheduler (100% local, zero cloud upload)
+            {
+                let bg_db = db_arc.clone();
+                let bg_session = session_arc.clone();
+                let bg_active = consultation_active.clone();
+                let bg_data_dir = app_data_dir.clone();
+                let bg_docs_dir = app.path().document_dir().ok();
+                tauri::async_runtime::spawn(async move {
+                    let mut ticker = tokio::time::interval(std::time::Duration::from_secs(600));
+                    ticker.tick().await;
+                    loop {
+                        ticker.tick().await;
+                        if bg_active.load(Ordering::Acquire) {
+                            continue;
+                        }
+                        if let Some(sess) = bg_session.get_session() {
+                            if !sess.clinic_id.trim().is_empty() {
+                                let cid = sess.clinic_id;
+                                let db_clone = bg_db.clone();
+                                let dir_clone = bg_data_dir.clone();
+                                let docs_clone = bg_docs_dir.clone();
+                                let active_flag = bg_active.load(Ordering::Acquire);
+                                let _ = tokio::task::spawn_blocking(move || {
+                                    if let Err(err) = crate::db::backup::BackupManager::run_auto_backup_with_dirs(
+                                        &db_clone,
+                                        &cid,
+                                        &dir_clone,
+                                        docs_clone.as_deref(),
+                                        active_flag,
+                                        false,
+                                    ) {
+                                        log::warn!("Scheduled local auto-backup note: {err}");
+                                    }
+                                })
+                                .await;
+                            }
+                        }
+                    }
+                });
+            }
 
             app.manage(AppState {
                 db: db_arc,
@@ -84,6 +129,9 @@ pub fn run() {
                 sync_handle,
                 refresh_coordinator,
                 catalogue_sync,
+                http_client,
+                consultation_active,
+                app_data_dir,
             });
 
             Ok(())
@@ -106,6 +154,9 @@ pub fn run() {
             commands::save_local_patient,
             commands::delete_local_patient,
             commands::get_local_patients,
+            commands::get_local_patients_page,
+            commands::get_local_patient_by_id,
+            commands::get_dashboard_summary,
             commands::save_local_consultation,
             commands::save_local_consultation_draft,
             commands::update_local_consultation,
@@ -148,6 +199,11 @@ pub fn run() {
             commands::save_doctor_profile,
             commands::export_encrypted_backup,
             commands::restore_encrypted_backup,
+            commands::set_consultation_active_state,
+            commands::get_auto_backup_status,
+            commands::update_auto_backup_config,
+            commands::run_auto_backup_now,
+            commands::run_database_diagnostics,
             commands::check_app_update,
             commands::download_and_verify_update,
             commands::install_staged_update,

@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Manager, State};
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use rusqlite::{params, OptionalExtension};
@@ -9,9 +11,10 @@ use crate::db::DatabaseManager;
 use crate::db::operations::DbOperations;
 use crate::db::schema::{
     CatalogueCacheStats, ClinicalImportBatchInput, ClinicalImportBatchRecord, ClinicalImportSummary,
-    ClinicalMedicineRecord, ConsultationRecord, FormularyRecord, InvoiceRecord, LocalCatalogueItem,
-    PatientRecord, PrescriptionRecord, SaveCatalogueCacheItemArgs, SaveClinicalMedicineArgs,
-    SaveFormularyArgs, SaveInvoiceArgs, SyncConflictRecord, SyncOutboxSummary, SyncStateRecord,
+    ClinicalMedicineRecord, ConsultationRecord, DashboardSummaryRecord, FormularyRecord,
+    InvoiceRecord, LocalCatalogueItem, PatientRecord, PatientsPageQueryArgs, PatientsPageResult,
+    PrescriptionRecord, SaveCatalogueCacheItemArgs, SaveClinicalMedicineArgs, SaveFormularyArgs,
+    SaveInvoiceArgs, SyncConflictRecord, SyncOutboxSummary, SyncStateRecord,
 };
 use crate::sync::{SyncStatusInfo, SyncWorkerHandle};
 
@@ -32,6 +35,9 @@ pub struct AppState {
     pub sync_handle: Arc<SyncWorkerHandle>,
     pub refresh_coordinator: Arc<RefreshCoordinator>,
     pub catalogue_sync: Arc<crate::sync::CatalogueSyncManager>,
+    pub http_client: reqwest::Client,
+    pub consultation_active: Arc<AtomicBool>,
+    pub app_data_dir: PathBuf,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
@@ -169,11 +175,12 @@ pub async fn sync_backend_public_key_from_server(
     session_mgr: &SessionManager,
 ) -> Result<(), String> {
     let base_url = crate::config::get_trusted_backend_url()?;
-    let client = crate::config::create_secure_http_client(Duration::from_secs(10))?;
+    let client = crate::config::get_shared_http_client()?;
     let pk_url = format!("{base_url}/auth/public-key");
 
     let resp = client
         .get(&pk_url)
+        .timeout(Duration::from_secs(10))
         .send()
         .await
         .map_err(|e| format!("Failed to reach backend public key endpoint ({pk_url}): {e}"))?;
@@ -238,7 +245,7 @@ pub async fn login_desktop(
     password: String,
 ) -> Result<DesktopLoginResult, String> {
     let base_url = crate::config::get_trusted_backend_url()?;
-    let client = crate::config::create_secure_http_client(Duration::from_secs(60))?;
+    let client = &state.http_client;
 
     let login_url = format!("{base_url}/auth/login");
     let device_id = state.key_mgr.get_or_create_device_id().unwrap_or_else(|_| uuid::Uuid::new_v4().to_string());
@@ -493,7 +500,7 @@ pub async fn register_desktop(
     input: RegisterDesktopInput,
 ) -> Result<RegisterDesktopResult, String> {
     let base_url = crate::config::get_trusted_backend_url()?;
-    let client = crate::config::create_secure_http_client(Duration::from_secs(35))?;
+    let client = &state.http_client;
 
     let register_url = format!("{base_url}/auth/register");
     let device_id = state.key_mgr.get_or_create_device_id().unwrap_or_else(|_| uuid::Uuid::new_v4().to_string());
@@ -514,7 +521,7 @@ pub async fn register_desktop(
     let mut resp_opt: Option<reqwest::Response> = None;
 
     for attempt in 1..=max_attempts {
-        match client.post(&register_url).json(&payload).send().await {
+        match client.post(&register_url).timeout(Duration::from_secs(35)).json(&payload).send().await {
             Ok(resp) => {
                 resp_opt = Some(resp);
                 break;
@@ -796,7 +803,7 @@ async fn do_actual_refresh_session(
     let refresh_url = format!("{base_url}/auth/refresh");
 
     // Fast, responsive 10-second timeout for session refresh to avoid UI delay
-    let client = crate::config::create_secure_http_client(Duration::from_secs(10))?;
+    let client = crate::config::get_shared_http_client()?;
 
     // Issue 3: Require exact, non-empty device ID; fail closed if unavailable
     let device_id = match key_mgr.get_or_create_device_id() {
@@ -818,6 +825,7 @@ async fn do_actual_refresh_session(
 
     let send_result = client
         .post(&refresh_url)
+        .timeout(Duration::from_secs(10))
         .json(&BackendRefreshRequest {
             refresh_token: &persisted_rt,
             device_id: Some(&device_id),
@@ -1073,9 +1081,10 @@ pub async fn execute_logout_session(
             if let Ok(base_url) = crate::config::get_trusted_backend_url() {
                 let logout_url = format!("{base_url}/auth/logout");
 
-                if let Ok(client) = crate::config::create_secure_http_client(Duration::from_secs(5)) {
+                if let Ok(client) = crate::config::get_shared_http_client() {
                     let _ = client
                         .post(&logout_url)
+                        .timeout(Duration::from_secs(5))
                         .json(&BackendLogoutRequest {
                             refresh_token: &rt,
                         })
@@ -1257,11 +1266,12 @@ pub async fn create_clinic_desktop(
         .ok_or_else(|| "No active authenticated session found. Please log in or register.".to_string())?;
 
     let base_url = crate::config::get_trusted_backend_url()?;
-    let client = crate::config::create_secure_http_client(Duration::from_secs(35))?;
+    let client = &state.http_client;
     let clinic_url = format!("{base_url}/clinics");
 
     let resp = client
         .post(&clinic_url)
+        .timeout(Duration::from_secs(35))
         .bearer_auth(&token)
         .json(&serde_json::json!({
             "name": input.name.trim(),
@@ -1392,26 +1402,26 @@ pub async fn save_clinic_profile(
 
     if let Some(token) = state.session_mgr.get_access_token() {
         if let Ok(base_url) = crate::config::get_trusted_backend_url() {
-            if let Ok(client) = crate::config::create_secure_http_client(Duration::from_secs(10)) {
-                let url = format!("{base_url}/clinics/{}", args.clinic_id);
-                let _ = client
-                    .patch(&url)
-                    .bearer_auth(&token)
-                    .json(&serde_json::json!({
-                        "name": record.name,
-                        "phone": record.phone,
-                        "email": record.email,
-                        "address": {
-                            "street": record.street,
-                            "city": record.city,
-                            "state": record.state,
-                            "postalCode": record.postal_code,
-                            "country": record.country,
-                        }
-                    }))
-                    .send()
-                    .await;
-            }
+            let url = format!("{base_url}/clinics/{}", args.clinic_id);
+            let _ = state
+                .http_client
+                .patch(&url)
+                .timeout(Duration::from_secs(10))
+                .bearer_auth(&token)
+                .json(&serde_json::json!({
+                    "name": record.name,
+                    "phone": record.phone,
+                    "email": record.email,
+                    "address": {
+                        "street": record.street,
+                        "city": record.city,
+                        "state": record.state,
+                        "postalCode": record.postal_code,
+                        "country": record.country,
+                    }
+                }))
+                .send()
+                .await;
         }
     }
 
@@ -1453,9 +1463,15 @@ pub async fn get_doctor_profile(
     // If not found in SQLite yet, query backend if active access token exists
     if let Some(token) = state.session_mgr.get_access_token() {
         if let Ok(base_url) = crate::config::get_trusted_backend_url() {
-            if let Ok(client) = crate::config::create_secure_http_client(Duration::from_secs(5)) {
-                let url = format!("{base_url}/auth/profile");
-                if let Ok(resp) = client.get(&url).bearer_auth(&token).send().await {
+            let url = format!("{base_url}/auth/profile");
+            if let Ok(resp) = state
+                .http_client
+                .get(&url)
+                .timeout(Duration::from_secs(5))
+                .bearer_auth(&token)
+                .send()
+                .await
+            {
                     if resp.status().is_success() {
                         if let Ok(json) = resp.json::<serde_json::Value>().await {
                             let rec = crate::db::schema::DoctorProfileRecord {
@@ -1476,7 +1492,6 @@ pub async fn get_doctor_profile(
                         }
                     }
                 }
-            }
         }
     }
 
@@ -1533,21 +1548,21 @@ pub async fn save_doctor_profile(
 
     if let Some(token) = state.session_mgr.get_access_token() {
         if let Ok(base_url) = crate::config::get_trusted_backend_url() {
-            if let Ok(client) = crate::config::create_secure_http_client(Duration::from_secs(10)) {
-                let url = format!("{base_url}/auth/profile");
-                let _ = client
-                    .patch(&url)
-                    .bearer_auth(&token)
-                    .json(&serde_json::json!({
-                        "fullName": record.full_name,
-                        "phone": record.phone,
-                        "qualification": record.qualification,
-                        "registrationNumber": record.registration_number,
-                        "gender": record.gender,
-                    }))
-                    .send()
-                    .await;
-            }
+            let url = format!("{base_url}/auth/profile");
+            let _ = state
+                .http_client
+                .patch(&url)
+                .timeout(Duration::from_secs(10))
+                .bearer_auth(&token)
+                .json(&serde_json::json!({
+                    "fullName": record.full_name,
+                    "phone": record.phone,
+                    "qualification": record.qualification,
+                    "registrationNumber": record.registration_number,
+                    "gender": record.gender,
+                }))
+                .send()
+                .await;
         }
     }
 
@@ -1587,7 +1602,7 @@ pub fn has_persisted_refresh_token(state: State<'_, AppState>) -> Result<bool, S
 // Protected Clinical & Patient Local Data Commands
 // ---------------------------------------------------------------------------
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone)]
 pub struct SavePatientArgs {
     pub id: Option<String>,
     pub clinic_id: String,
@@ -1601,6 +1616,14 @@ pub struct SavePatientArgs {
     pub conditions: Vec<String>,
     pub sensitive_notes: Option<String>,
     pub client_mutation_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SavePatientCommandResponse {
+    pub id: String,
+    pub patient_code: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub patient: Option<PatientRecord>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1765,7 +1788,7 @@ pub fn get_next_patient_code(
 pub async fn save_local_patient(
     state: State<'_, AppState>,
     args: SavePatientArgs,
-) -> Result<crate::db::operations::SavePatientResult, String> {
+) -> Result<SavePatientCommandResponse, String> {
     // 1. Session and Clinic Context Validation
     let session_check = state.session_mgr.validate_session(Some(&args.clinic_id));
     let _session = match session_check {
@@ -1834,77 +1857,111 @@ pub async fn save_local_patient(
         }
     };
 
-    // 2. Perform database save with bounded retry for transient busy lock contention
+    // 2. Perform database save on blocking pool with bounded retry for transient busy lock contention
     let mut retries = 0;
     const MAX_BUSY_RETRIES: u32 = 5;
-    let dek = state.db.get_dek();
 
     loop {
-        let save_once = || -> Result<crate::db::operations::SavePatientResult, crate::db::operations::DatabaseOpError> {
-            let mut conn = state.db.get_connection();
+        let db = Arc::clone(&state.db);
+        let attempt_args = args.clone();
 
-            if !conn.is_autocommit() {
-                log::warn!("save_local_patient: active uncommitted transaction detected on connection; rolling back to clean autocommit state.");
-                let _ = conn.execute_batch("ROLLBACK;");
-            }
+        let join_res = tokio::task::spawn_blocking(
+            move || -> Result<SavePatientCommandResponse, crate::db::operations::DatabaseOpError> {
+                let mut conn = db.get_connection();
+                let dek = db.get_dek();
 
-            if let Some(ref pid) = args.id {
-                let patient_row: Option<(String, String)> = conn
-                    .query_row(
-                        "SELECT id, patient_code FROM local_patients WHERE clinic_id = ?1 AND (id = ?2 OR patient_code = ?2) LIMIT 1",
-                        params![args.clinic_id, pid],
-                        |row| Ok((row.get(0)?, row.get(1)?)),
-                    )
-                    .optional()?;
-
-                match patient_row {
-                    Some((actual_id, existing_code)) => {
-                        DbOperations::update_patient(
-                            &mut conn,
-                            dek,
-                            &args.clinic_id,
-                            &actual_id,
-                            &existing_code,
-                            &args.name,
-                            &args.phone,
-                            &args.gender,
-                            args.date_of_birth.as_deref(),
-                            args.age,
-                            &args.allergies,
-                            &args.conditions,
-                            args.sensitive_notes.as_deref(),
-                        )?;
-                        Ok(crate::db::operations::SavePatientResult {
-                            id: actual_id,
-                            patient_code: existing_code,
-                        })
-                    }
-                    None => {
-                        Err(crate::db::operations::DatabaseOpError::PatientNotFound(format!(
-                            "Patient with identifier '{pid}' does not exist in clinic tenancy"
-                        )))
-                    }
+                if !conn.is_autocommit() {
+                    log::warn!("save_local_patient: active uncommitted transaction detected on connection; rolling back to clean autocommit state.");
+                    let _ = conn.execute_batch("ROLLBACK;");
                 }
-            } else {
-                DbOperations::insert_patient_ext(
-                    &mut conn,
+
+                let saved = if let Some(ref pid) = attempt_args.id {
+                    let patient_row: Option<(String, String)> = conn
+                        .query_row(
+                            "SELECT id, patient_code FROM local_patients WHERE clinic_id = ?1 AND (id = ?2 OR patient_code = ?2) LIMIT 1",
+                            params![attempt_args.clinic_id, pid],
+                            |row| Ok((row.get(0)?, row.get(1)?)),
+                        )
+                        .optional()?;
+
+                    match patient_row {
+                        Some((actual_id, existing_code)) => {
+                            DbOperations::update_patient(
+                                &mut conn,
+                                dek,
+                                &attempt_args.clinic_id,
+                                &actual_id,
+                                &existing_code,
+                                &attempt_args.name,
+                                &attempt_args.phone,
+                                &attempt_args.gender,
+                                attempt_args.date_of_birth.as_deref(),
+                                attempt_args.age,
+                                &attempt_args.allergies,
+                                &attempt_args.conditions,
+                                attempt_args.sensitive_notes.as_deref(),
+                            )?;
+                            crate::db::operations::SavePatientResult {
+                                id: actual_id,
+                                patient_code: existing_code,
+                            }
+                        }
+                        None => {
+                            return Err(crate::db::operations::DatabaseOpError::PatientNotFound(format!(
+                                "Patient with identifier '{pid}' does not exist in clinic tenancy"
+                            )));
+                        }
+                    }
+                } else {
+                    DbOperations::insert_patient_ext(
+                        &mut conn,
+                        dek,
+                        &attempt_args.clinic_id,
+                        &attempt_args.patient_code,
+                        &attempt_args.name,
+                        &attempt_args.phone,
+                        &attempt_args.gender,
+                        attempt_args.date_of_birth.as_deref(),
+                        attempt_args.age,
+                        &attempt_args.allergies,
+                        &attempt_args.conditions,
+                        attempt_args.sensitive_notes.as_deref(),
+                        attempt_args.client_mutation_id.as_deref(),
+                    )?
+                };
+
+                let hydrated = DbOperations::get_patient_by_identifier(
+                    &conn,
                     dek,
-                    &args.clinic_id,
-                    &args.patient_code,
-                    &args.name,
-                    &args.phone,
-                    &args.gender,
-                    args.date_of_birth.as_deref(),
-                    args.age,
-                    &args.allergies,
-                    &args.conditions,
-                    args.sensitive_notes.as_deref(),
-                    args.client_mutation_id.as_deref(),
+                    &attempt_args.clinic_id,
+                    &saved.id,
                 )
+                .ok()
+                .flatten();
+
+                Ok(SavePatientCommandResponse {
+                    id: saved.id,
+                    patient_code: saved.patient_code,
+                    patient: hydrated,
+                })
+            },
+        )
+        .await;
+
+        let op_result = match join_res {
+            Ok(res) => res,
+            Err(join_err) => {
+                let diag = PatientSaveDiagnostic {
+                    category: "DATABASE_TRANSACTION_FAILURE".to_string(),
+                    stage: "spawn_blocking".to_string(),
+                    command: "save_local_patient".to_string(),
+                    sqlite_error_code: None,
+                    message: format!("Background worker execution failed: {join_err}"),
+                    retryable: true,
+                };
+                return Err(serde_json::to_string(&diag).unwrap_or_else(|_| diag.message));
             }
         };
-
-        let op_result = save_once();
 
         match op_result {
             Ok(saved) => return Ok(saved),
@@ -1926,7 +1983,7 @@ pub async fn save_local_patient(
 }
 
 #[tauri::command]
-pub fn delete_local_patient(
+pub async fn delete_local_patient(
     state: State<'_, AppState>,
     clinic_id: String,
     patient_id: String,
@@ -1936,15 +1993,19 @@ pub fn delete_local_patient(
         .validate_session(Some(&clinic_id))
         .map_err(|e| e.to_string())?;
 
-    let mut conn = state.db.get_connection();
-    let dek = state.db.get_dek();
-
-    DbOperations::delete_patient(&mut conn, dek, &clinic_id, &patient_id)
-        .map_err(|e| e.to_string())
+    let db = Arc::clone(&state.db);
+    tokio::task::spawn_blocking(move || {
+        let mut conn = db.get_connection();
+        let dek = db.get_dek();
+        DbOperations::delete_patient(&mut conn, dek, &clinic_id, &patient_id)
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("Blocking task join error: {e}"))?
 }
 
 #[tauri::command]
-pub fn get_local_patients(
+pub async fn get_local_patients(
     state: State<'_, AppState>,
     clinic_id: String,
 ) -> Result<Vec<PatientRecord>, String> {
@@ -1954,10 +2015,85 @@ pub fn get_local_patients(
         .validate_session(Some(&clinic_id))
         .map_err(|e| e.to_string())?;
 
-    let conn = state.db.get_connection();
-    let dek = state.db.get_dek();
+    let db = Arc::clone(&state.db);
+    tokio::task::spawn_blocking(move || {
+        let conn = db.get_read_connection().map_err(|e| e.to_string())?;
+        let dek = db.get_dek();
+        DbOperations::get_patients(&conn, dek, &clinic_id).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("Blocking task join error: {e}"))?
+}
 
-    DbOperations::get_patients(&conn, dek, &clinic_id).map_err(|e| e.to_string())
+#[tauri::command]
+pub async fn get_local_patients_page(
+    state: State<'_, AppState>,
+    args: PatientsPageQueryArgs,
+) -> Result<PatientsPageResult, String> {
+    let _session = state
+        .session_mgr
+        .validate_session(Some(&args.clinic_id))
+        .map_err(|e| e.to_string())?;
+
+    let db = Arc::clone(&state.db);
+    tokio::task::spawn_blocking(move || {
+        let conn = db.get_read_connection().map_err(|e| e.to_string())?;
+        let dek = db.get_dek();
+        DbOperations::get_patients_page(&conn, dek, &args).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("Blocking task join error: {e}"))?
+}
+
+#[tauri::command]
+pub async fn get_local_patient_by_id(
+    state: State<'_, AppState>,
+    clinic_id: String,
+    patient_id: String,
+) -> Result<Option<PatientRecord>, String> {
+    let _session = state
+        .session_mgr
+        .validate_session(Some(&clinic_id))
+        .map_err(|e| e.to_string())?;
+
+    let db = Arc::clone(&state.db);
+    tokio::task::spawn_blocking(move || {
+        let conn = db.get_read_connection().map_err(|e| e.to_string())?;
+        let dek = db.get_dek();
+        DbOperations::get_patient_by_identifier(&conn, dek, &clinic_id, &patient_id)
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("Blocking task join error: {e}"))?
+}
+
+#[tauri::command]
+pub async fn get_dashboard_summary(
+    state: State<'_, AppState>,
+    clinic_id: String,
+    today_iso: Option<String>,
+) -> Result<DashboardSummaryRecord, String> {
+    let _session = state
+        .session_mgr
+        .validate_session(Some(&clinic_id))
+        .map_err(|e| e.to_string())?;
+
+    let effective_today = today_iso
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| s.len() >= 10)
+        .map(|s| s[..10].to_string())
+        .unwrap_or_else(|| chrono::Utc::now().format("%Y-%m-%d").to_string());
+
+    let db = Arc::clone(&state.db);
+    tokio::task::spawn_blocking(move || {
+        let conn = db.get_read_connection().map_err(|e| e.to_string())?;
+        let dek = db.get_dek();
+        DbOperations::get_dashboard_summary(&conn, dek, &clinic_id, &effective_today)
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("Blocking task join error: {e}"))?
 }
 
 #[derive(Deserialize)]
@@ -1971,36 +2107,38 @@ pub struct SaveConsultationArgs {
 }
 
 #[tauri::command]
-pub fn save_local_consultation(
+pub async fn save_local_consultation(
     state: State<'_, AppState>,
     args: SaveConsultationArgs,
 ) -> Result<String, String> {
-    // 1. Enforce authenticated doctor session and derive verified doctor_id
     let session = state
         .session_mgr
         .validate_session(Some(&args.clinic_id))
         .map_err(|e| e.to_string())?;
 
     let verified_doctor_id = session.doctor_id;
-
-    let mut conn = state.db.get_connection();
-    let dek = state.db.get_dek();
-
-    DbOperations::insert_consultation(
-        &mut conn,
-        dek,
-        &args.clinic_id,
-        &args.patient_id,
-        &verified_doctor_id,
-        &args.consultation_date,
-        &args.chief_complaint,
-        &args.diagnosis,
-        args.clinical_snapshot_json.as_deref(),
-    )
-    .map_err(|e| e.to_string())
+    let db = Arc::clone(&state.db);
+    tokio::task::spawn_blocking(move || {
+        let mut conn = db.get_connection();
+        let dek = db.get_dek();
+        DbOperations::insert_consultation(
+            &mut conn,
+            dek,
+            &args.clinic_id,
+            &args.patient_id,
+            &verified_doctor_id,
+            &args.consultation_date,
+            &args.chief_complaint,
+            &args.diagnosis,
+            args.clinical_snapshot_json.as_deref(),
+        )
+        .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("Blocking task join error: {e}"))?
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone)]
 pub struct SaveConsultationDraftArgs {
     pub clinic_id: String,
     pub consultation_id: String,
@@ -2046,50 +2184,59 @@ pub async fn save_local_consultation_draft(
     };
 
     let verified_doctor_id = session.doctor_id;
-    let dek = state.db.get_dek();
-
     let mut retries = 0;
     const MAX_BUSY_RETRIES: u32 = 5;
     let mut effective_consultation_id = args.consultation_id.clone();
 
     loop {
-        let op_result = {
-            let mut conn = state.db.get_connection();
+        let db = Arc::clone(&state.db);
+        let attempt_args = args.clone();
+        let attempt_cid = effective_consultation_id.clone();
+        let doc_id = verified_doctor_id.clone();
+
+        let join_res = tokio::task::spawn_blocking(move || {
+            let mut conn = db.get_connection();
+            let dek = db.get_dek();
             if !conn.is_autocommit() {
                 let _ = conn.execute_batch("ROLLBACK;");
             }
             let res = DbOperations::upsert_consultation_draft(
                 &mut conn,
                 dek,
-                &args.clinic_id,
-                &effective_consultation_id,
-                &args.patient_id,
-                &verified_doctor_id,
-                &args.consultation_date,
-                &args.chief_complaint,
-                &args.diagnosis,
-                args.clinical_snapshot_json.as_deref(),
+                &attempt_args.clinic_id,
+                &attempt_cid,
+                &attempt_args.patient_id,
+                &doc_id,
+                &attempt_args.consultation_date,
+                &attempt_args.chief_complaint,
+                &attempt_args.diagnosis,
+                attempt_args.clinical_snapshot_json.as_deref(),
             );
             match res {
                 Err(crate::db::operations::DatabaseOpError::ConflictResolution(_)) => {
                     log::info!("Auto-save draft ID collided with finalized consultation; allocating fresh draft ID");
-                    effective_consultation_id = format!("c-draft-{}-{}", args.patient_id, uuid::Uuid::new_v4());
-                    DbOperations::upsert_consultation_draft(
+                    let fresh_cid = format!("c-draft-{}-{}", attempt_args.patient_id, uuid::Uuid::new_v4());
+                    let retry_res = DbOperations::upsert_consultation_draft(
                         &mut conn,
                         dek,
-                        &args.clinic_id,
-                        &effective_consultation_id,
-                        &args.patient_id,
-                        &verified_doctor_id,
-                        &args.consultation_date,
-                        &args.chief_complaint,
-                        &args.diagnosis,
-                        args.clinical_snapshot_json.as_deref(),
-                    )
+                        &attempt_args.clinic_id,
+                        &fresh_cid,
+                        &attempt_args.patient_id,
+                        &doc_id,
+                        &attempt_args.consultation_date,
+                        &attempt_args.chief_complaint,
+                        &attempt_args.diagnosis,
+                        attempt_args.clinical_snapshot_json.as_deref(),
+                    );
+                    (retry_res, fresh_cid)
                 }
-                other => other,
+                other => (other, attempt_cid),
             }
-        };
+        })
+        .await;
+
+        let (op_result, next_cid) = join_res.map_err(|e| format!("Blocking task join error: {e}"))?;
+        effective_consultation_id = next_cid;
 
         match op_result {
             Ok(saved_id) => return Ok(saved_id),
@@ -2117,7 +2264,7 @@ pub struct UpdateConsultationArgs {
 }
 
 #[tauri::command]
-pub fn update_local_consultation(
+pub async fn update_local_consultation(
     state: State<'_, AppState>,
     args: UpdateConsultationArgs,
 ) -> Result<String, String> {
@@ -2126,20 +2273,24 @@ pub fn update_local_consultation(
         .validate_session(Some(&args.clinic_id))
         .map_err(|e| e.to_string())?;
 
-    let mut conn = state.db.get_connection();
-    let dek = state.db.get_dek();
-
-    DbOperations::update_consultation(
-        &mut conn,
-        dek,
-        &args.clinic_id,
-        &args.consultation_id,
-        args.consultation_date.as_deref(),
-        args.chief_complaint.as_deref(),
-        args.diagnosis.as_deref(),
-        args.clinical_snapshot_json.as_deref(),
-    )
-    .map_err(|e| e.to_string())
+    let db = Arc::clone(&state.db);
+    tokio::task::spawn_blocking(move || {
+        let mut conn = db.get_connection();
+        let dek = db.get_dek();
+        DbOperations::update_consultation(
+            &mut conn,
+            dek,
+            &args.clinic_id,
+            &args.consultation_id,
+            args.consultation_date.as_deref(),
+            args.chief_complaint.as_deref(),
+            args.diagnosis.as_deref(),
+            args.clinical_snapshot_json.as_deref(),
+        )
+        .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("Blocking task join error: {e}"))?
 }
 
 #[derive(Deserialize)]
@@ -2150,7 +2301,7 @@ pub struct UpdatePrescriptionArgs {
 }
 
 #[tauri::command]
-pub fn update_local_prescription(
+pub async fn update_local_prescription(
     state: State<'_, AppState>,
     args: UpdatePrescriptionArgs,
 ) -> Result<String, String> {
@@ -2159,21 +2310,25 @@ pub fn update_local_prescription(
         .validate_session(Some(&args.clinic_id))
         .map_err(|e| e.to_string())?;
 
-    let mut conn = state.db.get_connection();
-    let dek = state.db.get_dek();
-
-    DbOperations::update_prescription(
-        &mut conn,
-        dek,
-        &args.clinic_id,
-        &args.prescription_id,
-        &args.items_json,
-    )
-    .map_err(|e| e.to_string())
+    let db = Arc::clone(&state.db);
+    tokio::task::spawn_blocking(move || {
+        let mut conn = db.get_connection();
+        let dek = db.get_dek();
+        DbOperations::update_prescription(
+            &mut conn,
+            dek,
+            &args.clinic_id,
+            &args.prescription_id,
+            &args.items_json,
+        )
+        .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("Blocking task join error: {e}"))?
 }
 
 #[tauri::command]
-pub fn get_local_consultations(
+pub async fn get_local_consultations(
     state: State<'_, AppState>,
     clinic_id: String,
     patient_id: Option<String>,
@@ -2183,10 +2338,15 @@ pub fn get_local_consultations(
         .validate_session(Some(&clinic_id))
         .map_err(|e| e.to_string())?;
 
-    let conn = state.db.get_connection();
-    let dek = state.db.get_dek();
-
-    DbOperations::get_consultations(&conn, dek, &clinic_id, patient_id.as_deref()).map_err(|e| e.to_string())
+    let db = Arc::clone(&state.db);
+    tokio::task::spawn_blocking(move || {
+        let conn = db.get_read_connection().map_err(|e| e.to_string())?;
+        let dek = db.get_dek();
+        DbOperations::get_consultations(&conn, dek, &clinic_id, patient_id.as_deref())
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("Blocking task join error: {e}"))?
 }
 
 #[derive(Deserialize)]
@@ -2199,7 +2359,7 @@ pub struct SavePrescriptionArgs {
 }
 
 #[tauri::command]
-pub fn save_local_prescription(
+pub async fn save_local_prescription(
     state: State<'_, AppState>,
     args: SavePrescriptionArgs,
 ) -> Result<String, String> {
@@ -2209,21 +2369,24 @@ pub fn save_local_prescription(
         .map_err(|e| e.to_string())?;
 
     let verified_doctor_id = session.doctor_id;
-
-    let mut conn = state.db.get_connection();
-    let dek = state.db.get_dek();
-
-    DbOperations::insert_prescription(
-        &mut conn,
-        dek,
-        &args.clinic_id,
-        &args.consultation_id,
-        &args.patient_id,
-        &verified_doctor_id,
-        &args.prescription_number,
-        &args.items_json,
-    )
-    .map_err(|e| e.to_string())
+    let db = Arc::clone(&state.db);
+    tokio::task::spawn_blocking(move || {
+        let mut conn = db.get_connection();
+        let dek = db.get_dek();
+        DbOperations::insert_prescription(
+            &mut conn,
+            dek,
+            &args.clinic_id,
+            &args.consultation_id,
+            &args.patient_id,
+            &verified_doctor_id,
+            &args.prescription_number,
+            &args.items_json,
+        )
+        .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("Blocking task join error: {e}"))?
 }
 
 #[derive(Deserialize)]
@@ -2238,7 +2401,7 @@ pub struct RevisePrescriptionArgs {
 }
 
 #[tauri::command]
-pub fn revise_local_prescription(
+pub async fn revise_local_prescription(
     state: State<'_, AppState>,
     args: RevisePrescriptionArgs,
 ) -> Result<String, String> {
@@ -2248,31 +2411,34 @@ pub fn revise_local_prescription(
         .map_err(|e| e.to_string())?;
 
     let verified_doctor_id = session.doctor_id;
+    let db = Arc::clone(&state.db);
+    tokio::task::spawn_blocking(move || {
+        let mut conn = db.get_connection();
+        let dek = db.get_dek();
+        let reason = args
+            .reason_for_revision
+            .as_deref()
+            .unwrap_or("Prescription revision");
 
-    let mut conn = state.db.get_connection();
-    let dek = state.db.get_dek();
-
-    let reason = args
-        .reason_for_revision
-        .as_deref()
-        .unwrap_or("Prescription revision");
-
-    DbOperations::revise_prescription(
-        &mut conn,
-        dek,
-        &args.clinic_id,
-        &args.prescription_id,
-        args.expected_revision_number,
-        &args.items_json,
-        reason,
-        &verified_doctor_id,
-        args.new_consultation_id.as_deref(),
-    )
-    .map_err(|e| e.to_string())
+        DbOperations::revise_prescription(
+            &mut conn,
+            dek,
+            &args.clinic_id,
+            &args.prescription_id,
+            args.expected_revision_number,
+            &args.items_json,
+            reason,
+            &verified_doctor_id,
+            args.new_consultation_id.as_deref(),
+        )
+        .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("Blocking task join error: {e}"))?
 }
 
 #[tauri::command]
-pub fn get_local_prescriptions(
+pub async fn get_local_prescriptions(
     state: State<'_, AppState>,
     clinic_id: String,
     patient_id: Option<String>,
@@ -2282,10 +2448,15 @@ pub fn get_local_prescriptions(
         .validate_session(Some(&clinic_id))
         .map_err(|e| e.to_string())?;
 
-    let conn = state.db.get_connection();
-    let dek = state.db.get_dek();
-
-    DbOperations::get_prescriptions(&conn, dek, &clinic_id, patient_id.as_deref()).map_err(|e| e.to_string())
+    let db = Arc::clone(&state.db);
+    tokio::task::spawn_blocking(move || {
+        let conn = db.get_read_connection().map_err(|e| e.to_string())?;
+        let dek = db.get_dek();
+        DbOperations::get_prescriptions(&conn, dek, &clinic_id, patient_id.as_deref())
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("Blocking task join error: {e}"))?
 }
 
 #[tauri::command]
@@ -2360,7 +2531,7 @@ pub fn resolve_sync_conflict(
 }
 
 #[tauri::command]
-pub fn save_local_invoice(
+pub async fn save_local_invoice(
     state: State<'_, AppState>,
     args: SaveInvoiceArgs,
 ) -> Result<String, String> {
@@ -2369,11 +2540,16 @@ pub fn save_local_invoice(
         .validate_session(Some(&args.clinic_id))
         .map_err(|e| e.to_string())?;
 
-    let mut conn = state.db.get_connection();
-    let dek = state.db.get_dek();
-
-    DbOperations::save_invoice(&mut conn, dek, &session.doctor_id, args)
-        .map_err(|e| e.to_string())
+    let db = Arc::clone(&state.db);
+    let doctor_id = session.doctor_id;
+    tokio::task::spawn_blocking(move || {
+        let mut conn = db.get_connection();
+        let dek = db.get_dek();
+        DbOperations::save_invoice(&mut conn, dek, &doctor_id, args)
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("Blocking task join error: {e}"))?
 }
 
 #[tauri::command]
@@ -2386,12 +2562,12 @@ pub fn get_next_invoice_number(
         .validate_session(Some(&clinic_id))
         .map_err(|e| e.to_string())?;
 
-    let conn = state.db.get_connection();
+    let conn = state.db.get_read_connection().map_err(|e| e.to_string())?;
     DbOperations::get_next_invoice_number(&conn, &clinic_id).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-pub fn get_local_invoices(
+pub async fn get_local_invoices(
     state: State<'_, AppState>,
     clinic_id: String,
     patient_id: Option<String>,
@@ -2401,15 +2577,19 @@ pub fn get_local_invoices(
         .validate_session(Some(&clinic_id))
         .map_err(|e| e.to_string())?;
 
-    let conn = state.db.get_connection();
-    let dek = state.db.get_dek();
-
-    DbOperations::get_invoices(&conn, dek, &clinic_id, patient_id.as_deref())
-        .map_err(|e| e.to_string())
+    let db = Arc::clone(&state.db);
+    tokio::task::spawn_blocking(move || {
+        let conn = db.get_read_connection().map_err(|e| e.to_string())?;
+        let dek = db.get_dek();
+        DbOperations::get_invoices(&conn, dek, &clinic_id, patient_id.as_deref())
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("Blocking task join error: {e}"))?
 }
 
 #[tauri::command]
-pub fn get_local_invoice_by_id(
+pub async fn get_local_invoice_by_id(
     state: State<'_, AppState>,
     clinic_id: String,
     invoice_id: String,
@@ -2419,15 +2599,19 @@ pub fn get_local_invoice_by_id(
         .validate_session(Some(&clinic_id))
         .map_err(|e| e.to_string())?;
 
-    let conn = state.db.get_connection();
-    let dek = state.db.get_dek();
-
-    DbOperations::get_invoice_by_id(&conn, dek, &clinic_id, &invoice_id)
-        .map_err(|e| e.to_string())
+    let db = Arc::clone(&state.db);
+    tokio::task::spawn_blocking(move || {
+        let conn = db.get_read_connection().map_err(|e| e.to_string())?;
+        let dek = db.get_dek();
+        DbOperations::get_invoice_by_id(&conn, dek, &clinic_id, &invoice_id)
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("Blocking task join error: {e}"))?
 }
 
 #[tauri::command]
-pub fn finalize_local_invoice(
+pub async fn finalize_local_invoice(
     state: State<'_, AppState>,
     clinic_id: String,
     invoice_id: String,
@@ -2437,11 +2621,16 @@ pub fn finalize_local_invoice(
         .validate_session(Some(&clinic_id))
         .map_err(|e| e.to_string())?;
 
-    let mut conn = state.db.get_connection();
-    let dek = state.db.get_dek();
-
-    DbOperations::finalize_invoice(&mut conn, dek, &clinic_id, &session.doctor_id, &invoice_id)
-        .map_err(|e| e.to_string())
+    let db = Arc::clone(&state.db);
+    let doctor_id = session.doctor_id;
+    tokio::task::spawn_blocking(move || {
+        let mut conn = db.get_connection();
+        let dek = db.get_dek();
+        DbOperations::finalize_invoice(&mut conn, dek, &clinic_id, &doctor_id, &invoice_id)
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("Blocking task join error: {e}"))?
 }
 
 #[tauri::command]
@@ -2665,14 +2854,38 @@ pub async fn search_catalogue_cache(
     query: String,
     limit: Option<usize>,
     formulation: Option<String>,
+    clinic_id: Option<String>,
 ) -> Result<Vec<LocalCatalogueItem>, String> {
-    // Session validation is optional for local offline catalogue cache and pharmacy stock searches
-    let _session = state.session_mgr.validate_session(None).ok();
+    let resolved_clinic_id = match state.session_mgr.validate_session(clinic_id.as_deref()) {
+        Ok(session) => session.clinic_id,
+        Err(crate::auth::AuthError::CrossClinicForbidden { attempted_clinic, session_clinic }) => {
+            return Err(crate::auth::AuthError::CrossClinicForbidden {
+                attempted_clinic,
+                session_clinic,
+            }
+            .to_string());
+        }
+        Err(_) => return Ok(Vec::new()),
+    };
 
     let local_results = {
-        let conn = state.db.get_connection();
-        DbOperations::search_local_catalogue(&conn, &query, limit.unwrap_or(20), formulation.as_deref())
-            .map_err(|e| e.to_string())?
+        let db = Arc::clone(&state.db);
+        let q = query.clone();
+        let cid = resolved_clinic_id.clone();
+        let form = formulation.clone();
+        tokio::task::spawn_blocking(move || {
+            let conn = db.get_read_connection().map_err(|e| e.to_string())?;
+            DbOperations::search_local_catalogue(
+                &conn,
+                &cid,
+                &q,
+                limit.unwrap_or(20),
+                form.as_deref(),
+            )
+            .map_err(|e| e.to_string())
+        })
+        .await
+        .map_err(|e| format!("Blocking task join error: {e}"))??
     };
 
     if !local_results.is_empty() {
@@ -2687,55 +2900,74 @@ pub async fn search_catalogue_cache(
 
     // Fallback: if local cache has 0 matches and access token exists, query backend directly
     if let (Some(token), Ok(base_url)) = (state.session_mgr.get_access_token(), crate::config::get_trusted_backend_url()) {
-        if let Ok(client) = crate::config::create_secure_http_client(Duration::from_secs(5)) {
-            let mut search_url = format!("{base_url}/catalogue/search?q={}", percent_encode_query(&query));
-            if let Some(l) = limit {
-                search_url.push_str(&format!("&limit={l}"));
-            }
-            if let Some(ref form) = formulation {
-                search_url.push_str(&format!("&formulation={}", percent_encode_query(form)));
-            }
+        let mut search_url = format!("{base_url}/catalogue/search?q={}", percent_encode_query(&query));
+        if let Some(l) = limit {
+            search_url.push_str(&format!("&limit={l}"));
+        }
+        if let Some(ref form) = formulation {
+            search_url.push_str(&format!("&formulation={}", percent_encode_query(form)));
+        }
 
-            if let Ok(resp) = client.get(&search_url).bearer_auth(&token).send().await {
-                if resp.status().is_success() {
-                    #[derive(Deserialize)]
-                    struct OnlineSearchResponse {
-                        items: Vec<crate::sync::catalogue_sync::CatalogueFeedItem>,
-                    }
-                    if let Ok(data) = resp.json::<OnlineSearchResponse>().await {
-                        if !data.items.is_empty() {
-                            let items_to_save: Vec<SaveCatalogueCacheItemArgs> = data
-                                .items
-                                .into_iter()
-                                .map(|item| {
-                                    let strengths_str = match item.strengths {
-                                        Some(ref v) => v.to_string(),
-                                        None => "[]".to_string(),
-                                    };
-                                    SaveCatalogueCacheItemArgs {
-                                        id: item.id,
-                                        item_type: item.item_type,
-                                        name: item.name,
-                                        brand_name: item.brand_name,
-                                        generic_name: item.generic_name,
-                                        product_name: item.product_name,
-                                        dosage_form: item.dosage_form,
-                                        route: item.route,
-                                        active_ingredients_json: None,
-                                        strengths_json: strengths_str,
-                                        raw_strength_summary: item.raw_strength_summary.unwrap_or_default(),
-                                        is_combination: item.is_combination.unwrap_or(false),
-                                        is_verified: item.is_strength_verified.unwrap_or(true),
-                                        source_provenance: item.source_provenance,
-                                    }
-                                })
-                                .collect();
+        if let Ok(resp) = state
+            .http_client
+            .get(&search_url)
+            .timeout(Duration::from_secs(5))
+            .bearer_auth(&token)
+            .send()
+            .await
+        {
+            if resp.status().is_success() {
+                #[derive(Deserialize)]
+                struct OnlineSearchResponse {
+                    items: Vec<crate::sync::catalogue_sync::CatalogueFeedItem>,
+                }
+                if let Ok(data) = resp.json::<OnlineSearchResponse>().await {
+                    if !data.items.is_empty() {
+                        let items_to_save: Vec<SaveCatalogueCacheItemArgs> = data
+                            .items
+                            .into_iter()
+                            .map(|item| {
+                                let strengths_str = match item.strengths {
+                                    Some(ref v) => v.to_string(),
+                                    None => "[]".to_string(),
+                                };
+                                SaveCatalogueCacheItemArgs {
+                                    id: item.id,
+                                    item_type: item.item_type,
+                                    name: item.name,
+                                    brand_name: item.brand_name,
+                                    generic_name: item.generic_name,
+                                    product_name: item.product_name,
+                                    dosage_form: item.dosage_form,
+                                    route: item.route,
+                                    active_ingredients_json: None,
+                                    strengths_json: strengths_str,
+                                    raw_strength_summary: item.raw_strength_summary.unwrap_or_default(),
+                                    is_combination: item.is_combination.unwrap_or(false),
+                                    is_verified: item.is_strength_verified.unwrap_or(true),
+                                    source_provenance: item.source_provenance,
+                                }
+                            })
+                            .collect();
 
-                            let mut mut_conn = state.db.get_connection();
+                        let db = Arc::clone(&state.db);
+                        let q = query.clone();
+                        let cid = resolved_clinic_id.clone();
+                        let form = formulation.clone();
+                        return tokio::task::spawn_blocking(move || {
+                            let mut mut_conn = db.get_connection();
                             let _ = DbOperations::cache_catalogue_items(&mut mut_conn, &items_to_save);
-                            return DbOperations::search_local_catalogue(&mut_conn, &query, limit.unwrap_or(20), formulation.as_deref())
-                                .map_err(|e| e.to_string());
-                        }
+                            DbOperations::search_local_catalogue(
+                                &mut_conn,
+                                &cid,
+                                &q,
+                                limit.unwrap_or(20),
+                                form.as_deref(),
+                            )
+                            .map_err(|e| e.to_string())
+                        })
+                        .await
+                        .map_err(|e| format!("Blocking task join error: {e}"))?;
                     }
                 }
             }
@@ -2746,17 +2978,37 @@ pub async fn search_catalogue_cache(
 }
 
 #[tauri::command]
-pub fn get_catalogue_strengths_cache(
+pub async fn get_catalogue_strengths_cache(
     state: State<'_, AppState>,
     medicine_name: String,
     formulation: Option<String>,
+    clinic_id: Option<String>,
 ) -> Result<Vec<String>, String> {
-    // Session validation is optional for local offline catalogue cache searches
-    let _session = state.session_mgr.validate_session(None).ok();
+    let resolved_clinic_id = match state.session_mgr.validate_session(clinic_id.as_deref()) {
+        Ok(session) => session.clinic_id,
+        Err(crate::auth::AuthError::CrossClinicForbidden { attempted_clinic, session_clinic }) => {
+            return Err(crate::auth::AuthError::CrossClinicForbidden {
+                attempted_clinic,
+                session_clinic,
+            }
+            .to_string());
+        }
+        Err(_) => return Ok(Vec::new()),
+    };
 
-    let conn = state.db.get_connection();
-    DbOperations::get_local_catalogue_strengths(&conn, &medicine_name, formulation.as_deref())
+    let db = Arc::clone(&state.db);
+    tokio::task::spawn_blocking(move || {
+        let conn = db.get_read_connection().map_err(|e| e.to_string())?;
+        DbOperations::get_local_catalogue_strengths(
+            &conn,
+            &resolved_clinic_id,
+            &medicine_name,
+            formulation.as_deref(),
+        )
         .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("Blocking task join error: {e}"))?
 }
 
 #[tauri::command]
@@ -2775,17 +3027,23 @@ pub fn save_catalogue_cache(
 }
 
 #[tauri::command]
-pub fn get_catalogue_cache_stats(
+pub async fn get_catalogue_cache_stats(
     state: State<'_, AppState>,
+    clinic_id: Option<String>,
 ) -> Result<CatalogueCacheStats, String> {
-    let _session = state
+    let session = state
         .session_mgr
-        .validate_session(None)
+        .validate_session(clinic_id.as_deref())
         .map_err(|e| e.to_string())?;
 
-    let conn = state.db.get_connection();
-    DbOperations::get_catalogue_cache_stats(&conn)
-        .map_err(|e| e.to_string())
+    let db = Arc::clone(&state.db);
+    tokio::task::spawn_blocking(move || {
+        let conn = db.get_read_connection().map_err(|e| e.to_string())?;
+        DbOperations::get_catalogue_cache_stats(&conn, &session.clinic_id)
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("Blocking task join error: {e}"))?
 }
 
 #[tauri::command]
@@ -2817,7 +3075,7 @@ pub async fn start_catalogue_sync(
 }
 
 #[tauri::command]
-pub fn export_encrypted_backup(
+pub async fn export_encrypted_backup(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
     clinic_id: String,
@@ -2831,19 +3089,24 @@ pub fn export_encrypted_backup(
         .map_err(|e| e.to_string())?;
 
     let docs_dir = app.path().document_dir().ok();
-    let dest = destination_path.as_deref().map(std::path::Path::new);
-    crate::db::backup::BackupManager::export_backup_with_documents_dir(
-        &state.db,
-        &clinic_id,
-        passphrase.as_deref(),
-        dest,
-        docs_dir.as_deref(),
-    )
-    .map_err(|e| e.to_string())
+    let db = Arc::clone(&state.db);
+    tokio::task::spawn_blocking(move || {
+        let dest = destination_path.as_deref().map(std::path::Path::new);
+        crate::db::backup::BackupManager::export_backup_with_documents_dir(
+            &db,
+            &clinic_id,
+            passphrase.as_deref(),
+            dest,
+            docs_dir.as_deref(),
+        )
+        .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("Blocking task join error: {e}"))?
 }
 
 #[tauri::command]
-pub fn restore_encrypted_backup(
+pub async fn restore_encrypted_backup(
     state: State<'_, AppState>,
     clinic_id: Option<String>,
     backup_bytes_base64: Option<String>,
@@ -2855,23 +3118,133 @@ pub fn restore_encrypted_backup(
         .validate_session(clinic_id.as_deref())
         .map_err(|e| e.to_string())?;
 
-    let bytes = if let Some(b64) = backup_bytes_base64 {
-        base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &b64)
-            .map_err(|e| format!("Invalid base64 backup encoding: {e}"))?
-    } else if let Some(path) = backup_file_path {
-        std::fs::read(&path)
-            .map_err(|e| format!("Failed to read backup file at {path}: {e}"))?
-    } else {
-        return Err("Neither backup data nor file path was provided".to_string());
-    };
+    let db = Arc::clone(&state.db);
+    tokio::task::spawn_blocking(move || {
+        let bytes = if let Some(b64) = backup_bytes_base64 {
+            base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &b64)
+                .map_err(|e| format!("Invalid base64 backup encoding: {e}"))?
+        } else if let Some(path) = backup_file_path {
+            std::fs::read(&path)
+                .map_err(|e| format!("Failed to read backup file at {path}: {e}"))?
+        } else {
+            return Err("Neither backup data nor file path was provided".to_string());
+        };
 
-    crate::db::backup::BackupManager::restore_backup(
-        &state.db,
-        &bytes,
-        clinic_id.as_deref(),
-        passphrase.as_deref(),
-    )
-    .map_err(|e| e.to_string())
+        crate::db::backup::BackupManager::restore_backup(
+            &db,
+            &bytes,
+            clinic_id.as_deref(),
+            passphrase.as_deref(),
+        )
+        .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("Blocking task join error: {e}"))?
+}
+
+#[tauri::command]
+pub fn set_consultation_active_state(
+    state: State<'_, AppState>,
+    active: bool,
+) -> Result<(), String> {
+    state.consultation_active.store(active, Ordering::Release);
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn get_auto_backup_status(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    clinic_id: String,
+) -> Result<crate::db::backup::AutoBackupStatus, String> {
+    let _session = state
+        .session_mgr
+        .validate_session(Some(&clinic_id))
+        .map_err(|e| e.to_string())?;
+    let docs_dir = app.path().document_dir().ok();
+    let app_data_dir = state.app_data_dir.clone();
+    let db = Arc::clone(&state.db);
+    tokio::task::spawn_blocking(move || {
+        crate::db::backup::BackupManager::get_auto_backup_status(
+            &db,
+            &clinic_id,
+            &app_data_dir,
+            docs_dir.as_deref(),
+        )
+    })
+    .await
+    .map_err(|e| format!("Blocking task join error: {e}"))
+}
+
+#[tauri::command]
+pub async fn update_auto_backup_config(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    clinic_id: String,
+    config: crate::db::backup::AutoBackupConfig,
+) -> Result<crate::db::backup::AutoBackupStatus, String> {
+    let _session = state
+        .session_mgr
+        .validate_session(Some(&clinic_id))
+        .map_err(|e| e.to_string())?;
+    let docs_dir = app.path().document_dir().ok();
+    let app_data_dir = state.app_data_dir.clone();
+    let db = Arc::clone(&state.db);
+    tokio::task::spawn_blocking(move || -> Result<crate::db::backup::AutoBackupStatus, String> {
+        crate::db::backup::BackupManager::save_auto_backup_config(&app_data_dir, &config)
+            .map_err(|e| e.to_string())?;
+        Ok(crate::db::backup::BackupManager::get_auto_backup_status(
+            &db,
+            &clinic_id,
+            &app_data_dir,
+            docs_dir.as_deref(),
+        ))
+    })
+    .await
+    .map_err(|e| format!("Blocking task join error: {e}"))?
+}
+
+#[tauri::command]
+pub async fn run_auto_backup_now(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    clinic_id: String,
+) -> Result<crate::db::backup::AutoBackupStatus, String> {
+    let _session = state
+        .session_mgr
+        .validate_session(Some(&clinic_id))
+        .map_err(|e| e.to_string())?;
+    let docs_dir = app.path().document_dir().ok();
+    let app_data_dir = state.app_data_dir.clone();
+    let db = Arc::clone(&state.db);
+    let consultation_active = state.consultation_active.load(Ordering::Acquire);
+    tokio::task::spawn_blocking(move || {
+        crate::db::backup::BackupManager::run_auto_backup_with_dirs(
+            &db,
+            &clinic_id,
+            &app_data_dir,
+            docs_dir.as_deref(),
+            consultation_active,
+            true,
+        )
+        .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("Blocking task join error: {e}"))?
+}
+
+#[tauri::command]
+pub async fn run_database_diagnostics(
+    state: State<'_, AppState>,
+) -> Result<crate::db::DatabaseDiagnosticsResult, String> {
+    let _session = state
+        .session_mgr
+        .validate_session(None)
+        .map_err(|e| e.to_string())?;
+    let db = Arc::clone(&state.db);
+    tokio::task::spawn_blocking(move || db.run_diagnostics().map_err(|e| e.to_string()))
+        .await
+        .map_err(|e| format!("Blocking task join error: {e}"))?
 }
 
 #[tauri::command]

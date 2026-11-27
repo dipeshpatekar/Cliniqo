@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react"
+import { useState, useEffect, useMemo, memo } from "react"
 import { Button, GlobalPatientSearch, IconButton, StatusPill } from "../common"
 import { AppHeader } from "../layout"
 import {
@@ -6,6 +6,7 @@ import {
   formatDateTimeDDMMYYYY,
   formatPatientAge,
   getPublicPatientId,
+  mapLocalRecordToPatient,
   type Page,
   type Patient,
 } from "../../types"
@@ -22,11 +23,14 @@ import {
 } from "lucide-react"
 import {
   getLocalConsultations,
+  getDashboardSummary,
+  isTauriDesktop,
   type LocalConsultationRecord,
+  type DashboardSummaryRecord,
   type DesktopSessionContext,
 } from "../../desktop/desktop-bridge"
 
-export function Dashboard({
+export const Dashboard = memo(function Dashboard({
   go,
   patients,
   onOpenPatient,
@@ -42,46 +46,103 @@ export function Dashboard({
   const [consultations, setConsultations] = useState<LocalConsultationRecord[]>(
     [],
   )
+  const [summary, setSummary] = useState<DashboardSummaryRecord | null>(null)
+  const [isLoadingSummary, setIsLoadingSummary] = useState(false)
+
+  const todayIso = useMemo(() => new Date().toISOString().slice(0, 10), [])
 
   useEffect(() => {
-    if (desktopSession?.clinic_id) {
+    if (!desktopSession?.clinic_id) return
+    let active = true
+    if (isTauriDesktop()) {
+      setIsLoadingSummary(true)
+      getDashboardSummary(desktopSession.clinic_id, todayIso)
+        .then((res) => {
+          if (active && res) setSummary(res)
+        })
+        .catch(() => {})
+        .finally(() => {
+          if (active) setIsLoadingSummary(false)
+        })
+    } else {
       getLocalConsultations(desktopSession.clinic_id)
         .then((items) => {
-          if (items) setConsultations(items)
+          if (active && items) setConsultations(items)
         })
         .catch(() => {})
     }
-  }, [desktopSession?.clinic_id])
+    return () => {
+      active = false
+    }
+  }, [desktopSession?.clinic_id, todayIso])
 
-  const todayIso = new Date().toISOString().slice(0, 10)
-  const finalizedToday = consultations.filter(
-    (c) =>
-      c.status !== "DRAFT" &&
-      (c.consultation_date || c.updated_at || "").startsWith(todayIso),
+  const useDesktopSummary = Boolean(
+    isTauriDesktop() && desktopSession?.clinic_id && summary,
   )
-  const seenToday =
-    finalizedToday.length > 0
+
+  const patientLookup = useMemo(() => {
+    const map = new Map<string, Patient>()
+    for (const p of patients) {
+      map.set(p.id, p)
+      if (p.displayId) map.set(p.displayId, p)
+      if (p.patientCode) map.set(p.patientCode, p)
+    }
+    return map
+  }, [patients])
+
+  const finalizedConsultations = useMemo(() => {
+    if (useDesktopSummary && summary) {
+      return summary.recent_consultations
+    }
+    return consultations
+      .filter((c) => c.status !== "DRAFT")
+      .sort((a, b) =>
+        (b.consultation_date || b.updated_at).localeCompare(
+          a.consultation_date || a.updated_at,
+        ),
+      )
+      .slice(0, 5)
+  }, [useDesktopSummary, summary, consultations])
+
+  const totalPatientsCount =
+    useDesktopSummary && summary ? summary.total_patients : patients.length
+
+  const seenToday = useMemo(() => {
+    if (useDesktopSummary && summary) {
+      return summary.seen_today
+    }
+    const finalizedToday = consultations.filter(
+      (c) =>
+        c.status !== "DRAFT" &&
+        (c.consultation_date || c.updated_at || "").startsWith(todayIso),
+    )
+    return finalizedToday.length > 0
       ? finalizedToday.length
       : patients.filter((patient) =>
           patient.lastVisit.toLowerCase().startsWith("today"),
         ).length
+  }, [useDesktopSummary, summary, consultations, patients, todayIso])
 
-  const finalizedConsultations = consultations
-    .filter((c) => c.status !== "DRAFT")
-    .sort((a, b) =>
-      (b.consultation_date || b.updated_at).localeCompare(
-        a.consultation_date || a.updated_at,
-      ),
+  const allergyRecords = useMemo(() => {
+    if (useDesktopSummary && summary) return summary.allergy_records
+    return patients.filter((patient) => hasGenuineAllergies(patient.allergies))
+      .length
+  }, [useDesktopSummary, summary, patients])
+
+  const recordedConditions = useMemo(() => {
+    if (useDesktopSummary && summary) return summary.recorded_conditions
+    return patients.reduce(
+      (total, patient) => total + patient.conditions.length,
+      0,
     )
-    .slice(0, 5)
+  }, [useDesktopSummary, summary, patients])
 
-  const allergyRecords = patients.filter(
-    (patient) => hasGenuineAllergies(patient.allergies),
-  ).length
-  const recordedConditions = patients.reduce(
-    (total, patient) => total + patient.conditions.length,
-    0,
-  )
+  const recentPatientsList = useMemo(() => {
+    if (useDesktopSummary && summary) {
+      return summary.recent_patients.map(mapLocalRecordToPatient)
+    }
+    return patients.slice(0, 5)
+  }, [useDesktopSummary, summary, patients])
 
   const weekday = new Intl.DateTimeFormat("en-IN", {
     weekday: "long",
@@ -94,6 +155,7 @@ export function Dashboard({
         <GlobalPatientSearch
           patients={patients}
           onSelectPatient={onOpenPatient}
+          clinicId={desktopSession?.clinic_id}
         />
         <Button
           icon={UserRoundPlus}
@@ -109,7 +171,7 @@ export function Dashboard({
             {
               variant: "teal",
               label: "Patient records",
-              value: String(patients.length),
+              value: String(totalPatientsCount),
               icon: Users,
             },
             {
@@ -149,12 +211,20 @@ export function Dashboard({
         <div className="dashboard-columns">
           <section className="panel">
             <div className="panel-head">
-              <div>
+              <div className="flex items-center gap-2.5">
                 <h2>
                   {finalizedConsultations.length > 0
                     ? "Recent consultations"
                     : "Recent patients"}
                 </h2>
+                {isLoadingSummary && (
+                  <span
+                    className="text-xs font-medium text-teal-700 dark:text-teal-300 bg-teal-50 dark:bg-teal-950/60 px-2 py-0.5 rounded-full"
+                    role="status"
+                  >
+                    Refreshing summary...
+                  </span>
+                )}
               </div>
               <button className="text-btn" onClick={() => go("patients")}>
                 View all <ChevronRight size={15} />
@@ -163,12 +233,13 @@ export function Dashboard({
             <div className="consultation-list">
               {finalizedConsultations.length > 0 ? (
                 finalizedConsultations.map((c) => {
-                  const patient = patients.find(
-                    (p) =>
-                      p.id === c.patient_id ||
-                      p.displayId === c.patient_id ||
-                      p.patientCode === c.patient_id,
-                  ) || {
+                  const hydratedPatient =
+                    "patient" in c && c.patient
+                      ? mapLocalRecordToPatient(c.patient)
+                      : null
+                  const patient =
+                    hydratedPatient ||
+                    patientLookup.get(c.patient_id) || {
                     id: c.patient_id,
                     displayId:
                       /^[A-Z]{3}-\d{4}$/.test(c.patient_id) ||
@@ -217,7 +288,7 @@ export function Dashboard({
                     </button>
                   )
                 })
-              ) : patients.length === 0 ? (
+              ) : totalPatientsCount === 0 && recentPatientsList.length === 0 ? (
                 <div className="p-8 text-center text-slate-500 dark:text-slate-400">
                   <p className="text-sm">
                     No patients or consultations recorded yet.
@@ -232,7 +303,7 @@ export function Dashboard({
                   </Button>
                 </div>
               ) : (
-                patients.slice(0, 5).map((patient) => {
+                recentPatientsList.map((patient) => {
                   const isNew =
                     patient.lastVisit === "No visits yet" || !patient.lastVisit
                   return (
@@ -351,4 +422,6 @@ export function Dashboard({
       </div>
     </>
   )
-}
+})
+
+export default Dashboard

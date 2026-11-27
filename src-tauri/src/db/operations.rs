@@ -1,18 +1,19 @@
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, types::Value, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use uuid::Uuid;
 use thiserror::Error;
-use crate::crypto::{decrypt_payload, encrypt_payload, CryptoError};
+use crate::crypto::{compute_phone_hmac, decrypt_payload, encrypt_payload, CryptoError};
 use crate::crypto::key_manager::DatabaseEncryptionKey;
 use super::schema::{
-    CatalogueCacheStats, ClinicalData, ClinicalImportBatchInput, ClinicalImportBatchRecord,
-    ClinicalImportSummary, ClinicalMedicineRecord, ClinicProfileRecord,
-    ConflictStatus, ConsultationRecord, DecryptedOutboxItem, DoctorProfileRecord, EncryptedBillingData,
-    FormularyRecord, InvoiceItem, InvoiceRecord, LocalCatalogueItem, PatientDemographics, PatientRecord,
-    PrescriptionRecord, SaveCatalogueCacheItemArgs, SaveClinicalMedicineArgs, SaveFormularyArgs,
-    SaveInvoiceArgs, StockImportSummary, StockItemInput, StockItemRecord, StockSummaryRecord,
-    SyncConflictRecord, SyncFeedChangeItem, SyncOutboxSummary, SyncStateRecord,
+    has_genuine_allergy_entries, CatalogueCacheStats, ClinicalData, ClinicalImportBatchInput,
+    ClinicalImportBatchRecord, ClinicalImportSummary, ClinicalMedicineRecord, ClinicProfileRecord,
+    ConflictStatus, ConsultationRecord, DashboardRecentConsultation, DashboardSummaryRecord,
+    DecryptedOutboxItem, DoctorProfileRecord, EncryptedBillingData, FormularyRecord, InvoiceItem,
+    InvoiceRecord, LocalCatalogueItem, PatientDemographics, PatientRecord, PatientsPageQueryArgs,
+    PatientsPageResult, PrescriptionRecord, SaveCatalogueCacheItemArgs, SaveClinicalMedicineArgs,
+    SaveFormularyArgs, SaveInvoiceArgs, StockImportSummary, StockItemInput, StockItemRecord,
+    StockSummaryRecord, SyncConflictRecord, SyncFeedChangeItem, SyncOutboxSummary, SyncStateRecord,
 };
 
 #[derive(Error, Debug)]
@@ -112,73 +113,87 @@ impl DbOperations {
         Some(prefix_index * 9999 + num)
     }
 
-    /// Computes the next sequential patient code for a clinic without modifying counter state.
-    pub fn get_next_patient_code(conn: &mut Connection, clinic_id: &str) -> Result<String, DatabaseOpError> {
-        let counter_seq: u32 = match conn.query_row(
-            "SELECT last_seq FROM local_seq_counters WHERE clinic_id = ?1 AND sequence_name = 'patient'",
-            params![clinic_id],
-            |row| row.get(0),
-        ) {
-            Ok(seq) => seq,
-            Err(rusqlite::Error::QueryReturnedNoRows) => 0,
-            Err(e) => return Err(DatabaseOpError::Sqlite(e)),
-        };
-
-        let mut max_seq = counter_seq;
-        {
-            let mut stmt = conn.prepare("SELECT patient_code FROM local_patients WHERE clinic_id = ?1")?;
-            let rows = stmt.query_map(params![clinic_id], |row| row.get::<_, String>(0))?;
-            for r in rows {
-                let code = r?;
-                if let Some(parsed) = Self::parse_sequential_patient_id(&code) {
-                    if parsed > max_seq {
-                        max_seq = parsed;
-                    }
+    fn scan_max_patient_seq_for_unseeded_clinic(conn: &Connection, clinic_id: &str) -> Result<u32, DatabaseOpError> {
+        let mut max_seq = 0u32;
+        let mut stmt = conn.prepare("SELECT patient_code FROM local_patients WHERE clinic_id = ?1")?;
+        let rows = stmt.query_map(params![clinic_id], |row| row.get::<_, String>(0))?;
+        for r in rows {
+            let code = r?;
+            if let Some(parsed) = Self::parse_sequential_patient_id(&code) {
+                if parsed > max_seq {
+                    max_seq = parsed;
                 }
             }
         }
+        Ok(max_seq)
+    }
+
+    /// Computes the next sequential patient code for a clinic in O(1) using `local_seq_counters`.
+    pub fn get_next_patient_code(conn: &mut Connection, clinic_id: &str) -> Result<String, DatabaseOpError> {
+        let counter_seq: Option<u32> = conn
+            .query_row(
+                "SELECT last_seq FROM local_seq_counters WHERE clinic_id = ?1 AND sequence_name = 'patient'",
+                params![clinic_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+
+        let max_seq = match counter_seq {
+            Some(seq) => seq,
+            None => {
+                // Only scan if this clinic has never initialized a counter row yet
+                let seeded = Self::scan_max_patient_seq_for_unseeded_clinic(conn, clinic_id)?;
+                if seeded > 0 {
+                    let _ = conn.execute(
+                        r#"
+                        INSERT INTO local_seq_counters (clinic_id, sequence_name, last_seq)
+                        VALUES (?1, 'patient', ?2)
+                        ON CONFLICT(clinic_id, sequence_name) DO UPDATE SET
+                            last_seq = MAX(local_seq_counters.last_seq, excluded.last_seq)
+                        "#,
+                        params![clinic_id, seeded],
+                    );
+                }
+                seeded
+            }
+        };
 
         let next_seq = max_seq + 1;
         Ok(Self::format_sequential_patient_id(next_seq))
     }
 
     fn allocate_next_patient_code_tx(tx: &rusqlite::Transaction, clinic_id: &str) -> Result<String, DatabaseOpError> {
-        let counter_seq: u32 = match tx.query_row(
-            "SELECT last_seq FROM local_seq_counters WHERE clinic_id = ?1 AND sequence_name = 'patient'",
-            params![clinic_id],
-            |row| row.get(0),
-        ) {
-            Ok(seq) => seq,
-            Err(rusqlite::Error::QueryReturnedNoRows) => 0,
-            Err(e) => return Err(DatabaseOpError::Sqlite(e)),
+        let existing_counter: Option<u32> = tx
+            .query_row(
+                "SELECT last_seq FROM local_seq_counters WHERE clinic_id = ?1 AND sequence_name = 'patient'",
+                params![clinic_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+
+        let base_seq = match existing_counter {
+            Some(seq) => seq,
+            None => Self::scan_max_patient_seq_for_unseeded_clinic(tx, clinic_id)?,
         };
 
-        let mut max_seq = counter_seq;
-        {
-            let mut stmt = tx.prepare("SELECT patient_code FROM local_patients WHERE clinic_id = ?1")?;
-            let rows = stmt.query_map(params![clinic_id], |row| row.get::<_, String>(0))?;
-            for r in rows {
-                let code = r?;
-                if let Some(parsed) = Self::parse_sequential_patient_id(&code) {
-                    if parsed > max_seq {
-                        max_seq = parsed;
-                    }
-                }
-            }
-        }
-
-        let next_seq = max_seq + 1;
+        let next_seq = base_seq + 1;
         tx.execute(
             r#"
             INSERT INTO local_seq_counters (clinic_id, sequence_name, last_seq)
             VALUES (?1, 'patient', ?2)
             ON CONFLICT(clinic_id, sequence_name) DO UPDATE SET
-            last_seq = excluded.last_seq
+            last_seq = MAX(local_seq_counters.last_seq + 1, excluded.last_seq)
             "#,
             params![clinic_id, next_seq],
         )?;
 
-        Ok(Self::format_sequential_patient_id(next_seq))
+        let allocated: u32 = tx.query_row(
+            "SELECT last_seq FROM local_seq_counters WHERE clinic_id = ?1 AND sequence_name = 'patient'",
+            params![clinic_id],
+            |row| row.get(0),
+        )?;
+
+        Ok(Self::format_sequential_patient_id(allocated))
     }
 
     /// Inserts a patient record locally with optional client mutation idempotency and canonical
@@ -229,42 +244,23 @@ impl DbOperations {
             }
         }
 
-        // 1b. Check duplicate prevention by phone number:
-        // If an existing patient in this clinic has the exact same 10-digit phone number, reuse and update that patient record
-        let clean_phone: String = phone.chars().filter(|c| c.is_ascii_digit()).collect();
-        if clean_phone.len() >= 10 {
-            let norm_phone = &clean_phone[clean_phone.len() - 10..];
-            let mut stmt = tx.prepare(
-                "SELECT id, patient_code, encrypted_demographics, nonce FROM local_patients WHERE clinic_id = ?1",
-            )?;
-            let rows = stmt.query_map(params![clinic_id], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, Vec<u8>>(2)?,
-                    row.get::<_, Vec<u8>>(3)?,
-                ))
-            })?;
+        // 1b. Check duplicate prevention by phone number via keyed HMAC-SHA256 blind index (O(1) lookup, zero plaintext scan)
+        let phone_hmac = compute_phone_hmac(&dek.key, phone)?;
+        let has_allergy: i64 = if has_genuine_allergy_entries(allergies) { 1 } else { 0 };
+        let condition_count: i64 = conditions.len() as i64;
 
-            let mut matched_patient: Option<(String, String)> = None;
-            for row in rows {
-                if let Ok((pid, pcode, enc_demo, nonce_bytes)) = row {
-                    if let Ok(dec) = decrypt_payload(&dek.key, &enc_demo, &nonce_bytes) {
-                        if let Ok(demo) = serde_json::from_slice::<PatientDemographics>(&dec) {
-                            let existing_clean: String = demo.phone.chars().filter(|c| c.is_ascii_digit()).collect();
-                            if existing_clean.ends_with(norm_phone) {
-                                matched_patient = Some((pid, pcode));
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-            drop(stmt);
+        if let Some(ref hmac_bytes) = phone_hmac {
+            let matched_patient: Option<(String, String)> = tx
+                .query_row(
+                    "SELECT id, patient_code FROM local_patients WHERE clinic_id = ?1 AND phone_hmac = ?2 LIMIT 1",
+                    params![clinic_id, hmac_bytes],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .optional()?;
 
             if let Some((existing_id, existing_code)) = matched_patient {
                 log::info!(
-                    "Duplicate patient prevention matched existing record by phone (id: {}, code: {})",
+                    "Duplicate patient prevention matched existing record by phone_hmac (id: {}, code: {})",
                     existing_id,
                     existing_code
                 );
@@ -286,11 +282,22 @@ impl DbOperations {
                     UPDATE local_patients
                     SET encrypted_demographics = ?1,
                         nonce = ?2,
+                        phone_hmac = ?3,
+                        has_allergy = ?4,
+                        condition_count = ?5,
                         local_version = local_version + 1,
                         updated_at = CURRENT_TIMESTAMP
-                    WHERE clinic_id = ?3 AND id = ?4
+                    WHERE clinic_id = ?6 AND id = ?7
                     "#,
-                    params![encrypted_demographics, demo_nonce, clinic_id, existing_id],
+                    params![
+                        encrypted_demographics,
+                        demo_nonce,
+                        hmac_bytes,
+                        has_allergy,
+                        condition_count,
+                        clinic_id,
+                        existing_id
+                    ],
                 )?;
 
                 if let Some(ref cid) = _client_mutation_id {
@@ -386,8 +393,9 @@ impl DbOperations {
         tx.execute(
             r#"
             INSERT INTO local_patients (
-                id, clinic_id, patient_code, encrypted_demographics, nonce, sync_status, local_version
-            ) VALUES (?1, ?2, ?3, ?4, ?5, 'LOCAL_ONLY', 1)
+                id, clinic_id, patient_code, encrypted_demographics, nonce,
+                phone_hmac, has_allergy, condition_count, sync_status, local_version
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'LOCAL_ONLY', 1)
             "#,
             params![
                 patient_id,
@@ -395,6 +403,9 @@ impl DbOperations {
                 effective_code,
                 encrypted_demographics,
                 demo_nonce,
+                phone_hmac,
+                has_allergy,
+                condition_count,
             ],
         )?;
 
@@ -480,6 +491,9 @@ impl DbOperations {
 
         let demo_bytes = serde_json::to_vec(&demographics)?;
         let (encrypted_demographics, demo_nonce) = encrypt_payload(&dek.key, &demo_bytes)?;
+        let phone_hmac = compute_phone_hmac(&dek.key, phone)?;
+        let has_allergy: i64 = if has_genuine_allergy_entries(allergies) { 1 } else { 0 };
+        let condition_count: i64 = conditions.len() as i64;
 
         if !conn.is_autocommit() {
             log::warn!("update_patient: active uncommitted transaction detected on connection; rolling back to clean state.");
@@ -510,12 +524,25 @@ impl DbOperations {
             SET patient_code = ?1,
                 encrypted_demographics = ?2,
                 nonce = ?3,
+                phone_hmac = ?4,
+                has_allergy = ?5,
+                condition_count = ?6,
                 sync_status = 'LOCAL_ONLY',
-                local_version = ?4,
+                local_version = ?7,
                 updated_at = CURRENT_TIMESTAMP
-            WHERE clinic_id = ?5 AND id = ?6
+            WHERE clinic_id = ?8 AND id = ?9
             "#,
-            params![patient_code, encrypted_demographics, demo_nonce, new_ver, clinic_id, patient_id],
+            params![
+                patient_code,
+                encrypted_demographics,
+                demo_nonce,
+                phone_hmac,
+                has_allergy,
+                condition_count,
+                new_ver,
+                clinic_id,
+                patient_id
+            ],
         )?;
 
         if updated_count == 0 {
@@ -557,72 +584,28 @@ impl DbOperations {
         Ok(())
     }
 
-    /// Queries local patients for a clinic, decrypting the demographic payloads.
-    pub fn get_patients(
-        conn: &Connection,
+    fn hydrate_patient_rows<I>(
+        rows: I,
         dek: &DatabaseEncryptionKey,
-        clinic_id: &str,
-    ) -> Result<Vec<PatientRecord>, DatabaseOpError> {
-        let mut stmt = conn.prepare(
-            r#"
-            SELECT p.id, p.server_id, p.clinic_id, p.patient_code, p.encrypted_demographics, p.nonce,
-                   p.sync_status, p.server_version, p.local_version, p.updated_at, p.created_at,
-                   (
-                       SELECT COALESCE(c.consultation_date, c.created_at)
-                       FROM local_consultations c
-                       LEFT JOIN local_prescriptions rx
-                         ON (rx.consultation_id = c.id OR (c.server_id IS NOT NULL AND rx.consultation_id = c.server_id))
-                        AND rx.clinic_id = c.clinic_id
-                       WHERE (
-                           c.patient_id = p.id
-                           OR c.patient_id = p.patient_code
-                           OR (p.server_id IS NOT NULL AND c.patient_id = p.server_id)
-                       )
-                         AND c.clinic_id = p.clinic_id
-                         AND (
-                             rx.status = 'ACTIVE'
-                             OR (c.status IN ('FINALIZED', 'COMPLETED') AND (rx.status IS NULL OR rx.status = 'ACTIVE'))
-                             OR c.status = 'FINALIZED'
-                         )
-                       ORDER BY c.consultation_date DESC, c.created_at DESC
-                       LIMIT 1
-                   ) AS last_visit
-            FROM local_patients p
-            WHERE p.clinic_id = ?1
-            ORDER BY p.created_at DESC, p.id DESC
-            "#,
-        )?;
-
-        let rows = stmt.query_map(params![clinic_id], |row| {
-            let id: String = row.get(0)?;
-            let server_id: Option<String> = row.get(1)?;
-            let clinic_id: String = row.get(2)?;
-            let patient_code: String = row.get(3)?;
-            let enc_bytes: Vec<u8> = row.get(4)?;
-            let nonce: Vec<u8> = row.get(5)?;
-            let sync_status: String = row.get(6)?;
-            let server_version: i32 = row.get(7)?;
-            let local_version: i32 = row.get(8)?;
-            let updated_at: String = row.get(9)?;
-            let created_at: Option<String> = row.get(10)?;
-            let last_visit: Option<String> = row.get(11)?;
-
-            Ok((
-                id,
-                server_id,
-                clinic_id,
-                patient_code,
-                enc_bytes,
-                nonce,
-                sync_status,
-                server_version,
-                local_version,
-                updated_at,
-                created_at,
-                last_visit,
-            ))
-        })?;
-
+    ) -> Result<Vec<PatientRecord>, DatabaseOpError>
+    where
+        I: Iterator<
+            Item = rusqlite::Result<(
+                String,
+                Option<String>,
+                String,
+                String,
+                Vec<u8>,
+                Vec<u8>,
+                String,
+                i32,
+                i32,
+                String,
+                Option<String>,
+                Option<String>,
+            )>,
+        >,
+    {
         let mut results = Vec::new();
         for r in rows {
             let (
@@ -666,8 +649,641 @@ impl DbOperations {
                 last_visit,
             });
         }
-
         Ok(results)
+    }
+
+    /// Queries local patients for a clinic using pre-maintained last_visit_at metadata and
+    /// composite index ordering (eliminating O(P * C) correlated subqueries).
+    pub fn get_patients(
+        conn: &Connection,
+        dek: &DatabaseEncryptionKey,
+        clinic_id: &str,
+    ) -> Result<Vec<PatientRecord>, DatabaseOpError> {
+        let mut stmt = conn.prepare(
+            r#"
+            SELECT p.id, p.server_id, p.clinic_id, p.patient_code, p.encrypted_demographics, p.nonce,
+                   p.sync_status, p.server_version, p.local_version, p.updated_at, p.created_at,
+                   p.last_visit_at AS last_visit
+            FROM local_patients p
+            WHERE p.clinic_id = ?1
+            ORDER BY p.created_at DESC, p.id DESC
+            "#,
+        )?;
+
+        let rows = stmt.query_map(params![clinic_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, Option<String>>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, Vec<u8>>(4)?,
+                row.get::<_, Vec<u8>>(5)?,
+                row.get::<_, String>(6)?,
+                row.get::<_, i32>(7)?,
+                row.get::<_, i32>(8)?,
+                row.get::<_, String>(9)?,
+                row.get::<_, Option<String>>(10)?,
+                row.get::<_, Option<String>>(11)?,
+            ))
+        })?;
+
+        Self::hydrate_patient_rows(rows, dek)
+    }
+
+    /// Fetches a single patient by canonical `id`, `patient_code`, or `server_id` in O(1)/O(log N).
+    pub fn get_patient_by_identifier(
+        conn: &Connection,
+        dek: &DatabaseEncryptionKey,
+        clinic_id: &str,
+        patient_identifier: &str,
+    ) -> Result<Option<PatientRecord>, DatabaseOpError> {
+        let sql = r#"
+            SELECT p.id, p.server_id, p.clinic_id, p.patient_code, p.encrypted_demographics, p.nonce,
+                   p.sync_status, p.server_version, p.local_version, p.updated_at, p.created_at,
+                   p.last_visit_at AS last_visit
+            FROM local_patients p
+            WHERE p.clinic_id = ?1 AND (p.id = ?2 OR p.patient_code = ?2 OR p.server_id = ?2)
+            LIMIT 1
+        "#;
+        let mut stmt = conn.prepare(sql)?;
+        let rows = stmt.query_map(params![clinic_id, patient_identifier], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, Option<String>>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, Vec<u8>>(4)?,
+                row.get::<_, Vec<u8>>(5)?,
+                row.get::<_, String>(6)?,
+                row.get::<_, i32>(7)?,
+                row.get::<_, i32>(8)?,
+                row.get::<_, String>(9)?,
+                row.get::<_, Option<String>>(10)?,
+                row.get::<_, Option<String>>(11)?,
+            ))
+        })?;
+        Ok(Self::hydrate_patient_rows(rows, dek)?.into_iter().next())
+    }
+
+    fn build_patient_where_date_clauses(
+        start_date: Option<&str>,
+        end_date: Option<&str>,
+        where_clauses: &mut Vec<String>,
+        bind_values: &mut Vec<Value>,
+    ) {
+        if let Some(sd) = start_date {
+            let idx = bind_values.len() + 1;
+            where_clauses.push(format!(
+                "SUBSTR(COALESCE(NULLIF(p.last_visit_at, ''), p.updated_at, p.created_at), 1, 10) >= ?{idx}"
+            ));
+            bind_values.push(Value::from(sd.to_string()));
+        }
+        if let Some(ed) = end_date {
+            let idx = bind_values.len() + 1;
+            where_clauses.push(format!(
+                "SUBSTR(COALESCE(NULLIF(p.last_visit_at, ''), p.updated_at, p.created_at), 1, 10) <= ?{idx}"
+            ));
+            bind_values.push(Value::from(ed.to_string()));
+        }
+    }
+
+    fn build_patient_order_by_sql(sort_opt: &str, has_narrow_filter: bool) -> &'static str {
+        if has_narrow_filter {
+            match sort_opt {
+                "Created Date (oldest first)" => "ORDER BY +p.created_at ASC, p.id ASC",
+                "Sort by date" | "Recent visit" | "Date (newest first)" => {
+                    "ORDER BY COALESCE(NULLIF(p.last_visit_at, ''), p.updated_at, p.created_at) DESC, +p.created_at DESC, p.id DESC"
+                }
+                "Date (oldest first)" => {
+                    "ORDER BY COALESCE(NULLIF(p.last_visit_at, ''), p.updated_at, p.created_at) ASC, +p.created_at ASC, p.id ASC"
+                }
+                _ => "ORDER BY +p.created_at DESC, p.id DESC",
+            }
+        } else {
+            match sort_opt {
+                "Created Date (oldest first)" => "ORDER BY p.created_at ASC, p.id ASC",
+                "Sort by date" | "Recent visit" | "Date (newest first)" => {
+                    "ORDER BY COALESCE(NULLIF(p.last_visit_at, ''), p.updated_at, p.created_at) DESC, p.created_at DESC, p.id DESC"
+                }
+                "Date (oldest first)" => {
+                    "ORDER BY COALESCE(NULLIF(p.last_visit_at, ''), p.updated_at, p.created_at) ASC, p.created_at ASC, p.id ASC"
+                }
+                _ => "ORDER BY p.created_at DESC, p.id DESC",
+            }
+        }
+    }
+
+    /// Returns a paginated, filtered, and sorted page of patients from SQLite.
+    /// When filtering/sorting uses indexed non-PII SQLite columns (`clinic_id`, `patient_code`,
+    /// `phone_hmac`, `created_at`, `last_visit_at`), SQLite performs `LIMIT`/`OFFSET` directly and
+    /// only decrypts the `<= limit` rows on the requested page.
+    /// When decrypt-side filtering or name sorting is needed, rows stream without full
+    /// `PatientDemographics` allocation for non-matching or off-page records.
+    pub fn get_patients_page(
+        conn: &Connection,
+        dek: &DatabaseEncryptionKey,
+        args: &PatientsPageQueryArgs,
+    ) -> Result<PatientsPageResult, DatabaseOpError> {
+        #[derive(Deserialize)]
+        struct StreamFilterFields<'a> {
+            #[serde(borrow, default)]
+            name: std::borrow::Cow<'a, str>,
+            #[serde(borrow, default)]
+            phone: std::borrow::Cow<'a, str>,
+            #[serde(borrow, default)]
+            gender: std::borrow::Cow<'a, str>,
+        }
+
+        let limit = args.limit.unwrap_or(50).clamp(1, 200);
+        let offset = args.offset.unwrap_or(0);
+        let clinic_id = args.clinic_id.as_str();
+        let raw_query = args.query.as_deref().unwrap_or("").trim();
+        let gender_filter = args.gender.as_deref().unwrap_or("All patients").trim();
+        let sort_opt = args.sort.as_deref().unwrap_or("Created Date (newest first)").trim();
+        let start_date = args.start_date.as_deref().map(str::trim).filter(|s| !s.is_empty());
+        let end_date = args.end_date.as_deref().map(str::trim).filter(|s| !s.is_empty());
+
+        let clinic_total: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM local_patients WHERE clinic_id = ?1",
+            params![clinic_id],
+            |r| r.get(0),
+        )?;
+
+        let is_all_gender = gender_filter.is_empty() || gender_filter.eq_ignore_ascii_case("All patients");
+        let is_name_sort = matches!(sort_opt, "Name A–Z" | "Name Z–A" | "Name A-Z" | "Name Z-A");
+
+        // Classify whether query can run directly via SQLite indexes without full-table decrypt
+        let query_phone_hmac = if !raw_query.is_empty()
+            && !raw_query.chars().any(|c| c.is_ascii_alphabetic())
+        {
+            compute_phone_hmac(&dek.key, raw_query)?
+        } else {
+            None
+        };
+
+        let is_code_like = !raw_query.is_empty()
+            && raw_query
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-')
+            && (raw_query.contains('-')
+                || raw_query.to_ascii_uppercase().starts_with("AAA")
+                || raw_query.to_ascii_uppercase().starts_with("PC")
+                || raw_query.to_ascii_uppercase().starts_with("P-"));
+
+        let can_use_sql_pagination =
+            is_all_gender && !is_name_sort && (raw_query.is_empty() || query_phone_hmac.is_some() || is_code_like);
+
+        if can_use_sql_pagination {
+            let mut where_clauses = vec!["p.clinic_id = ?1".to_string()];
+            let mut bind_values: Vec<Value> = vec![Value::from(clinic_id.to_string())];
+
+            if let Some(ref hmac) = query_phone_hmac {
+                let idx = bind_values.len() + 1;
+                where_clauses.push(format!("p.phone_hmac = ?{idx}"));
+                bind_values.push(Value::from(hmac.clone()));
+            } else if is_code_like {
+                let prefix_upper = raw_query.to_ascii_uppercase();
+                let mut upper_bytes = prefix_upper.as_bytes().to_vec();
+                let mut incremented = false;
+                while let Some(&last) = upper_bytes.last() {
+                    if last < 0xFF {
+                        let len = upper_bytes.len();
+                        upper_bytes[len - 1] = last + 1;
+                        incremented = true;
+                        break;
+                    }
+                    upper_bytes.pop();
+                }
+                if incremented {
+                    if let Ok(upper_bound) = String::from_utf8(upper_bytes) {
+                        let start_idx = bind_values.len() + 1;
+                        let end_idx = bind_values.len() + 2;
+                        where_clauses.push(format!(
+                            "(p.patient_code >= ?{start_idx} AND p.patient_code < ?{end_idx})"
+                        ));
+                        bind_values.push(Value::from(prefix_upper));
+                        bind_values.push(Value::from(upper_bound));
+                    } else {
+                        let idx = bind_values.len() + 1;
+                        where_clauses.push(format!("p.patient_code LIKE ?{idx}"));
+                        bind_values.push(Value::from(format!("{prefix_upper}%")));
+                    }
+                } else {
+                    let idx = bind_values.len() + 1;
+                    where_clauses.push(format!("p.patient_code LIKE ?{idx}"));
+                    bind_values.push(Value::from(format!("{prefix_upper}%")));
+                }
+            }
+
+            Self::build_patient_where_date_clauses(
+                start_date,
+                end_date,
+                &mut where_clauses,
+                &mut bind_values,
+            );
+
+            // When narrowing via point/prefix index (phone_hmac or patient_code), prevent SQLite's
+            // ORDER BY planner from falling back to an idx_patients_v14_created full-clinic scan.
+            let has_narrow_filter = query_phone_hmac.is_some() || is_code_like;
+            let order_by = Self::build_patient_order_by_sql(sort_opt, has_narrow_filter);
+
+            let where_sql = where_clauses.join(" AND ");
+            let count_sql = format!("SELECT COUNT(*) FROM local_patients p WHERE {where_sql}");
+            let total: i64 = conn.query_row(
+                &count_sql,
+                rusqlite::params_from_iter(bind_values.iter()),
+                |r| r.get(0),
+            )?;
+
+            let lim_idx = bind_values.len() + 1;
+            let off_idx = bind_values.len() + 2;
+            let page_sql = format!(
+                r#"
+                SELECT p.id, p.server_id, p.clinic_id, p.patient_code, p.encrypted_demographics, p.nonce,
+                       p.sync_status, p.server_version, p.local_version, p.updated_at, p.created_at,
+                       p.last_visit_at AS last_visit
+                FROM local_patients p
+                WHERE {where_sql}
+                {order_by}
+                LIMIT ?{lim_idx} OFFSET ?{off_idx}
+                "#
+            );
+
+            let mut page_binds = bind_values;
+            page_binds.push(Value::from(limit as i64));
+            page_binds.push(Value::from(offset as i64));
+
+            let mut stmt = conn.prepare(&page_sql)?;
+            let rows = stmt.query_map(rusqlite::params_from_iter(page_binds.iter()), |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, Vec<u8>>(4)?,
+                    row.get::<_, Vec<u8>>(5)?,
+                    row.get::<_, String>(6)?,
+                    row.get::<_, i32>(7)?,
+                    row.get::<_, i32>(8)?,
+                    row.get::<_, String>(9)?,
+                    row.get::<_, Option<String>>(10)?,
+                    row.get::<_, Option<String>>(11)?,
+                ))
+            })?;
+
+            let items = Self::hydrate_patient_rows(rows, dek)?;
+            let has_more = (offset + items.len()) < (total.max(0) as usize);
+            return Ok(PatientsPageResult {
+                items,
+                total,
+                clinic_total,
+                limit,
+                offset,
+                has_more,
+            });
+        }
+
+        // Streamed fallback for partial text search (name/partial phone), gender filter, or Name A-Z sort:
+        // 1) Push clinic_id + start_date/end_date into SQLite WHERE before decrypting any row.
+        // 2) Deserialize only zero-copy borrowed filter fields (name/phone/gender) instead of full demographics.
+        // 3) Hydrate full `PatientRecord` structs strictly for the <= limit rows on the requested page.
+        let mut where_clauses = vec!["p.clinic_id = ?1".to_string()];
+        let mut bind_values: Vec<Value> = vec![Value::from(clinic_id.to_string())];
+        Self::build_patient_where_date_clauses(
+            start_date,
+            end_date,
+            &mut where_clauses,
+            &mut bind_values,
+        );
+        let where_sql = where_clauses.join(" AND ");
+        let order_by = if is_name_sort {
+            "ORDER BY p.created_at DESC, p.id DESC"
+        } else {
+            Self::build_patient_order_by_sql(sort_opt, false)
+        };
+
+        let q_lower = raw_query.to_lowercase();
+        let q_clean = q_lower.replace(char::is_whitespace, "");
+
+        let matches_stream_row = |fields: &StreamFilterFields<'_>, id: &str, patient_code: &str| -> bool {
+            if !is_all_gender && !fields.gender.eq_ignore_ascii_case(gender_filter) {
+                return false;
+            }
+            if q_lower.is_empty() {
+                return true;
+            }
+            if fields.name.to_lowercase().contains(&q_lower)
+                || patient_code.to_lowercase().contains(&q_lower)
+                || id.to_lowercase().contains(&q_lower)
+            {
+                return true;
+            }
+            let phone_l = fields.phone.to_lowercase();
+            phone_l.contains(&q_lower)
+                || (!q_clean.is_empty()
+                    && phone_l.replace(char::is_whitespace, "").contains(&q_clean))
+        };
+
+        if is_name_sort {
+            // Stream lightweight (name_lower, id) keys, sort in memory, and hydrate only the slice.
+            let stream_sql = format!(
+                r#"
+                SELECT p.id, p.patient_code, p.encrypted_demographics, p.nonce
+                FROM local_patients p
+                WHERE {where_sql}
+                {order_by}
+                "#
+            );
+            let mut stmt = conn.prepare(&stream_sql)?;
+            let mut rows = stmt.query(rusqlite::params_from_iter(bind_values.iter()))?;
+            let mut matched_keys: Vec<(String, String)> = Vec::new();
+
+            while let Some(row) = rows.next()? {
+                let id: String = row.get(0)?;
+                let patient_code: String = row.get(1)?;
+                let enc_bytes: Vec<u8> = row.get(2)?;
+                let nonce: Vec<u8> = row.get(3)?;
+
+                let decrypted_bytes = decrypt_payload(&dek.key, &enc_bytes, &nonce)
+                    .map_err(|e| DatabaseOpError::DecryptionFailed(format!("Patient {id}: {e}")))?;
+                let fields: StreamFilterFields<'_> = serde_json::from_slice(&decrypted_bytes)?;
+
+                if matches_stream_row(&fields, &id, &patient_code) {
+                    matched_keys.push((fields.name.to_lowercase(), id));
+                }
+            }
+
+            if matches!(sort_opt, "Name Z–A" | "Name Z-A") {
+                matched_keys.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+            } else {
+                matched_keys.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+            }
+
+            let total = matched_keys.len() as i64;
+            let page_ids: Vec<String> = matched_keys
+                .into_iter()
+                .skip(offset)
+                .take(limit)
+                .map(|(_, id)| id)
+                .collect();
+
+            let mut items = Vec::with_capacity(page_ids.len());
+            if !page_ids.is_empty() {
+                let mut fetch_stmt = conn.prepare(
+                    r#"
+                    SELECT p.id, p.server_id, p.clinic_id, p.patient_code, p.encrypted_demographics, p.nonce,
+                           p.sync_status, p.server_version, p.local_version, p.updated_at, p.created_at,
+                           p.last_visit_at AS last_visit
+                    FROM local_patients p
+                    WHERE p.clinic_id = ?1 AND p.id = ?2
+                    LIMIT 1
+                    "#,
+                )?;
+                for target_id in page_ids {
+                    let rows = fetch_stmt.query_map(params![clinic_id, target_id], |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, Option<String>>(1)?,
+                            row.get::<_, String>(2)?,
+                            row.get::<_, String>(3)?,
+                            row.get::<_, Vec<u8>>(4)?,
+                            row.get::<_, Vec<u8>>(5)?,
+                            row.get::<_, String>(6)?,
+                            row.get::<_, i32>(7)?,
+                            row.get::<_, i32>(8)?,
+                            row.get::<_, String>(9)?,
+                            row.get::<_, Option<String>>(10)?,
+                            row.get::<_, Option<String>>(11)?,
+                        ))
+                    })?;
+                    items.extend(Self::hydrate_patient_rows(rows, dek)?);
+                }
+            }
+
+            let has_more = (offset + items.len()) < (total.max(0) as usize);
+            return Ok(PatientsPageResult {
+                items,
+                total,
+                clinic_total,
+                limit,
+                offset,
+                has_more,
+            });
+        }
+
+        // SQL-ordered streaming: SQLite yields rows in final order, so we count total matches and
+        // parse full `PatientDemographics` only for matches falling in `offset..offset+limit`.
+        let stream_sql = format!(
+            r#"
+            SELECT p.id, p.server_id, p.clinic_id, p.patient_code, p.encrypted_demographics, p.nonce,
+                   p.sync_status, p.server_version, p.local_version, p.updated_at, p.created_at,
+                   p.last_visit_at AS last_visit
+            FROM local_patients p
+            WHERE {where_sql}
+            {order_by}
+            "#
+        );
+        let mut stmt = conn.prepare(&stream_sql)?;
+        let mut rows = stmt.query(rusqlite::params_from_iter(bind_values.iter()))?;
+        let mut match_count: usize = 0;
+        let mut items: Vec<PatientRecord> = Vec::with_capacity(limit);
+
+        while let Some(row) = rows.next()? {
+            let id: String = row.get(0)?;
+            let patient_code: String = row.get(3)?;
+            let enc_bytes: Vec<u8> = row.get(4)?;
+            let nonce: Vec<u8> = row.get(5)?;
+
+            let decrypted_bytes = decrypt_payload(&dek.key, &enc_bytes, &nonce)
+                .map_err(|e| DatabaseOpError::DecryptionFailed(format!("Patient {id}: {e}")))?;
+            let fields: StreamFilterFields<'_> = serde_json::from_slice(&decrypted_bytes)?;
+
+            if !matches_stream_row(&fields, &id, &patient_code) {
+                continue;
+            }
+
+            let idx = match_count;
+            match_count += 1;
+            if idx >= offset && items.len() < limit {
+                let demo: PatientDemographics = serde_json::from_slice(&decrypted_bytes)?;
+                items.push(PatientRecord {
+                    id,
+                    server_id: row.get(1)?,
+                    clinic_id: row.get(2)?,
+                    patient_code,
+                    name: demo.name,
+                    phone: demo.phone,
+                    gender: demo.gender,
+                    date_of_birth: demo.date_of_birth,
+                    age: demo.age,
+                    allergies: demo.allergies,
+                    conditions: demo.conditions,
+                    sensitive_notes: demo.sensitive_notes,
+                    sync_status: row.get(6)?,
+                    server_version: row.get(7)?,
+                    local_version: row.get(8)?,
+                    updated_at: row.get(9)?,
+                    created_at: row.get(10)?,
+                    last_visit: row.get(11)?,
+                });
+            }
+        }
+
+        let total = match_count as i64;
+        let has_more = (offset + items.len()) < (total.max(0) as usize);
+
+        Ok(PatientsPageResult {
+            items,
+            total,
+            clinic_total,
+            limit,
+            offset,
+            has_more,
+        })
+    }
+
+    /// Computes dashboard statistics and top 5 recent visits directly in SQLite without
+    /// loading or decrypting full patient or consultation tables.
+    pub fn get_dashboard_summary(
+        conn: &Connection,
+        dek: &DatabaseEncryptionKey,
+        clinic_id: &str,
+        today_iso: &str,
+    ) -> Result<DashboardSummaryRecord, DatabaseOpError> {
+        let (total_patients, allergy_records, recorded_conditions): (i64, i64, i64) = conn.query_row(
+            r#"
+            SELECT COUNT(*),
+                   COALESCE(SUM(has_allergy), 0),
+                   COALESCE(SUM(condition_count), 0)
+            FROM local_patients
+            WHERE clinic_id = ?1
+            "#,
+            params![clinic_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?;
+
+        let today_prefix = if today_iso.len() >= 10 {
+            &today_iso[..10]
+        } else {
+            today_iso
+        };
+        let today_like = format!("{today_prefix}%");
+
+        let consults_today: i64 = conn.query_row(
+            r#"
+            SELECT COUNT(*)
+            FROM local_consultations
+            WHERE clinic_id = ?1
+              AND UPPER(status) != 'DRAFT'
+              AND COALESCE(NULLIF(consultation_date, ''), updated_at) LIKE ?2
+            "#,
+            params![clinic_id, today_like],
+            |row| row.get(0),
+        )?;
+
+        let seen_today = if consults_today > 0 {
+            consults_today
+        } else {
+            conn.query_row(
+                r#"
+                SELECT COUNT(*)
+                FROM local_patients
+                WHERE clinic_id = ?1
+                  AND last_visit_at IS NOT NULL
+                  AND last_visit_at LIKE ?2
+                "#,
+                params![clinic_id, today_like],
+                |row| row.get(0),
+            )?
+        };
+
+        // Top 5 finalized consultations (decrypts <= 5 consultations and <= 5 matched patients)
+        let recent_consult_rows = {
+            let mut stmt = conn.prepare(
+                r#"
+                SELECT id, patient_id, consultation_date, updated_at, status, encrypted_clinical_data, nonce
+                FROM local_consultations
+                WHERE clinic_id = ?1 AND UPPER(status) != 'DRAFT'
+                ORDER BY consultation_date DESC, created_at DESC
+                LIMIT 5
+                "#,
+            )?;
+            let mapped = stmt
+                .query_map(params![clinic_id], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, Vec<u8>>(5)?,
+                        row.get::<_, Vec<u8>>(6)?,
+                    ))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            mapped
+        };
+
+        let mut recent_consultations = Vec::with_capacity(recent_consult_rows.len());
+        for (id, pid, cdate, updated_at, status, enc_data, nonce) in recent_consult_rows {
+            let dec = decrypt_payload(&dek.key, &enc_data, &nonce)
+                .map_err(|e| DatabaseOpError::DecryptionFailed(format!("Consultation {id}: {e}")))?;
+            let clinical: ClinicalData = serde_json::from_slice(&dec)?;
+            let patient = Self::get_patient_by_identifier(conn, dek, clinic_id, &pid)?;
+            recent_consultations.push(DashboardRecentConsultation {
+                id,
+                patient_id: pid,
+                consultation_date: cdate,
+                updated_at,
+                status,
+                chief_complaint: clinical.chief_complaint,
+                diagnosis: clinical.diagnosis,
+                patient,
+            });
+        }
+
+        // Only fetch top 5 recent patients when there are no finalized consultations yet
+        let recent_patients = if recent_consultations.is_empty() && total_patients > 0 {
+            let mut stmt = conn.prepare(
+                r#"
+                SELECT p.id, p.server_id, p.clinic_id, p.patient_code, p.encrypted_demographics, p.nonce,
+                       p.sync_status, p.server_version, p.local_version, p.updated_at, p.created_at,
+                       p.last_visit_at AS last_visit
+                FROM local_patients p
+                WHERE p.clinic_id = ?1
+                ORDER BY p.created_at DESC, p.id DESC
+                LIMIT 5
+                "#,
+            )?;
+            let rows = stmt.query_map(params![clinic_id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, Vec<u8>>(4)?,
+                    row.get::<_, Vec<u8>>(5)?,
+                    row.get::<_, String>(6)?,
+                    row.get::<_, i32>(7)?,
+                    row.get::<_, i32>(8)?,
+                    row.get::<_, String>(9)?,
+                    row.get::<_, Option<String>>(10)?,
+                    row.get::<_, Option<String>>(11)?,
+                ))
+            })?;
+            Self::hydrate_patient_rows(rows, dek)?
+        } else {
+            Vec::new()
+        };
+
+        Ok(DashboardSummaryRecord {
+            total_patients,
+            seen_today,
+            allergy_records,
+            recorded_conditions,
+            recent_consultations,
+            recent_patients,
+        })
     }
 
     /// Inserts a consultation draft with encrypted clinical data and encrypted outbox mutation.
@@ -844,6 +1460,57 @@ impl DbOperations {
         Ok(consultation_id.to_string())
     }
 
+    /// Resolves canonical `(id, patient_code, server_id)` aliases for a patient identifier
+    /// using indexed point lookups (`PRIMARY KEY`, `idx_patients_v2_code`, `idx_patients_v14_server_id`),
+    /// avoiding `OR patient_id IN (SELECT ...)` full-clinic scans.
+    fn resolve_patient_lookup_keys(
+        conn: &Connection,
+        clinic_id: &str,
+        patient_identifier: &str,
+    ) -> Result<Vec<String>, DatabaseOpError> {
+        let mut keys = vec![patient_identifier.to_string()];
+
+        let matched: Option<(String, String, Option<String>)> = conn
+            .query_row(
+                "SELECT id, patient_code, server_id FROM local_patients WHERE clinic_id = ?1 AND id = ?2 LIMIT 1",
+                params![clinic_id, patient_identifier],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .optional()?
+            .or(
+                conn.query_row(
+                    "SELECT id, patient_code, server_id FROM local_patients WHERE clinic_id = ?1 AND patient_code = ?2 LIMIT 1",
+                    params![clinic_id, patient_identifier],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                )
+                .optional()?,
+            )
+            .or(
+                conn.query_row(
+                    "SELECT id, patient_code, server_id FROM local_patients WHERE clinic_id = ?1 AND server_id = ?2 LIMIT 1",
+                    params![clinic_id, patient_identifier],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                )
+                .optional()?,
+            );
+
+        if let Some((id, code, server_id)) = matched {
+            if !id.is_empty() && !keys.contains(&id) {
+                keys.push(id);
+            }
+            if !code.is_empty() && !keys.contains(&code) {
+                keys.push(code);
+            }
+            if let Some(sid) = server_id {
+                if !sid.is_empty() && !keys.contains(&sid) {
+                    keys.push(sid);
+                }
+            }
+        }
+
+        Ok(keys)
+    }
+
     /// Queries local consultations for a clinic, decrypting the clinical data.
     pub fn get_consultations(
         conn: &Connection,
@@ -861,16 +1528,25 @@ impl DbOperations {
             "#,
         );
 
-        if patient_id.is_some() {
-            sql.push_str(" AND (patient_id = ?2 OR patient_id IN (SELECT patient_code FROM local_patients WHERE clinic_id = ?1 AND id = ?2) OR patient_id IN (SELECT id FROM local_patients WHERE clinic_id = ?1 AND patient_code = ?2)) ORDER BY updated_at DESC");
-        } else {
-            sql.push_str(" ORDER BY updated_at DESC");
+        let mut bind_values: Vec<Value> = vec![Value::from(clinic_id.to_string())];
+        if let Some(pid) = patient_id {
+            let keys = Self::resolve_patient_lookup_keys(conn, clinic_id, pid)?;
+            if keys.len() == 1 {
+                sql.push_str(" AND patient_id = ?2");
+                bind_values.push(Value::from(keys[0].clone()));
+            } else {
+                let placeholders: Vec<String> = (0..keys.len()).map(|i| format!("?{}", i + 2)).collect();
+                sql.push_str(&format!(" AND patient_id IN ({})", placeholders.join(", ")));
+                for k in keys {
+                    bind_values.push(Value::from(k));
+                }
+            }
         }
+        sql.push_str(" ORDER BY updated_at DESC");
 
         let mut stmt = conn.prepare(&sql)?;
-
-        let raw_rows = if let Some(pid) = patient_id {
-            stmt.query_map(params![clinic_id, pid], |row| {
+        let raw_rows = stmt
+            .query_map(rusqlite::params_from_iter(bind_values.iter()), |row| {
                 Ok((
                     row.get::<_, String>(0)?,
                     row.get::<_, Option<String>>(1)?,
@@ -887,27 +1563,7 @@ impl DbOperations {
                     row.get::<_, String>(12)?,
                 ))
             })?
-            .collect::<rusqlite::Result<Vec<_>>>()?
-        } else {
-            stmt.query_map(params![clinic_id], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, Option<String>>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, String>(3)?,
-                    row.get::<_, String>(4)?,
-                    row.get::<_, String>(5)?,
-                    row.get::<_, String>(6)?,
-                    row.get::<_, Vec<u8>>(7)?,
-                    row.get::<_, Vec<u8>>(8)?,
-                    row.get::<_, String>(9)?,
-                    row.get::<_, i32>(10)?,
-                    row.get::<_, i32>(11)?,
-                    row.get::<_, String>(12)?,
-                ))
-            })?
-            .collect::<rusqlite::Result<Vec<_>>>()?
-        };
+            .collect::<rusqlite::Result<Vec<_>>>()?;
 
         let mut results = Vec::new();
         for r in raw_rows {
@@ -1089,16 +1745,25 @@ impl DbOperations {
             "#,
         );
 
-        if patient_id.is_some() {
-            sql.push_str(" AND (patient_id = ?2 OR patient_id IN (SELECT patient_code FROM local_patients WHERE clinic_id = ?1 AND id = ?2) OR patient_id IN (SELECT id FROM local_patients WHERE clinic_id = ?1 AND patient_code = ?2)) ORDER BY created_at DESC, revision_number DESC");
-        } else {
-            sql.push_str(" ORDER BY created_at DESC, revision_number DESC");
+        let mut bind_values: Vec<Value> = vec![Value::from(clinic_id.to_string())];
+        if let Some(pid) = patient_id {
+            let keys = Self::resolve_patient_lookup_keys(conn, clinic_id, pid)?;
+            if keys.len() == 1 {
+                sql.push_str(" AND patient_id = ?2");
+                bind_values.push(Value::from(keys[0].clone()));
+            } else {
+                let placeholders: Vec<String> = (0..keys.len()).map(|i| format!("?{}", i + 2)).collect();
+                sql.push_str(&format!(" AND patient_id IN ({})", placeholders.join(", ")));
+                for k in keys {
+                    bind_values.push(Value::from(k));
+                }
+            }
         }
+        sql.push_str(" ORDER BY created_at DESC, revision_number DESC");
 
         let mut stmt = conn.prepare(&sql)?;
-
-        let raw_rows = if let Some(pid) = patient_id {
-            stmt.query_map(params![clinic_id, pid], |row| {
+        let raw_rows = stmt
+            .query_map(rusqlite::params_from_iter(bind_values.iter()), |row| {
                 Ok((
                     row.get::<_, String>(0)?,
                     row.get::<_, Option<String>>(1)?,
@@ -1117,29 +1782,7 @@ impl DbOperations {
                     row.get::<_, String>(14)?,
                 ))
             })?
-            .collect::<rusqlite::Result<Vec<_>>>()?
-        } else {
-            stmt.query_map(params![clinic_id], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, Option<String>>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, String>(3)?,
-                    row.get::<_, String>(4)?,
-                    row.get::<_, String>(5)?,
-                    row.get::<_, String>(6)?,
-                    row.get::<_, i32>(7)?,
-                    row.get::<_, String>(8)?,
-                    row.get::<_, Vec<u8>>(9)?,
-                    row.get::<_, Vec<u8>>(10)?,
-                    row.get::<_, String>(11)?,
-                    row.get::<_, i32>(12)?,
-                    row.get::<_, i32>(13)?,
-                    row.get::<_, String>(14)?,
-                ))
-            })?
-            .collect::<rusqlite::Result<Vec<_>>>()?
-        };
+            .collect::<rusqlite::Result<Vec<_>>>()?;
 
         let mut results = Vec::new();
         for r in raw_rows {
@@ -1741,12 +2384,15 @@ impl DbOperations {
                             gender: gender.to_string(),
                             date_of_birth,
                             age,
-                            allergies,
-                            conditions,
+                            allergies: allergies.clone(),
+                            conditions: conditions.clone(),
                             sensitive_notes: None,
                         };
                         let demo_bytes = serde_json::to_vec(&demo)?;
                         let (enc_demo, demo_nonce) = encrypt_payload(&dek.key, &demo_bytes)?;
+                        let phone_hmac = compute_phone_hmac(&dek.key, phone)?;
+                        let has_allergy: i64 = if has_genuine_allergy_entries(&allergies) { 1 } else { 0 };
+                        let condition_count: i64 = conditions.len() as i64;
 
                         tx.execute(
                             r#"
@@ -1754,13 +2400,26 @@ impl DbOperations {
                             SET patient_code = ?1,
                                 encrypted_demographics = ?2,
                                 nonce = ?3,
+                                phone_hmac = ?4,
+                                has_allergy = ?5,
+                                condition_count = ?6,
                                 sync_status = 'SYNCED',
-                                server_version = ?4,
-                                local_version = ?4,
+                                server_version = ?7,
+                                local_version = ?7,
                                 updated_at = CURRENT_TIMESTAMP
-                            WHERE clinic_id = ?5 AND (id = ?6 OR server_id = ?6)
+                            WHERE clinic_id = ?8 AND (id = ?9 OR server_id = ?9)
                             "#,
-                            params![patient_code, enc_demo, demo_nonce, server_version, clinic_id, entity_id],
+                            params![
+                                patient_code,
+                                enc_demo,
+                                demo_nonce,
+                                phone_hmac,
+                                has_allergy,
+                                condition_count,
+                                server_version,
+                                clinic_id,
+                                entity_id
+                            ],
                         )?;
                     }
                     "CONSULTATION" => {
@@ -1996,12 +2655,15 @@ impl DbOperations {
                             gender: gender.to_string(),
                             date_of_birth,
                             age,
-                            allergies,
-                            conditions,
+                            allergies: allergies.clone(),
+                            conditions: conditions.clone(),
                             sensitive_notes: None,
                         };
                         let demo_bytes = serde_json::to_vec(&demo)?;
                         let (enc_demo, demo_nonce) = encrypt_payload(&dek.key, &demo_bytes)?;
+                        let phone_hmac = compute_phone_hmac(&dek.key, phone)?;
+                        let has_allergy: i64 = if has_genuine_allergy_entries(&allergies) { 1 } else { 0 };
+                        let condition_count: i64 = conditions.len() as i64;
 
                         tx.execute(
                             r#"
@@ -2009,13 +2671,27 @@ impl DbOperations {
                             SET patient_code = ?1,
                                 encrypted_demographics = ?2,
                                 nonce = ?3,
+                                phone_hmac = ?4,
+                                has_allergy = ?5,
+                                condition_count = ?6,
                                 sync_status = 'PENDING',
-                                server_version = ?4,
-                                local_version = ?5,
+                                server_version = ?7,
+                                local_version = ?8,
                                 updated_at = CURRENT_TIMESTAMP
-                            WHERE clinic_id = ?6 AND (id = ?7 OR server_id = ?7)
+                            WHERE clinic_id = ?9 AND (id = ?10 OR server_id = ?10)
                             "#,
-                            params![patient_code, enc_demo, demo_nonce, server_version, target_version, clinic_id, entity_id],
+                            params![
+                                patient_code,
+                                enc_demo,
+                                demo_nonce,
+                                phone_hmac,
+                                has_allergy,
+                                condition_count,
+                                server_version,
+                                target_version,
+                                clinic_id,
+                                entity_id
+                            ],
                         )?;
                     }
                     "CONSULTATION" => {
@@ -2885,12 +3561,15 @@ impl DbOperations {
                         gender: gender.to_string(),
                         date_of_birth,
                         age,
-                        allergies,
-                        conditions,
+                        allergies: allergies.clone(),
+                        conditions: conditions.clone(),
                         sensitive_notes: None,
                     };
                     let demo_bytes = serde_json::to_vec(&demographics)?;
                     let (enc_bytes, nonce) = encrypt_payload(&dek.key, &demo_bytes)?;
+                    let phone_hmac = compute_phone_hmac(&dek.key, phone)?;
+                    let has_allergy: i64 = if has_genuine_allergy_entries(&allergies) { 1 } else { 0 };
+                    let condition_count: i64 = conditions.len() as i64;
 
                     let existing_id: Option<String> = {
                         let mut check_stmt = tx.prepare(
@@ -2913,13 +3592,26 @@ impl DbOperations {
                                 patient_code = ?2,
                                 encrypted_demographics = ?3,
                                 nonce = ?4,
+                                phone_hmac = ?5,
+                                has_allergy = ?6,
+                                condition_count = ?7,
                                 sync_status = 'SYNCED',
-                                server_version = ?5,
-                                local_version = ?5,
+                                server_version = ?8,
+                                local_version = ?8,
                                 updated_at = CURRENT_TIMESTAMP
-                            WHERE id = ?6
+                            WHERE id = ?9
                             "#,
-                            params![item.entity_id, patient_code, enc_bytes, nonce, item.version, id],
+                            params![
+                                item.entity_id,
+                                patient_code,
+                                enc_bytes,
+                                nonce,
+                                phone_hmac,
+                                has_allergy,
+                                condition_count,
+                                item.version,
+                                id
+                            ],
                         )?;
                     } else {
                         let local_id = item.client_entity_id.clone().unwrap_or_else(|| Uuid::new_v4().to_string());
@@ -2927,10 +3619,22 @@ impl DbOperations {
                             r#"
                             INSERT INTO local_patients (
                                 id, server_id, clinic_id, patient_code, encrypted_demographics,
-                                nonce, sync_status, server_version, local_version, created_at, updated_at
-                            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'SYNCED', ?7, ?7, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                                nonce, phone_hmac, has_allergy, condition_count,
+                                sync_status, server_version, local_version, created_at, updated_at
+                            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'SYNCED', ?10, ?10, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                             "#,
-                            params![local_id, item.entity_id, clinic_id, patient_code, enc_bytes, nonce, item.version],
+                            params![
+                                local_id,
+                                item.entity_id,
+                                clinic_id,
+                                patient_code,
+                                enc_bytes,
+                                nonce,
+                                phone_hmac,
+                                has_allergy,
+                                condition_count,
+                                item.version
+                            ],
                         )?;
                     }
                 }
@@ -3580,20 +4284,26 @@ impl DbOperations {
             "#,
         );
 
-        if patient_id.is_some() {
-            sql.push_str(" AND patient_id = ?2 ORDER BY created_at DESC");
-        } else {
-            sql.push_str(" ORDER BY created_at DESC");
+        let mut bind_values: Vec<Value> = vec![Value::from(clinic_id.to_string())];
+        if let Some(pid) = patient_id {
+            let keys = Self::resolve_patient_lookup_keys(conn, clinic_id, pid)?;
+            if keys.len() == 1 {
+                sql.push_str(" AND patient_id = ?2");
+                bind_values.push(Value::from(keys[0].clone()));
+            } else {
+                let placeholders: Vec<String> = (0..keys.len()).map(|i| format!("?{}", i + 2)).collect();
+                sql.push_str(&format!(" AND patient_id IN ({})", placeholders.join(", ")));
+                for k in keys {
+                    bind_values.push(Value::from(k));
+                }
+            }
         }
+        sql.push_str(" ORDER BY created_at DESC");
 
         let mut stmt = conn.prepare(&sql)?;
-        let raw_rows: Vec<RawInvoiceRow> = if let Some(pid) = patient_id {
-            stmt.query_map(params![clinic_id, pid], Self::map_invoice_row)?
-                .collect::<rusqlite::Result<Vec<_>>>()?
-        } else {
-            stmt.query_map(params![clinic_id], Self::map_invoice_row)?
-                .collect::<rusqlite::Result<Vec<_>>>()?
-        };
+        let raw_rows: Vec<RawInvoiceRow> = stmt
+            .query_map(rusqlite::params_from_iter(bind_values.iter()), Self::map_invoice_row)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
 
         let mut invoices = Vec::new();
         for r in raw_rows {
@@ -3605,16 +4315,9 @@ impl DbOperations {
                 created_at, updated_at,
             ) = r;
 
-            let billing_data: EncryptedBillingData = match decrypt_payload(&dek.key, &enc_data, &nonce) {
-                Ok(plain) => serde_json::from_slice(&plain).unwrap_or(EncryptedBillingData {
-                    items: Vec::new(),
-                    notes: None,
-                }),
-                Err(_) => EncryptedBillingData {
-                    items: Vec::new(),
-                    notes: None,
-                },
-            };
+            let plain = decrypt_payload(&dek.key, &enc_data, &nonce)
+                .map_err(|e| DatabaseOpError::DecryptionFailed(format!("Invoice {id}: {e}")))?;
+            let billing_data: EncryptedBillingData = serde_json::from_slice(&plain)?;
 
             invoices.push(InvoiceRecord {
                 id,
@@ -3675,16 +4378,9 @@ impl DbOperations {
                 enc_data, nonce, sync_status, s_ver, l_ver,
                 created_at, updated_at,
             )) => {
-                let billing_data: EncryptedBillingData = match decrypt_payload(&dek.key, &enc_data, &nonce) {
-                    Ok(plain) => serde_json::from_slice(&plain).unwrap_or(EncryptedBillingData {
-                        items: Vec::new(),
-                        notes: None,
-                    }),
-                    Err(_) => EncryptedBillingData {
-                        items: Vec::new(),
-                        notes: None,
-                    },
-                };
+                let plain = decrypt_payload(&dek.key, &enc_data, &nonce)
+                    .map_err(|e| DatabaseOpError::DecryptionFailed(format!("Invoice {id}: {e}")))?;
+                let billing_data: EncryptedBillingData = serde_json::from_slice(&plain)?;
 
                 Ok(Some(InvoiceRecord {
                     id,
@@ -3981,133 +4677,220 @@ impl DbOperations {
         Ok(count)
     }
 
-    /// Searches the local reference catalogue cache for offline prescription assistance.
+    fn build_fts5_prefix_query(raw: &str) -> Option<String> {
+        let tokens: Vec<String> = raw
+            .split(|c: char| !c.is_alphanumeric())
+            .filter(|t| !t.is_empty())
+            .map(|t| format!("{}*", t))
+            .collect();
+        if tokens.is_empty() {
+            None
+        } else {
+            Some(tokens.join(" AND "))
+        }
+    }
+
+    /// Searches clinic-isolated Clinical Library and Pharmacy Inventory Stock using FTS5 prefix
+    /// matching with clinic-scoped substring fallback for mid-word queries.
     pub fn search_local_catalogue(
         conn: &Connection,
+        clinic_id: &str,
         query: &str,
         limit: usize,
         _formulation: Option<&str>,
     ) -> Result<Vec<LocalCatalogueItem>, DatabaseOpError> {
         let raw_q = query.trim();
-        if raw_q.is_empty() {
+        if raw_q.is_empty() || clinic_id.trim().is_empty() {
             return Ok(Vec::new());
         }
 
         let limit = if limit == 0 { 20 } else { limit.min(100) };
         let pattern = format!("%{}%", raw_q);
         let prefix_pattern = format!("{}%", raw_q);
+        let fts_query = Self::build_fts5_prefix_query(raw_q);
 
         let mut items = Vec::new();
+        let mut seen_ids = std::collections::HashSet::new();
 
-        // 1. Query doctor/clinic-imported Clinical Library items with highest priority
-        let clinical_sql = r#"
-            SELECT id, name, generic_name, brand_name, composition, strength, formulation,
-                   dosage_form, route, manufacturer, category, pack_size, mrp, storage_instructions,
-                   default_dosage, default_instructions, created_at
-            FROM local_clinical_library_v1
-            WHERE is_active = 1
-              AND (name LIKE ?1 OR generic_name LIKE ?1 OR brand_name LIKE ?1 OR composition LIKE ?1)
-            ORDER BY
-                CASE WHEN name LIKE ?2 THEN 0 ELSE 1 END,
-                name ASC
-            LIMIT ?3
-        "#;
-        if let Ok(mut c_stmt) = conn.prepare(clinical_sql) {
-            if let Ok(rows) = c_stmt.query_map(params![pattern, prefix_pattern, limit as i64], |row| {
-                let c_id: String = row.get(0)?;
-                let name: String = row.get(1)?;
-                let gen_name: Option<String> = row.get(2)?;
-                let b_name: Option<String> = row.get(3)?;
-                let comp: Option<String> = row.get(4)?;
-                let strength: String = row.get(5)?;
-                let form: String = row.get(6)?;
-                let d_form: Option<String> = row.get(7)?;
-                let route: Option<String> = row.get(8)?;
-                let mfg: Option<String> = row.get(9)?;
-                let cat: Option<String> = row.get(10)?;
-                let pack: Option<String> = row.get(11)?;
-                let mrp: Option<f64> = row.get(12)?;
-                let storage: Option<String> = row.get(13)?;
-                let def_dose: Option<String> = row.get(14)?;
-                let def_inst: Option<String> = row.get(15)?;
-                let created: String = row.get(16)?;
+        let map_clinical_row = |row: &rusqlite::Row| -> rusqlite::Result<LocalCatalogueItem> {
+            let c_id: String = row.get(0)?;
+            let name: String = row.get(1)?;
+            let gen_name: Option<String> = row.get(2)?;
+            let b_name: Option<String> = row.get(3)?;
+            let comp: Option<String> = row.get(4)?;
+            let strength: String = row.get(5)?;
+            let form: String = row.get(6)?;
+            let d_form: Option<String> = row.get(7)?;
+            let route: Option<String> = row.get(8)?;
+            let mfg: Option<String> = row.get(9)?;
+            let cat: Option<String> = row.get(10)?;
+            let pack: Option<String> = row.get(11)?;
+            let mrp: Option<f64> = row.get(12)?;
+            let storage: Option<String> = row.get(13)?;
+            let def_dose: Option<String> = row.get(14)?;
+            let def_inst: Option<String> = row.get(15)?;
+            let created: String = row.get(16)?;
 
-                let meta = serde_json::json!({
-                    "manufacturer": mfg,
-                    "category": cat,
-                    "pack_size": pack,
-                    "mrp": mrp,
-                    "composition": comp,
-                    "storage_instructions": storage,
-                    "default_dosage": def_dose,
-                    "default_instructions": def_inst,
-                });
+            let meta = serde_json::json!({
+                "manufacturer": mfg,
+                "category": cat,
+                "pack_size": pack,
+                "mrp": mrp,
+                "composition": comp,
+                "storage_instructions": storage,
+                "default_dosage": def_dose,
+                "default_instructions": def_inst,
+            });
 
-                Ok(LocalCatalogueItem {
-                    id: format!("clinical_{}", c_id),
-                    item_type: "BRAND".to_string(),
-                    name: name.clone(),
-                    brand_name: b_name.or(Some(name.clone())),
-                    generic_name: gen_name.or(comp),
-                    product_name: Some(name),
-                    dosage_form: d_form.or(Some(form)),
-                    route,
-                    active_ingredients_json: Some(meta.to_string()),
-                    strengths_json: "[]".to_string(),
-                    raw_strength_summary: strength,
-                    is_combination: false,
-                    is_verified: true,
-                    source_provenance: "CLINICAL_LIBRARY".to_string(),
-                    cached_at: created,
-                })
-            }) {
-                for item in rows.flatten() {
+            Ok(LocalCatalogueItem {
+                id: format!("clinical_{}", c_id),
+                item_type: "BRAND".to_string(),
+                name: name.clone(),
+                brand_name: b_name.or(Some(name.clone())),
+                generic_name: gen_name.or(comp),
+                product_name: Some(name),
+                dosage_form: d_form.or(Some(form)),
+                route,
+                active_ingredients_json: Some(meta.to_string()),
+                strengths_json: "[]".to_string(),
+                raw_strength_summary: strength,
+                is_combination: false,
+                is_verified: true,
+                source_provenance: "CLINICAL_LIBRARY".to_string(),
+                cached_at: created,
+            })
+        };
+
+        // 1. Clinic-scoped Clinical Library search (FTS5 prefix first)
+        if let Some(ref fts_q) = fts_query {
+            let clinical_fts_sql = r#"
+                SELECT l.id, l.name, l.generic_name, l.brand_name, l.composition, l.strength, l.formulation,
+                       l.dosage_form, l.route, l.manufacturer, l.category, l.pack_size, l.mrp, l.storage_instructions,
+                       l.default_dosage, l.default_instructions, l.created_at
+                FROM local_clinical_library_fts f
+                JOIN local_clinical_library_v1 l ON l.id = f.item_id
+                WHERE local_clinical_library_fts MATCH ?1
+                  AND l.clinic_id = ?2
+                  AND l.is_active = 1
+                ORDER BY
+                    CASE WHEN l.name LIKE ?3 THEN 0 ELSE 1 END,
+                    bm25(local_clinical_library_fts),
+                    l.name ASC
+                LIMIT ?4
+            "#;
+            let mut stmt = conn.prepare(clinical_fts_sql)?;
+            let rows = stmt.query_map(params![fts_q, clinic_id, prefix_pattern, limit as i64], map_clinical_row)?;
+            for item_res in rows {
+                let item = item_res?;
+                if seen_ids.insert(item.id.clone()) {
                     items.push(item);
                 }
             }
         }
 
-        // 2. Query available pharmacy inventory stock so local stock items appear in consultation
-        let stock_sql = r#"
-            SELECT id, product_name, unit, company, quantity, batch_number, created_at
-            FROM local_inventory_stock_v1
-            WHERE (product_name LIKE ?1 OR company LIKE ?1)
-            ORDER BY
-                CASE WHEN product_name LIKE ?2 THEN 0 ELSE 1 END,
-                product_name ASC
-            LIMIT ?3
-        "#;
-        if let Ok(mut stock_stmt) = conn.prepare(stock_sql) {
-            if let Ok(rows) = stock_stmt.query_map(params![pattern, prefix_pattern, limit as i64], |row| {
-                let s_id: String = row.get(0)?;
-                let p_name: String = row.get(1)?;
-                let unit: String = row.get(2)?;
-                let company: String = row.get(3)?;
-                let qty: i64 = row.get::<_, f64>(4).map(|q| q as i64).or_else(|_| row.get::<_, i64>(4))?;
-                let batch: Option<String> = row.get(5)?;
-                let created: String = row.get(6)?;
-                let batch_note = batch.map(|b| format!(" · Batch: {}", b)).unwrap_or_default();
-                let meta_json = format!(r#"{{"manufacturer":"{}","stock":{}}}"#, company.replace('"', "\\\""), qty);
-                Ok(LocalCatalogueItem {
-                    id: format!("stock_{}", s_id),
-                    item_type: "BRAND".to_string(),
-                    name: format!("{} (Stock: {} {}{})", p_name, qty, unit, batch_note),
-                    brand_name: Some(p_name.clone()),
-                    generic_name: Some(company.clone()),
-                    product_name: Some(p_name),
-                    dosage_form: Some(unit.clone()),
-                    route: None,
-                    active_ingredients_json: Some(meta_json),
-                    strengths_json: "[]".to_string(),
-                    raw_strength_summary: unit,
-                    is_combination: false,
-                    is_verified: true,
-                    source_provenance: "LOCAL_INVENTORY".to_string(),
-                    cached_at: created,
-                })
-            }) {
-                for item in rows.flatten() {
+        if items.len() < limit {
+            let clinical_sql = r#"
+                SELECT id, name, generic_name, brand_name, composition, strength, formulation,
+                       dosage_form, route, manufacturer, category, pack_size, mrp, storage_instructions,
+                       default_dosage, default_instructions, created_at
+                FROM local_clinical_library_v1
+                WHERE clinic_id = ?1
+                  AND is_active = 1
+                  AND (name LIKE ?2 OR generic_name LIKE ?2 OR brand_name LIKE ?2 OR composition LIKE ?2)
+                ORDER BY
+                    CASE WHEN name LIKE ?3 THEN 0 ELSE 1 END,
+                    name ASC
+                LIMIT ?4
+            "#;
+            let mut c_stmt = conn.prepare(clinical_sql)?;
+            let rows = c_stmt.query_map(params![clinic_id, pattern, prefix_pattern, limit as i64], map_clinical_row)?;
+            for item_res in rows {
+                let item = item_res?;
+                if seen_ids.insert(item.id.clone()) {
                     items.push(item);
+                    if items.len() >= limit {
+                        break;
+                    }
+                }
+            }
+        }
+
+        let map_stock_row = |row: &rusqlite::Row| -> rusqlite::Result<LocalCatalogueItem> {
+            let s_id: String = row.get(0)?;
+            let p_name: String = row.get(1)?;
+            let unit: String = row.get(2)?;
+            let company: String = row.get(3)?;
+            let qty: i64 = row.get::<_, f64>(4).map(|q| q as i64).or_else(|_| row.get::<_, i64>(4))?;
+            let batch: Option<String> = row.get(5)?;
+            let created: String = row.get(6)?;
+            let batch_note = batch.map(|b| format!(" · Batch: {}", b)).unwrap_or_default();
+            let meta_json = format!(r#"{{"manufacturer":"{}","stock":{}}}"#, company.replace('"', "\\\""), qty);
+            Ok(LocalCatalogueItem {
+                id: format!("stock_{}", s_id),
+                item_type: "BRAND".to_string(),
+                name: format!("{} (Stock: {} {}{})", p_name, qty, unit, batch_note),
+                brand_name: Some(p_name.clone()),
+                generic_name: Some(company.clone()),
+                product_name: Some(p_name),
+                dosage_form: Some(unit.clone()),
+                route: None,
+                active_ingredients_json: Some(meta_json),
+                strengths_json: "[]".to_string(),
+                raw_strength_summary: unit,
+                is_combination: false,
+                is_verified: true,
+                source_provenance: "LOCAL_INVENTORY".to_string(),
+                cached_at: created,
+            })
+        };
+
+        // 2. Clinic-scoped Pharmacy Inventory Stock search (FTS5 prefix first)
+        if items.len() < limit {
+            let remaining = (limit - items.len()) as i64;
+            if let Some(ref fts_q) = fts_query {
+                let stock_fts_sql = r#"
+                    SELECT s.id, s.product_name, s.unit, s.company, s.quantity, s.batch_number, s.created_at
+                    FROM local_inventory_stock_fts f
+                    JOIN local_inventory_stock_v1 s ON s.id = f.item_id
+                    WHERE local_inventory_stock_fts MATCH ?1
+                      AND s.clinic_id = ?2
+                    ORDER BY
+                        CASE WHEN s.product_name LIKE ?3 THEN 0 ELSE 1 END,
+                        bm25(local_inventory_stock_fts),
+                        s.product_name ASC
+                    LIMIT ?4
+                "#;
+                let mut stmt = conn.prepare(stock_fts_sql)?;
+                let rows = stmt.query_map(params![fts_q, clinic_id, prefix_pattern, remaining], map_stock_row)?;
+                for item_res in rows {
+                    let item = item_res?;
+                    if seen_ids.insert(item.id.clone()) {
+                        items.push(item);
+                    }
+                }
+            }
+
+            if items.len() < limit {
+                let stock_sql = r#"
+                    SELECT id, product_name, unit, company, quantity, batch_number, created_at
+                    FROM local_inventory_stock_v1
+                    WHERE clinic_id = ?1
+                      AND (product_name LIKE ?2 OR company LIKE ?2)
+                    ORDER BY
+                        CASE WHEN product_name LIKE ?3 THEN 0 ELSE 1 END,
+                        product_name ASC
+                    LIMIT ?4
+                "#;
+                let mut stock_stmt = conn.prepare(stock_sql)?;
+                let rows = stock_stmt.query_map(params![clinic_id, pattern, prefix_pattern, limit as i64], map_stock_row)?;
+                for item_res in rows {
+                    let item = item_res?;
+                    if seen_ids.insert(item.id.clone()) {
+                        items.push(item);
+                        if items.len() >= limit {
+                            break;
+                        }
+                    }
                 }
             }
         }
@@ -4116,49 +4899,51 @@ impl DbOperations {
         Ok(items)
     }
 
-    /// Retrieves verified strength strings from the offline catalogue cache for auto-population.
+    /// Retrieves verified strength strings from the clinic's local clinical library for auto-population.
     pub fn get_local_catalogue_strengths(
         conn: &Connection,
+        clinic_id: &str,
         medicine_name: &str,
         _formulation: Option<&str>,
     ) -> Result<Vec<String>, DatabaseOpError> {
         let raw_name = medicine_name.trim();
-        if raw_name.is_empty() {
+        if raw_name.is_empty() || clinic_id.trim().is_empty() {
             return Ok(Vec::new());
         }
 
         let mut list = Vec::new();
-
-        // Check if strength exists in local clinical library
-        if let Ok(mut c_stmt) = conn.prepare(
+        let mut c_stmt = conn.prepare(
             r#"
             SELECT DISTINCT strength
             FROM local_clinical_library_v1
-            WHERE is_active = 1
-              AND (name = ?1 OR generic_name = ?1 OR brand_name = ?1)
+            WHERE clinic_id = ?1
+              AND is_active = 1
+              AND (name = ?2 OR generic_name = ?2 OR brand_name = ?2)
               AND strength != ''
             ORDER BY strength ASC
             "#,
-        ) {
-            if let Ok(mut rows) = c_stmt.query(params![raw_name]) {
-                while let Ok(Some(row)) = rows.next() {
-                    if let Ok(s) = row.get::<_, String>(0) {
-                        if !list.contains(&s) {
-                            list.push(s);
-                        }
-                    }
-                }
+        )?;
+        let rows = c_stmt.query_map(params![clinic_id, raw_name], |row| row.get::<_, String>(0))?;
+        for s_res in rows {
+            let s = s_res?;
+            if !list.contains(&s) {
+                list.push(s);
             }
         }
 
         Ok(list)
     }
 
-    /// Retrieves statistics about the locally cached catalogue (total items, brands, generics, verified).
-    pub fn get_catalogue_cache_stats(conn: &Connection) -> Result<CatalogueCacheStats, DatabaseOpError> {
-        let count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM local_clinical_library_v1 WHERE is_active = 1", [], |r| r.get(0))
-            .unwrap_or(0);
+    /// Retrieves statistics about the clinic's active local clinical library.
+    pub fn get_catalogue_cache_stats(
+        conn: &Connection,
+        clinic_id: &str,
+    ) -> Result<CatalogueCacheStats, DatabaseOpError> {
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM local_clinical_library_v1 WHERE clinic_id = ?1 AND is_active = 1",
+            params![clinic_id],
+            |r| r.get(0),
+        )?;
         Ok(CatalogueCacheStats {
             total_items: count,
             brand_count: count,
@@ -7241,17 +8026,17 @@ mod tests {
         ).unwrap();
 
         // 3. Search prefix matches
-        let search_results = DbOperations::search_local_catalogue(&conn, "Calpol", 10, None).unwrap();
+        let search_results = DbOperations::search_local_catalogue(&conn, "c1", "Calpol", 10, None).unwrap();
         assert_eq!(search_results.len(), 2);
         assert!(search_results[0].name.contains("Calpol"));
 
         // 4. Search company / manufacturer
-        let para_results = DbOperations::search_local_catalogue(&conn, "Micro Labs", 10, None).unwrap();
+        let para_results = DbOperations::search_local_catalogue(&conn, "c1", "Micro Labs", 10, None).unwrap();
         assert_eq!(para_results.len(), 1);
         assert!(para_results[0].name.contains("Dolo 650"));
 
         // 5. Verify cache stats
-        let stats = DbOperations::get_catalogue_cache_stats(&conn).unwrap();
+        let stats = DbOperations::get_catalogue_cache_stats(&conn, "c1").unwrap();
         assert_eq!(stats.total_items, 0);
 
         // 6. Safe idempotency on rerun
@@ -7712,7 +8497,7 @@ mod tests {
         assert_eq!(clinic_a_items_after_repeat.len(), 2);
 
         // 4. Consultation search integration: clinical library items are searchable with CLINICAL_LIBRARY provenance
-        let search_results = DbOperations::search_local_catalogue(&conn, "Amoxicillin", 10, None).unwrap();
+        let search_results = DbOperations::search_local_catalogue(&conn, clinic_a, "Amoxicillin", 10, None).unwrap();
         assert!(!search_results.is_empty());
         let clinical_match = search_results.iter().find(|i| i.source_provenance == "CLINICAL_LIBRARY");
         assert!(clinical_match.is_some(), "Search must surface Clinical Library medicines");
@@ -7804,7 +8589,7 @@ mod tests {
 
         // 3. Consultation Autocomplete Search Verification
         // Search "BODYPROOF"
-        let search_bodyproof = DbOperations::search_local_catalogue(&conn, "BODYPROOF", 10, None).unwrap();
+        let search_bodyproof = DbOperations::search_local_catalogue(&conn, clinic_id, "BODYPROOF", 10, None).unwrap();
         assert!(!search_bodyproof.is_empty(), "BODYPROOF must be found in autocomplete");
         let first_match = &search_bodyproof[0];
         assert!(first_match.name.contains("6D BODYPROOF"));
@@ -7813,13 +8598,13 @@ mod tests {
         assert!(first_match.id.starts_with("stock_"));
 
         // Search "ZYTEE" (last item in dataset)
-        let search_zytee = DbOperations::search_local_catalogue(&conn, "ZYTEE", 10, None).unwrap();
+        let search_zytee = DbOperations::search_local_catalogue(&conn, clinic_id, "ZYTEE", 10, None).unwrap();
         assert!(!search_zytee.is_empty(), "ZYTEE must be found in autocomplete");
         assert!(search_zytee[0].name.contains("ZYTEE GEL"));
         assert!(search_zytee[0].name.contains("Stock: 6 GEL"));
 
         // Search by company name "EMRYS"
-        let search_company = DbOperations::search_local_catalogue(&conn, "EMRYS", 10, None).unwrap();
+        let search_company = DbOperations::search_local_catalogue(&conn, clinic_id, "EMRYS", 10, None).unwrap();
         assert!(!search_company.is_empty(), "Search by company name must return matching stock items");
     }
 
@@ -9544,5 +10329,918 @@ mod tests {
         assert_eq!(final_consults[0].status, "ACTIVE");
         assert_eq!(final_consults[0].chief_complaint, "Persistent cough");
         assert_eq!(final_consults[0].diagnosis, "Resolved bronchitis");
+    }
+
+    #[test]
+    fn test_phase1_explain_query_plans_use_v14_indexes_and_no_correlated_subqueries() {
+        let (conn, _) = setup_test_db();
+
+        let explain = |sql: &str| -> Vec<String> {
+            let mut stmt = conn.prepare(&format!("EXPLAIN QUERY PLAN {sql}")).unwrap();
+            stmt.query_map([], |row| row.get::<_, String>(3))
+                .unwrap()
+                .map(|r| r.unwrap())
+                .collect()
+        };
+
+        let get_patients_plan = explain(
+            "SELECT p.id, p.last_visit_at FROM local_patients p WHERE p.clinic_id = 'c1' ORDER BY p.created_at DESC, p.id DESC",
+        );
+        let gp_joined = get_patients_plan.join(" | ");
+        assert!(
+            gp_joined.contains("idx_patients_v14_created"),
+            "get_patients must use idx_patients_v14_created: {gp_joined}"
+        );
+        assert!(
+            !gp_joined.contains("CORRELATED"),
+            "get_patients must have zero CORRELATED subqueries: {gp_joined}"
+        );
+        assert!(
+            !gp_joined.contains("TEMP B-TREE"),
+            "get_patients must not need TEMP B-TREE sort: {gp_joined}"
+        );
+
+        let phone_hmac_plan = explain(
+            "SELECT id, patient_code FROM local_patients WHERE clinic_id = 'c1' AND phone_hmac = X'0011' LIMIT 1",
+        )
+        .join(" | ");
+        assert!(
+            phone_hmac_plan.contains("idx_patients_v14_phone_hmac"),
+            "phone_hmac duplicate lookup must use idx_patients_v14_phone_hmac: {phone_hmac_plan}"
+        );
+
+        let consults_plan = explain(
+            "SELECT id FROM local_consultations WHERE clinic_id = 'c1' AND patient_id = 'p1' ORDER BY updated_at DESC",
+        )
+        .join(" | ");
+        assert!(
+            consults_plan.contains("idx_consultations_v14_patient_updated"),
+            "consultations by patient must use idx_consultations_v14_patient_updated: {consults_plan}"
+        );
+        assert!(!consults_plan.contains("TEMP B-TREE"));
+
+        let rxs_plan = explain(
+            "SELECT id FROM local_prescriptions WHERE clinic_id = 'c1' AND patient_id = 'p1' ORDER BY created_at DESC, revision_number DESC",
+        )
+        .join(" | ");
+        assert!(
+            rxs_plan.contains("idx_prescriptions_v14_patient_created"),
+            "prescriptions by patient must use idx_prescriptions_v14_patient_created: {rxs_plan}"
+        );
+        assert!(!rxs_plan.contains("TEMP B-TREE"));
+
+        let invoices_plan = explain(
+            "SELECT id FROM local_invoices_v2 WHERE clinic_id = 'c1' AND patient_id = 'p1' ORDER BY created_at DESC",
+        )
+        .join(" | ");
+        assert!(
+            invoices_plan.contains("idx_invoices_v14_patient_created"),
+            "invoices by patient must use idx_invoices_v14_patient_created: {invoices_plan}"
+        );
+        assert!(!invoices_plan.contains("TEMP B-TREE"));
+
+        let next_code_plan = explain(
+            "SELECT last_seq FROM local_seq_counters WHERE clinic_id = 'c1' AND sequence_name = 'patient'",
+        )
+        .join(" | ");
+        assert!(
+            !next_code_plan.contains("local_patients"),
+            "get_next_patient_code must read local_seq_counters without touching local_patients: {next_code_plan}"
+        );
+    }
+
+    #[test]
+    fn test_phone_hmac_duplicate_detection_and_pagination_isolation() {
+        let (mut conn, dek) = setup_test_db();
+        let clinic_a = "clinic_alpha_p1";
+        let clinic_b = "clinic_beta_p1";
+
+        let p1 = DbOperations::insert_patient_ext(
+            &mut conn,
+            &dek,
+            clinic_a,
+            "PT-INIT",
+            "Rohan Kulkarni",
+            "+91 98765 11111",
+            "Male",
+            Some("1989-02-14"),
+            37,
+            &["Penicillin".to_string()],
+            &["Hypertension".to_string()],
+            None,
+            None,
+        )
+        .unwrap();
+
+        let p2 = DbOperations::insert_patient_ext(
+            &mut conn,
+            &dek,
+            clinic_a,
+            "PT-INIT",
+            "Meera Deshmukh",
+            "9876522222",
+            "Female",
+            None,
+            29,
+            &["NKDA".to_string()],
+            &[],
+            None,
+            None,
+        )
+        .unwrap();
+
+        let p3 = DbOperations::insert_patient_ext(
+            &mut conn,
+            &dek,
+            clinic_a,
+            "PT-INIT",
+            "Kabir Joshi",
+            "9876533333",
+            "Male",
+            None,
+            41,
+            &[],
+            &["Diabetes".to_string(), "Asthma".to_string()],
+            None,
+            None,
+        )
+        .unwrap();
+
+        // Duplicate formatted phone updates existing patient in O(1) without inserting a 4th row
+        let dup_update = DbOperations::insert_patient_ext(
+            &mut conn,
+            &dek,
+            clinic_a,
+            "PT-INIT",
+            "Rohan K. Kulkarni",
+            "09876511111",
+            "Male",
+            Some("1989-02-14"),
+            37,
+            &["Penicillin".to_string()],
+            &["Hypertension".to_string()],
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(dup_update.id, p1.id);
+        assert_eq!(dup_update.patient_code, p1.patient_code);
+
+        // Same phone in another clinic must create an isolated patient
+        let other_clinic_p = DbOperations::insert_patient_ext(
+            &mut conn,
+            &dek,
+            clinic_b,
+            "PT-INIT",
+            "Clinic B Patient",
+            "9876511111",
+            "Male",
+            None,
+            30,
+            &[],
+            &[],
+            None,
+            None,
+        )
+        .unwrap();
+        assert_ne!(other_clinic_p.id, p1.id);
+
+        // SQLite pagination limit/offset
+        let page1 = DbOperations::get_patients_page(
+            &conn,
+            &dek,
+            &PatientsPageQueryArgs {
+                clinic_id: clinic_a.to_string(),
+                limit: Some(2),
+                offset: Some(0),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(page1.clinic_total, 3);
+        assert_eq!(page1.total, 3);
+        assert_eq!(page1.items.len(), 2);
+        assert!(page1.has_more);
+
+        let page2 = DbOperations::get_patients_page(
+            &conn,
+            &dek,
+            &PatientsPageQueryArgs {
+                clinic_id: clinic_a.to_string(),
+                limit: Some(2),
+                offset: Some(2),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(page2.items.len(), 1);
+        assert!(!page2.has_more);
+
+        // Phone search via phone_hmac index
+        let phone_hit = DbOperations::get_patients_page(
+            &conn,
+            &dek,
+            &PatientsPageQueryArgs {
+                clinic_id: clinic_a.to_string(),
+                query: Some("+91 98765 22222".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(phone_hit.items.len(), 1);
+        assert_eq!(phone_hit.items[0].id, p2.id);
+
+        // Gender + Name A-Z fallback preserves full behavior
+        let male_sorted = DbOperations::get_patients_page(
+            &conn,
+            &dek,
+            &PatientsPageQueryArgs {
+                clinic_id: clinic_a.to_string(),
+                gender: Some("Male".to_string()),
+                sort: Some("Name A–Z".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(male_sorted.items.len(), 2);
+        assert_eq!(male_sorted.items[0].id, p3.id); // Kabir before Rohan
+        assert_eq!(male_sorted.items[1].id, p1.id);
+
+        // Dashboard summary counts match (NKDA is excluded from genuine allergies!)
+        let c_today = DbOperations::insert_consultation(
+            &mut conn,
+            &dek,
+            clinic_a,
+            &p1.id,
+            "doc1",
+            "2026-11-27",
+            "Cough",
+            "Bronchitis",
+            None,
+        )
+        .unwrap();
+        DbOperations::insert_prescription(
+            &mut conn,
+            &dek,
+            clinic_a,
+            &c_today,
+            &p1.id,
+            "doc1",
+            "RX-TODAY-1",
+            r#"[{"id":1,"name":"Azithromycin"}]"#,
+        )
+        .unwrap();
+
+        let summary = DbOperations::get_dashboard_summary(&conn, &dek, clinic_a, "2026-11-27").unwrap();
+        assert_eq!(summary.total_patients, 3);
+        assert_eq!(summary.allergy_records, 1); // Only Penicillin counts; NKDA does not
+        assert_eq!(summary.recorded_conditions, 3); // Hypertension + Diabetes + Asthma
+        assert_eq!(summary.seen_today, 1);
+        assert_eq!(summary.recent_consultations.len(), 1);
+        assert_eq!(
+            summary.recent_consultations[0].patient.as_ref().map(|p| p.name.as_str()),
+            Some("Rohan K. Kulkarni")
+        );
+    }
+
+    #[test]
+    fn test_search_local_catalogue_clinic_isolation_and_fts5() {
+        let (mut conn, _) = setup_test_db();
+        DbOperations::save_clinical_library_item(
+            &mut conn,
+            "clinic_one",
+            SaveClinicalMedicineArgs {
+                id: None,
+                clinic_id: "clinic_one".to_string(),
+                name: "Augmentin 625 Duo".to_string(),
+                generic_name: Some("Amoxicillin Clavulanate".to_string()),
+                brand_name: Some("Augmentin".to_string()),
+                composition: None,
+                strength: "625 mg".to_string(),
+                formulation: "Tablet".to_string(),
+                dosage_form: None,
+                route: None,
+                manufacturer: None,
+                category: None,
+                pack_size: None,
+                mrp: None,
+                storage_instructions: None,
+                default_dosage: None,
+                default_frequency: None,
+                default_duration: None,
+                default_instructions: None,
+            },
+        )
+        .unwrap();
+
+        DbOperations::save_clinical_library_item(
+            &mut conn,
+            "clinic_two",
+            SaveClinicalMedicineArgs {
+                id: None,
+                clinic_id: "clinic_two".to_string(),
+                name: "Augmentin Private Clinic2".to_string(),
+                generic_name: Some("Secret Clinic2 Drug".to_string()),
+                brand_name: None,
+                composition: None,
+                strength: "375 mg".to_string(),
+                formulation: "Tablet".to_string(),
+                dosage_form: None,
+                route: None,
+                manufacturer: None,
+                category: None,
+                pack_size: None,
+                mrp: None,
+                storage_instructions: None,
+                default_dosage: None,
+                default_frequency: None,
+                default_duration: None,
+                default_instructions: None,
+            },
+        )
+        .unwrap();
+
+        let res_one = DbOperations::search_local_catalogue(&conn, "clinic_one", "Augmentin", 20, None).unwrap();
+        assert_eq!(res_one.len(), 1);
+        assert_eq!(res_one[0].name, "Augmentin 625 Duo");
+
+        let res_two = DbOperations::search_local_catalogue(&conn, "clinic_two", "Augmentin", 20, None).unwrap();
+        assert_eq!(res_two.len(), 1);
+        assert_eq!(res_two[0].name, "Augmentin Private Clinic2");
+    }
+
+    #[test]
+    fn test_get_invoices_propagates_decryption_errors_and_never_swallows() {
+        let (mut conn, dek) = setup_test_db();
+        let clinic_id = "clinic_inv_err";
+        let inv_id = DbOperations::save_invoice(
+            &mut conn,
+            &dek,
+            "doc1",
+            SaveInvoiceArgs {
+                id: None,
+                clinic_id: clinic_id.to_string(),
+                patient_id: "pat1".to_string(),
+                consultation_id: None,
+                invoice_number: "INV-2026-9999".to_string(),
+                invoice_date: "2026-11-27".to_string(),
+                status: Some("FINALIZED".to_string()),
+                payment_status: Some("PAID".to_string()),
+                items: vec![InvoiceItem {
+                    description: "Consultation".to_string(),
+                    quantity: 1,
+                    unit_price_paise: 50000,
+                    total_paise: 50000,
+                }],
+                discount_paise: Some(0),
+                tax_rate_percent: Some(0.0),
+                notes: None,
+            },
+        )
+        .unwrap();
+
+        let wrong_dek = DatabaseEncryptionKey::new([0x77u8; 32]);
+        let list_err = DbOperations::get_invoices(&conn, &wrong_dek, clinic_id, None).unwrap_err();
+        assert!(matches!(list_err, DatabaseOpError::DecryptionFailed(_)));
+
+        let by_id_err = DbOperations::get_invoice_by_id(&conn, &wrong_dek, clinic_id, &inv_id).unwrap_err();
+        assert!(matches!(by_id_err, DatabaseOpError::DecryptionFailed(_)));
+    }
+
+    #[test]
+    fn test_phase1_patient_pagination_all_modes_and_lazy_decrypt_proof() {
+        let (mut conn, dek) = setup_test_db();
+        let clinic = "clinic_page_verify";
+
+        // 1. Insert 6 patients with distinct creation timestamps, codes, genders, and names
+        let specs = [
+            ("AAA-0001", "Zoya Khan", "9800000001", "Female", "2026-11-01T09:00:00Z"),
+            ("AAA-0002", "Aarav Patel", "9800000002", "Male", "2026-11-02T09:00:00Z"),
+            ("AAA-0003", "Meera Sharma", "9800000003", "Female", "2026-11-03T09:00:00Z"),
+            ("AAA-0004", "Bhavesh Shah", "9800000004", "Male", "2026-11-04T09:00:00Z"),
+            ("AAA-0005", "Neha Kulkarni", "9800000005", "Female", "2026-11-05T09:00:00Z"),
+            ("AAA-0006", "Kabir Verma", "9800000006", "Male", "2026-11-06T09:00:00Z"),
+        ];
+        let mut ids = Vec::new();
+        for (code, name, phone, gender, created) in specs {
+            let res = DbOperations::insert_patient_ext(
+                &mut conn,
+                &dek,
+                clinic,
+                code,
+                name,
+                phone,
+                gender,
+                None,
+                30,
+                &[],
+                &[],
+                None,
+                None,
+            )
+            .unwrap();
+            conn.execute(
+                "UPDATE local_patients SET created_at = ?1, updated_at = ?1 WHERE id = ?2",
+                params![created, res.id],
+            )
+            .unwrap();
+            ids.push(res.id);
+        }
+
+        // Verify EXPLAIN QUERY PLAN for patient_code range predicate uses idx_patients_clinic_code
+        let code_plan: String = conn
+            .prepare("EXPLAIN QUERY PLAN SELECT id FROM local_patients WHERE clinic_id = 'c' AND patient_code >= 'AAA-000' AND patient_code < 'AAA-001'")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(3))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect::<Vec<_>>()
+            .join(" | ");
+        assert!(
+            code_plan.contains("idx_patients_v2_code") && code_plan.contains("patient_code>?"),
+            "patient_code range must seek B-tree index: {code_plan}"
+        );
+
+        let phone_sort_plan: String = conn
+            .prepare("EXPLAIN QUERY PLAN SELECT id FROM local_patients p WHERE p.clinic_id = 'c' AND p.phone_hmac = X'0011' ORDER BY +p.created_at DESC, p.id DESC LIMIT 50")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(3))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect::<Vec<_>>()
+            .join(" | ");
+        assert!(
+            phone_sort_plan.contains("idx_patients_v14_phone_hmac") && phone_sort_plan.contains("phone_hmac=?"),
+            "phone_hmac paginated query must seek phone_hmac index instead of created_at scan: {phone_sort_plan}"
+        );
+
+        // 2. Default newest-first + page transitions
+        let p1 = DbOperations::get_patients_page(
+            &conn,
+            &dek,
+            &PatientsPageQueryArgs {
+                clinic_id: clinic.to_string(),
+                limit: Some(2),
+                offset: Some(0),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(p1.total, 6);
+        assert_eq!(p1.clinic_total, 6);
+        assert!(p1.has_more);
+        assert_eq!(p1.items[0].patient_code, "AAA-0006");
+        assert_eq!(p1.items[1].patient_code, "AAA-0005");
+
+        // 3. Oldest-first
+        let oldest = DbOperations::get_patients_page(
+            &conn,
+            &dek,
+            &PatientsPageQueryArgs {
+                clinic_id: clinic.to_string(),
+                sort: Some("Created Date (oldest first)".to_string()),
+                limit: Some(2),
+                offset: Some(0),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(oldest.items[0].patient_code, "AAA-0001");
+        assert_eq!(oldest.items[1].patient_code, "AAA-0002");
+
+        // 4. Name A-Z
+        let name_az = DbOperations::get_patients_page(
+            &conn,
+            &dek,
+            &PatientsPageQueryArgs {
+                clinic_id: clinic.to_string(),
+                sort: Some("Name A–Z".to_string()),
+                limit: Some(2),
+                offset: Some(0),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(name_az.items[0].name, "Aarav Patel");
+        assert_eq!(name_az.items[1].name, "Bhavesh Shah");
+
+        // 5. Partial name search
+        let partial = DbOperations::get_patients_page(
+            &conn,
+            &dek,
+            &PatientsPageQueryArgs {
+                clinic_id: clinic.to_string(),
+                query: Some("kulk".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(partial.items.len(), 1);
+        assert_eq!(partial.items[0].patient_code, "AAA-0005");
+
+        // 6. Gender filter
+        let females = DbOperations::get_patients_page(
+            &conn,
+            &dek,
+            &PatientsPageQueryArgs {
+                clinic_id: clinic.to_string(),
+                gender: Some("Female".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(females.total, 3);
+
+        // 7. Phone lookup (+91 prefix normalized)
+        let phone_res = DbOperations::get_patients_page(
+            &conn,
+            &dek,
+            &PatientsPageQueryArgs {
+                clinic_id: clinic.to_string(),
+                query: Some("+91 98000 00003".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(phone_res.items.len(), 1);
+        assert_eq!(phone_res.items[0].name, "Meera Sharma");
+
+        // 8. Patient code exact & prefix lookup
+        let code_res = DbOperations::get_patients_page(
+            &conn,
+            &dek,
+            &PatientsPageQueryArgs {
+                clinic_id: clinic.to_string(),
+                query: Some("aaa-0004".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(code_res.items.len(), 1);
+        assert_eq!(code_res.items[0].name, "Bhavesh Shah");
+
+        // 9. Empty search results preserve clinic_total
+        let empty = DbOperations::get_patients_page(
+            &conn,
+            &dek,
+            &PatientsPageQueryArgs {
+                clinic_id: clinic.to_string(),
+                query: Some("nonexistent-xyz".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(empty.total, 0);
+        assert_eq!(empty.clinic_total, 6);
+        assert!(empty.items.is_empty());
+
+        // 10. Cryptographic proof that indexed LIMIT/OFFSET does NOT decrypt off-page rows:
+        // Corrupt encrypted ciphertext on the oldest patient (ids[0], AAA-0001) and verify
+        // fetching page 1 (newest 2 rows: AAA-0006, AAA-0005) succeeds without touching AAA-0001!
+        conn.execute(
+            "UPDATE local_patients SET encrypted_demographics = X'DEADBEEF' WHERE id = ?1",
+            params![ids[0]],
+        )
+        .unwrap();
+        let lazy_page1 = DbOperations::get_patients_page(
+            &conn,
+            &dek,
+            &PatientsPageQueryArgs {
+                clinic_id: clinic.to_string(),
+                limit: Some(2),
+                offset: Some(0),
+                ..Default::default()
+            },
+        )
+        .expect("Indexed page 1 must never decrypt off-page patients");
+        assert_eq!(lazy_page1.items.len(), 2);
+        assert_eq!(lazy_page1.items[0].patient_code, "AAA-0006");
+    }
+
+    #[test]
+    #[ignore]
+    fn benchmark_v14_patient_scale_1k_to_100k() {
+        fn percentile_ms(samples: &[std::time::Duration], pct: f64) -> f64 {
+            let mut sorted: Vec<f64> = samples
+                .iter()
+                .map(|d| d.as_secs_f64() * 1000.0)
+                .collect();
+            sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            if sorted.is_empty() {
+                return 0.0;
+            }
+            let idx = ((pct / 100.0) * ((sorted.len() - 1) as f64)).round() as usize;
+            sorted[idx.min(sorted.len() - 1)]
+        }
+
+        fn measure_op<F: FnMut()>(runs: usize, mut f: F) -> (f64, f64) {
+            let mut times = Vec::with_capacity(runs);
+            for _ in 0..runs {
+                let t = std::time::Instant::now();
+                f();
+                times.push(t.elapsed());
+            }
+            (percentile_ms(&times, 50.0), percentile_ms(&times, 95.0))
+        }
+
+        let temp_dir = std::env::temp_dir().join(format!("cliniqo_bench_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let db_path = temp_dir.join("cliniqo_bench_v105.db");
+        let mut conn = Connection::open(&db_path).unwrap();
+        conn.execute_batch(
+            "PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA temp_store = MEMORY;",
+        )
+        .unwrap();
+
+        let dek = DatabaseEncryptionKey::new([0x99u8; 32]);
+        crate::db::migrations::MigrationRunner::run_migrations(&mut conn, &dek).unwrap();
+
+        let demo_female = serialize_patient_blob(&dek, "Benchmark Patient Alpha", "Female");
+        let demo_male = serialize_patient_blob(&dek, "Benchmark Patient Beta", "Male");
+
+        fn serialize_patient_blob(
+            dek: &DatabaseEncryptionKey,
+            name: &str,
+            gender: &str,
+        ) -> (Vec<u8>, Vec<u8>) {
+            encrypt_payload(
+                &dek.key,
+                &serde_json::to_vec(&PatientDemographics {
+                    name: name.to_string(),
+                    phone: "9876543210".to_string(),
+                    gender: gender.to_string(),
+                    date_of_birth: Some("1990-01-01".to_string()),
+                    age: 36,
+                    allergies: vec!["Penicillin".to_string()],
+                    conditions: vec!["Hypertension".to_string()],
+                    sensitive_notes: Some("Routine chronic care follow-up note".to_string()),
+                })
+                .unwrap(),
+            )
+            .unwrap()
+        }
+
+        let (sample_consult_enc, sample_consult_nonce) = encrypt_payload(
+            &dek.key,
+            &serde_json::to_vec(&ClinicalData {
+                chief_complaint: "Follow-up headache".to_string(),
+                diagnosis: "Migraine".to_string(),
+                clinical_snapshot_json: Some(
+                    json!({
+                        "notes": "Stable vitals, continue therapy",
+                        "vitals": {"bp": "120/80", "pulse": 72},
+                        "advice": "Hydrate and rest",
+                        "followUpDate": "2026-12-10"
+                    })
+                    .to_string(),
+                ),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+
+        let (sample_rx_enc, sample_rx_nonce) = encrypt_payload(
+            &dek.key,
+            &serde_json::to_vec(&vec![json!({
+                "name": "Paracetamol 500mg",
+                "dosage": "1-0-1",
+                "duration": "5 days"
+            })])
+            .unwrap(),
+        )
+        .unwrap();
+
+        let clinic_id = "clinic_bench";
+        let doctor_id = "doctor_bench";
+        let mut total_inserted = 0usize;
+
+        for target in [1_000usize, 10_000, 50_000, 100_000] {
+            let tx = conn.transaction().unwrap();
+            {
+                let mut p_stmt = tx
+                    .prepare(
+                        r#"
+                        INSERT INTO local_patients (
+                            id, clinic_id, patient_code, encrypted_demographics, nonce,
+                            phone_hmac, last_visit_at, has_allergy, condition_count,
+                            sync_status, created_at, updated_at
+                        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 1, 1, 'LOCAL_ONLY', ?7, ?7)
+                        "#,
+                    )
+                    .unwrap();
+                let mut c_stmt = tx
+                    .prepare(
+                        r#"
+                        INSERT INTO local_consultations (
+                            id, clinic_id, patient_id, doctor_id, consultation_date,
+                            status, encrypted_clinical_data, nonce, sync_status, updated_at
+                        ) VALUES (?1, ?2, ?3, ?4, ?5, 'FINALIZED', ?6, ?7, 'LOCAL_ONLY', ?5)
+                        "#,
+                    )
+                    .unwrap();
+                let mut rx_stmt = tx
+                    .prepare(
+                        r#"
+                        INSERT INTO local_prescriptions (
+                            id, clinic_id, consultation_id, patient_id, doctor_id,
+                            prescription_number, revision_number, status, encrypted_items,
+                            nonce, sync_status, created_at
+                        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, 'ACTIVE', ?7, ?8, 'LOCAL_ONLY', ?9)
+                        "#,
+                    )
+                    .unwrap();
+
+                for i in total_inserted..target {
+                    let pid = format!("bench_{i:06}");
+                    let code = format!("AAA-{i:06}");
+                    let phone = format!("98{:08}", i);
+                    let hmac = compute_phone_hmac(&dek.key, &phone).unwrap();
+                    let ts = format!(
+                        "2026-{:02}-{:02}T10:{:02}:{:02}Z",
+                        (i % 12) + 1,
+                        (i % 28) + 1,
+                        (i % 60),
+                        ((i / 60) % 60)
+                    );
+                    let (enc, nonce) = if i % 2 == 0 {
+                        (&demo_female.0, &demo_female.1)
+                    } else {
+                        (&demo_male.0, &demo_male.1)
+                    };
+                    p_stmt
+                        .execute(params![pid, clinic_id, code, enc, nonce, hmac, ts])
+                        .unwrap();
+
+                    // Give 10% of patients + milestone boundary patients consultations & prescriptions
+                    if i % 10 == 0 || i == target - 1 {
+                        let cid = format!("consult_{i:06}");
+                        let rxid = format!("rx_{i:06}");
+                        let rx_num = format!("RX-{i:06}");
+                        c_stmt
+                            .execute(params![
+                                cid,
+                                clinic_id,
+                                pid,
+                                doctor_id,
+                                ts,
+                                &sample_consult_enc,
+                                &sample_consult_nonce
+                            ])
+                            .unwrap();
+                        rx_stmt
+                            .execute(params![
+                                rxid,
+                                clinic_id,
+                                cid,
+                                pid,
+                                doctor_id,
+                                rx_num,
+                                &sample_rx_enc,
+                                &sample_rx_nonce,
+                                ts
+                            ])
+                            .unwrap();
+                    }
+                }
+            }
+            tx.commit().unwrap();
+            total_inserted = target;
+
+            conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);").unwrap();
+            let db_bytes = std::fs::metadata(&db_path).map(|m| m.len()).unwrap_or(0);
+
+            let target_patient_id = format!("bench_{:06}", target - 1);
+            let target_phone = format!("98{:08}", target - 1);
+            let target_code = format!("AAA-{:06}", target - 1);
+
+            let (p1_med, p1_p95) = measure_op(15, || {
+                let res = DbOperations::get_patients_page(
+                    &conn,
+                    &dek,
+                    &PatientsPageQueryArgs {
+                        clinic_id: clinic_id.to_string(),
+                        limit: Some(50),
+                        offset: Some(0),
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+                assert_eq!(res.items.len(), 50);
+            });
+
+            let (p10_med, p10_p95) = measure_op(15, || {
+                let res = DbOperations::get_patients_page(
+                    &conn,
+                    &dek,
+                    &PatientsPageQueryArgs {
+                        clinic_id: clinic_id.to_string(),
+                        limit: Some(50),
+                        offset: Some(500),
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+                assert_eq!(res.items.len(), 50);
+            });
+
+            let (phone_med, phone_p95) = measure_op(15, || {
+                let res = DbOperations::get_patients_page(
+                    &conn,
+                    &dek,
+                    &PatientsPageQueryArgs {
+                        clinic_id: clinic_id.to_string(),
+                        query: Some(target_phone.clone()),
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+                assert_eq!(res.items.len(), 1);
+            });
+
+            let (code_med, code_p95) = measure_op(15, || {
+                let res = DbOperations::get_patients_page(
+                    &conn,
+                    &dek,
+                    &PatientsPageQueryArgs {
+                        clinic_id: clinic_id.to_string(),
+                        query: Some(target_code.clone()),
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+                assert_eq!(res.items.len(), 1);
+            });
+
+            let (dash_med, dash_p95) = measure_op(15, || {
+                let res = DbOperations::get_dashboard_summary(&conn, &dek, clinic_id, "2026-11-27").unwrap();
+                assert_eq!(res.total_patients as usize, target);
+            });
+
+            let (consult_med, consult_p95) = measure_op(15, || {
+                let res = DbOperations::get_consultations(&conn, &dek, clinic_id, Some(&target_patient_id)).unwrap();
+                assert!(!res.is_empty());
+            });
+
+            let (rx_med, rx_p95) = measure_op(15, || {
+                let res = DbOperations::get_prescriptions(&conn, &dek, clinic_id, Some(&target_patient_id)).unwrap();
+                assert!(!res.is_empty());
+            });
+
+            let (partial_med, partial_p95) = measure_op(5, || {
+                let res = DbOperations::get_patients_page(
+                    &conn,
+                    &dek,
+                    &PatientsPageQueryArgs {
+                        clinic_id: clinic_id.to_string(),
+                        query: Some("Benchmark".to_string()),
+                        limit: Some(50),
+                        offset: Some(0),
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+                assert_eq!(res.items.len(), 50);
+            });
+
+            let (gender_med, gender_p95) = measure_op(5, || {
+                let res = DbOperations::get_patients_page(
+                    &conn,
+                    &dek,
+                    &PatientsPageQueryArgs {
+                        clinic_id: clinic_id.to_string(),
+                        gender: Some("Female".to_string()),
+                        limit: Some(50),
+                        offset: Some(0),
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+                assert_eq!(res.items.len(), 50);
+            });
+
+            let (az_med, az_p95) = measure_op(5, || {
+                let res = DbOperations::get_patients_page(
+                    &conn,
+                    &dek,
+                    &PatientsPageQueryArgs {
+                        clinic_id: clinic_id.to_string(),
+                        sort: Some("Name A–Z".to_string()),
+                        limit: Some(50),
+                        offset: Some(0),
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+                assert_eq!(res.items.len(), 50);
+            });
+
+            println!(
+                "BENCH n={target} db_mb={:.2} | p1_med={p1_med:.3}ms p1_p95={p1_p95:.3}ms | p10_med={p10_med:.3}ms p10_p95={p10_p95:.3}ms | phone_med={phone_med:.3}ms phone_p95={phone_p95:.3}ms | code_med={code_med:.3}ms code_p95={code_p95:.3}ms | dash_med={dash_med:.3}ms dash_p95={dash_p95:.3}ms | consult_med={consult_med:.3}ms consult_p95={consult_p95:.3}ms | rx_med={rx_med:.3}ms rx_p95={rx_p95:.3}ms | partial_med={partial_med:.3}ms partial_p95={partial_p95:.3}ms | gender_med={gender_med:.3}ms gender_p95={gender_p95:.3}ms | name_az_med={az_med:.3}ms name_az_p95={az_p95:.3}ms",
+                (db_bytes as f64) / (1024.0 * 1024.0),
+            );
+        }
+
+        drop(conn);
+        let _ = std::fs::remove_dir_all(&temp_dir);
     }
 }

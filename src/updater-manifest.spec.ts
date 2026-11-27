@@ -147,18 +147,41 @@ describe("Cliniqo Updater Manifest & Release Packaging", () => {
     ).toThrowError(/Signature file .* is empty/)
   })
 
-  it("enforces consistent version, app identifier, perMachine installMode, and updater configuration", () => {
+  it("enforces consistent 1.0.5 version, app identifier, perMachine installMode, and updater configuration", () => {
     const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"))
     const tauriConf = JSON.parse(fs.readFileSync("src-tauri/tauri.conf.json", "utf8"))
     const cargoToml = fs.readFileSync("src-tauri/Cargo.toml", "utf8")
     const cargoVersionMatch = cargoToml.match(/^version\s*=\s*"([^"]+)"/m)
 
     expect(cargoVersionMatch).not.toBeNull()
+    expect(pkg.version).toBe("1.0.5")
     expect(pkg.version).toBe(tauriConf.version)
     expect(pkg.version).toBe(cargoVersionMatch![1])
     expect(tauriConf.identifier).toBe("com.cliniqo.desktop")
     expect(tauriConf.bundle?.windows?.nsis?.installMode).toBe("perMachine")
     expect(tauriConf.bundle?.createUpdaterArtifacts).toBe(true)
     expect(tauriConf.plugins?.updater?.endpoints?.[0]).toContain("/releases/latest/download/latest.json")
+  })
+
+  it("generates a valid v1.0.5 Windows updater manifest targeting v1.0.5 installer assets", () => {
+    const version = "1.0.5"
+    const exe = `Cliniqo_${version}_x64-setup.exe`
+    fs.writeFileSync(path.join(tempDir, exe), "BIN_105")
+    fs.writeFileSync(path.join(tempDir, `${exe}.sig`), "SIG_105\n")
+
+    const res = resolveUpdaterManifest({
+      pkgVersion: version,
+      bundleDir: tempDir,
+      repo: "dipeshpatekar/Cliniqo",
+      refType: "tag",
+      refName: "v1.0.5",
+      ref: "refs/tags/v1.0.5",
+    })
+
+    expect(res.manifest.version).toBe("1.0.5")
+    expect(res.manifest.platforms["windows-x86_64"].url).toBe(
+      "https://github.com/dipeshpatekar/Cliniqo/releases/download/v1.0.5/Cliniqo_1.0.5_x64-setup.exe",
+    )
+    expect(res.manifest.platforms["windows-x86_64"].signature).toBe("SIG_105")
   })
 })

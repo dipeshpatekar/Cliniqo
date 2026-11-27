@@ -889,5 +889,37 @@ describe("Patient Components & UX", () => {
       expect(mappedLegacy.ageMonths).toBeUndefined()
       expect(formatPatientAge(mappedLegacy.age, "years", mappedLegacy.ageMonths)).toBe("65 years")
     })
+
+    it("PatientsPage slices client-side lists at 50 rows per page and displays total count accurately", () => {
+      const manyPatients: Patient[] = Array.from({ length: 65 }, (_, idx) => ({
+        id: `pt-${idx + 1}`,
+        displayId: `AAA-${String(idx + 1).padStart(4, "0")}`,
+        patientCode: `AAA-${String(idx + 1).padStart(4, "0")}`,
+        name: `Patient ${idx + 1}`,
+        initials: "PT",
+        age: 30,
+        gender: "Female",
+        phone: `+91 90000 ${String(10000 + idx)}`,
+        lastVisit: "Today",
+        allergies: [],
+        conditions: [],
+        createdAt: `2026-11-${String((idx % 28) + 1).padStart(2, "0")}T10:00:00Z`,
+      }))
+
+      const rawHtml = renderToString(
+        <PatientsPage
+          go={vi.fn()}
+          patients={manyPatients}
+          onOpenPatient={vi.fn()}
+          onStartConsultation={vi.fn()}
+          onCreateBill={vi.fn()}
+          onEditPatient={vi.fn()}
+        />,
+      )
+      const html = rawHtml.replace(/<!-- -->/g, "")
+      expect(html).toContain("65 patient records in this clinic")
+      expect(html).toContain("Showing 1–50 of 65 matching patients")
+      expect(html).toContain("Page 1 of 2")
+    })
   })
 })
